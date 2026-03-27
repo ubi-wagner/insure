@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from routes.regions import router as regions_router
 from routes.leads import router as leads_router
+from routes.admin import router as admin_router
 
 app = FastAPI(title="Insure Lead Generation API")
 
@@ -21,6 +22,7 @@ app.add_middleware(
 
 app.include_router(regions_router)
 app.include_router(leads_router)
+app.include_router(admin_router)
 
 
 @app.on_event("startup")
