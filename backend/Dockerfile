@@ -28,6 +28,5 @@ RUN playwright install --with-deps chromium
 
 COPY . .
 
-EXPOSE ${PORT:-8000}
-
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Run migrations then start the app
+CMD alembic upgrade head && uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}

@@ -1,11 +1,2 @@
-[backend]
-builder = "docker"
-rootDirectory = "backend"
-releaseCommand = "alembic upgrade head"
-startCommand = "uvicorn main:app --host 0.0.0.0 --port $PORT"
-
-[frontend]
-builder = "nixpacks"
-rootDirectory = "frontend"
-buildCommand = "npm run build"
-startCommand = "npm start"
+[deploy]
+startCommand = "echo 'Use individual service configs'"
