@@ -1,4 +1,5 @@
 import os
+import threading
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -20,6 +21,13 @@ app.add_middleware(
 
 app.include_router(regions_router)
 app.include_router(leads_router)
+
+
+@app.on_event("startup")
+def start_hunter():
+    from agents.hunter import run_hunter_loop
+    thread = threading.Thread(target=run_hunter_loop, daemon=True)
+    thread.start()
 
 
 @app.get("/health")
