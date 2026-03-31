@@ -19,6 +19,8 @@ export default function MapView({ onRegionCreated }: { onRegionCreated: () => vo
   const [showForm, setShowForm] = useState(false);
   const [formData, setFormData] = useState<RegionFormData>({ name: "", stories: 3, coastDistance: 5 });
   const [searchQuery, setSearchQuery] = useState("");
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
     const apiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
@@ -102,10 +104,13 @@ export default function MapView({ onRegionCreated }: { onRegionCreated: () => vo
     e.preventDefault();
     if (!pendingBounds) return;
 
+    setSubmitError(null);
+    setSubmitting(true);
     try {
       const res = await fetch(`${API_URL}/api/regions`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify({
           name: formData.name,
           bounding_box: pendingBounds,
@@ -121,10 +126,15 @@ export default function MapView({ onRegionCreated }: { onRegionCreated: () => vo
         setFormData({ name: "", stories: 3, coastDistance: 5 });
         setPendingBounds(null);
         onRegionCreated();
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        setSubmitError(errData.detail || `Failed to create region (${res.status})`);
       }
     } catch (err) {
       console.error("Failed to create region:", err);
+      setSubmitError("Unable to connect to API");
     }
+    setSubmitting(false);
   }
 
   function handleCancelRegion() {
@@ -202,12 +212,17 @@ export default function MapView({ onRegionCreated }: { onRegionCreated: () => vo
               />
             </div>
 
+            {submitError && (
+              <p className="text-red-400 text-xs mb-3">{submitError}</p>
+            )}
+
             <div className="flex gap-2">
               <button
                 type="submit"
-                className="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 rounded text-sm"
+                disabled={submitting}
+                className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-semibold py-2 rounded text-sm"
               >
-                Start Hunt
+                {submitting ? "Creating..." : "Start Hunt"}
               </button>
               <button
                 type="button"

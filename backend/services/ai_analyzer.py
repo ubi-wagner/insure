@@ -8,12 +8,15 @@ On "Thumb Up", feeds Sunbiz, Audit, and I&E documents to Claude for:
 
 import os
 import json
+import logging
 
 import anthropic
 
 from sqlalchemy.orm import Session
 
 from database.models import DocType, Entity, EntityAsset
+
+logger = logging.getLogger(__name__)
 
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 
@@ -91,15 +94,31 @@ Each email should be 150-250 words. Reference specific data points from the inte
 Return ONLY valid JSON, no markdown or explanation."""
 
 
+def _parse_json_response(text: str, phase: str) -> dict | None:
+    """Parse a JSON response from Claude, handling markdown wrapping."""
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        start = text.find("{")
+        end = text.rfind("}") + 1
+        if start >= 0 and end > start:
+            try:
+                return json.loads(text[start:end])
+            except json.JSONDecodeError:
+                pass
+        logger.error(f"{phase} response not valid JSON: {text[:200]}")
+        return None
+
+
 def trigger_deep_dive(entity_id: int, db: Session):
     """Run the Kill & Cook analysis for a thumbed-up entity."""
     if not ANTHROPIC_API_KEY:
-        print("[AI] ANTHROPIC_API_KEY not set, skipping deep dive")
+        logger.warning("ANTHROPIC_API_KEY not set, skipping deep dive")
         return
 
     entity = db.query(Entity).filter(Entity.id == entity_id).first()
     if not entity:
-        print(f"[AI] Entity {entity_id} not found")
+        logger.warning(f"Entity {entity_id} not found")
         return
 
     # Fetch all 3 document types
@@ -113,88 +132,85 @@ def trigger_deep_dive(entity_id: int, db: Session):
     ie_report = docs.get("IE_REPORT", "")
 
     if not any([sunbiz, audit, ie_report]):
-        print(f"[AI] No documents found for entity {entity_id}")
+        logger.info(f"No documents found for entity {entity_id}")
         return
 
-    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    try:
+        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    except Exception as e:
+        logger.error(f"Failed to initialize Anthropic client: {e}")
+        return
 
     # --- THE KILL ---
-    print(f"[AI] Running KILL analysis for '{entity.name}'...")
-    kill_response = client.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=1500,
-        messages=[
-            {
-                "role": "user",
-                "content": KILL_PROMPT.format(
-                    sunbiz=sunbiz,
-                    audit=audit,
-                    ie_report=ie_report,
-                ),
-            }
-        ],
-    )
+    logger.info(f"Running KILL analysis for '{entity.name}'...")
+    try:
+        kill_response = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=1500,
+            messages=[
+                {
+                    "role": "user",
+                    "content": KILL_PROMPT.format(
+                        sunbiz=sunbiz,
+                        audit=audit,
+                        ie_report=ie_report,
+                    ),
+                }
+            ],
+        )
+    except Exception as e:
+        logger.error(f"KILL API call failed for '{entity.name}': {e}")
+        return
 
     kill_text = kill_response.content[0].text.strip()
-    try:
-        intel = json.loads(kill_text)
-    except json.JSONDecodeError:
-        # Try to extract JSON from response
-        start = kill_text.find("{")
-        end = kill_text.rfind("}") + 1
-        if start >= 0 and end > start:
-            intel = json.loads(kill_text[start:end])
-        else:
-            print(f"[AI] Failed to parse KILL response: {kill_text[:200]}")
-            return
+    intel = _parse_json_response(kill_text, "KILL")
+    if not intel:
+        return
 
     # Save extracted intel to entity characteristics
     characteristics = entity.characteristics or {}
     characteristics.update(intel)
     entity.characteristics = characteristics
     db.commit()
-    print(f"[AI] KILL complete: carrier={intel.get('carrier')}, premium={intel.get('premium')}")
+    logger.info(f"KILL complete: carrier={intel.get('carrier')}, premium={intel.get('premium')}")
 
     # --- THE COOK ---
-    print(f"[AI] Running COOK analysis for '{entity.name}'...")
-    cook_response = client.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=4000,
-        messages=[
-            {
-                "role": "user",
-                "content": COOK_PROMPT.format(
-                    property_name=entity.name,
-                    address=entity.address or "",
-                    decision_maker=intel.get("decision_maker", "Board President"),
-                    decision_maker_title=intel.get("decision_maker_title", "President"),
-                    carrier=intel.get("carrier", "Unknown"),
-                    premium=intel.get("premium", "Unknown"),
-                    prior_year_premium=intel.get("prior_year_premium", "Unknown"),
-                    premium_increase_pct=intel.get("premium_increase_pct", "Unknown"),
-                    tiv=intel.get("tiv", "Unknown"),
-                    expiration=intel.get("expiration", "Unknown"),
-                    key_risks=json.dumps(intel.get("key_risks", [])),
-                ),
-            }
-        ],
-    )
+    logger.info(f"Running COOK analysis for '{entity.name}'...")
+    try:
+        cook_response = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=4000,
+            messages=[
+                {
+                    "role": "user",
+                    "content": COOK_PROMPT.format(
+                        property_name=entity.name,
+                        address=entity.address or "",
+                        decision_maker=intel.get("decision_maker", "Board President"),
+                        decision_maker_title=intel.get("decision_maker_title", "President"),
+                        carrier=intel.get("carrier", "Unknown"),
+                        premium=intel.get("premium", "Unknown"),
+                        prior_year_premium=intel.get("prior_year_premium", "Unknown"),
+                        premium_increase_pct=intel.get("premium_increase_pct", "Unknown"),
+                        tiv=intel.get("tiv", "Unknown"),
+                        expiration=intel.get("expiration", "Unknown"),
+                        key_risks=json.dumps(intel.get("key_risks", [])),
+                    ),
+                }
+            ],
+        )
+    except Exception as e:
+        logger.error(f"COOK API call failed for '{entity.name}': {e}")
+        return
 
     cook_text = cook_response.content[0].text.strip()
-    try:
-        emails = json.loads(cook_text)
-    except json.JSONDecodeError:
-        start = cook_text.find("{")
-        end = cook_text.rfind("}") + 1
-        if start >= 0 and end > start:
-            emails = json.loads(cook_text[start:end])
-        else:
-            print(f"[AI] Failed to parse COOK response: {cook_text[:200]}")
-            return
+    emails = _parse_json_response(cook_text, "COOK")
+    if not emails:
+        return
 
     # Save emails to entity characteristics
     characteristics = entity.characteristics or {}
     characteristics["emails"] = emails
     entity.characteristics = characteristics
     db.commit()
-    print(f"[AI] COOK complete: {len(emails)} email styles generated")
+    logger.info(f"COOK complete: {len(emails)} email styles generated")

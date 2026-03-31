@@ -8,9 +8,9 @@ to fall within the bounding box of each region of interest.
 import os
 import time
 import json
-import re
-from datetime import datetime
+import logging
 
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from database import SessionLocal
@@ -23,6 +23,8 @@ from database.models import (
 )
 from agents.geo_helper import get_bounding_box_center, get_county_from_coords, is_within_bounds
 
+
+logger = logging.getLogger(__name__)
 
 PROXY_URL = os.getenv("PROXY_URL")
 POLL_INTERVAL = int(os.getenv("HUNTER_POLL_INTERVAL", "30"))
@@ -39,21 +41,23 @@ def process_region(region: RegionOfInterest, db: Session) -> int:
         region.target_county = county
         db.commit()
 
-    print(f"[Hunter] Processing region '{region.name}' - County: {county}")
-    print(f"[Hunter] Bounding box: N={bbox['north']}, S={bbox['south']}, E={bbox['east']}, W={bbox['west']}")
+    logger.info(f"Processing region '{region.name}' - County: {county}")
+    logger.info(f"Bounding box: N={bbox['north']}, S={bbox['south']}, E={bbox['east']}, W={bbox['west']}")
 
     found_count = 0
 
     try:
         found_count = crawl_for_properties(region, county, db)
     except Exception as e:
-        print(f"[Hunter] Crawl error for region '{region.name}': {e}")
+        logger.error(f"Crawl error for region '{region.name}': {e}")
+        # Don't mark as COMPLETED on failure — leave as PENDING for retry
+        return 0
 
-    # Mark region as completed
+    # Only mark region as completed on success
     region.status = RegionStatus.COMPLETED
     db.commit()
 
-    print(f"[Hunter] Region '{region.name}' completed. Found {found_count} properties.")
+    logger.info(f"Region '{region.name}' completed. Found {found_count} properties.")
     return found_count
 
 
@@ -68,10 +72,10 @@ def crawl_for_properties(region: RegionOfInterest, county: str | None, db: Sessi
         crawler = WebCrawler()
         crawler.warmup()
     except ImportError:
-        print("[Hunter] Crawl4AI not available, using fallback scraper")
+        logger.warning("Crawl4AI not available, using fallback scraper")
         return crawl_fallback(region, county, db)
     except Exception as e:
-        print(f"[Hunter] Crawl4AI init error: {e}, using fallback")
+        logger.warning(f"Crawl4AI init error: {e}, using fallback")
         return crawl_fallback(region, county, db)
 
     bbox = region.bounding_box
@@ -93,14 +97,14 @@ def crawl_for_properties(region: RegionOfInterest, county: str | None, db: Sessi
                 for prop in properties:
                     found += save_property(prop, region, db)
         except Exception as e:
-            print(f"[Hunter] Error crawling {url}: {e}")
+            logger.error(f"Error crawling {url}: {e}")
 
     return found
 
 
 def crawl_fallback(region: RegionOfInterest, county: str | None, db: Session) -> int:
     """Fallback when Crawl4AI is not available - does nothing in dev."""
-    print("[Hunter] Fallback mode - no properties scraped. Use seed script for testing.")
+    logger.info("Fallback mode - no properties scraped. Use seed script for testing.")
     return 0
 
 
@@ -125,8 +129,8 @@ def parse_property_results(content: str, bbox: dict) -> list[dict]:
                         "latitude": float(lat),
                         "longitude": float(lng),
                     })
-    except (json.JSONDecodeError, TypeError):
-        pass
+    except (json.JSONDecodeError, TypeError) as e:
+        logger.warning(f"Failed to parse property results: {e}, content preview: {str(content)[:200]}")
 
     return properties
 
@@ -141,32 +145,37 @@ def save_property(prop: dict, region: RegionOfInterest, db: Session) -> int:
     if existing:
         return 0
 
-    entity = Entity(
-        name=prop["name"],
-        address=prop.get("address", ""),
-        county=region.target_county,
-        latitude=prop.get("latitude"),
-        longitude=prop.get("longitude"),
-        characteristics={},
-    )
-    db.add(entity)
-    db.commit()
-    db.refresh(entity)
+    try:
+        entity = Entity(
+            name=prop["name"],
+            address=prop.get("address", ""),
+            county=region.target_county,
+            latitude=prop.get("latitude"),
+            longitude=prop.get("longitude"),
+            characteristics={},
+        )
+        db.add(entity)
+        db.commit()
+        db.refresh(entity)
 
-    # Write HUNT_FOUND ledger event
-    ledger = LeadLedger(
-        entity_id=entity.id,
-        action_type=ActionType.HUNT_FOUND,
-    )
-    db.add(ledger)
-    db.commit()
+        # Write HUNT_FOUND ledger event
+        ledger = LeadLedger(
+            entity_id=entity.id,
+            action_type=ActionType.HUNT_FOUND,
+        )
+        db.add(ledger)
+        db.commit()
+    except SQLAlchemyError as e:
+        db.rollback()
+        logger.error(f"Failed to save property '{prop.get('name')}': {e}")
+        return 0
 
     return 1
 
 
 def run_hunter_loop():
     """Main polling loop - runs as a background task."""
-    print("[Hunter] Starting hunter agent loop...")
+    logger.info("Starting hunter agent loop...")
     while True:
         db = SessionLocal()
         try:
@@ -180,8 +189,9 @@ def run_hunter_loop():
                 process_region(region, db)
 
         except Exception as e:
-            print(f"[Hunter] Loop error: {e}")
+            logger.error(f"Hunter loop error: {e}")
         finally:
+            db.rollback()
             db.close()
 
         time.sleep(POLL_INTERVAL)

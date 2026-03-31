@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Depends
+import logging
+
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -6,6 +8,7 @@ from database import get_db
 from database.models import ActionType, Entity, EntityAsset, LeadLedger
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 class VoteRequest(BaseModel):
@@ -14,6 +17,9 @@ class VoteRequest(BaseModel):
 
 @router.get("/api/leads")
 def list_leads(sort_by: str = "date", db: Session = Depends(get_db)):
+    if sort_by not in ("date", "coast_distance"):
+        raise HTTPException(status_code=400, detail="sort_by must be 'date' or 'coast_distance'")
+
     query = db.query(Entity)
 
     if sort_by == "coast_distance":
@@ -66,7 +72,7 @@ def list_leads(sort_by: str = "date", db: Session = Depends(get_db)):
 def get_lead(entity_id: int, db: Session = Depends(get_db)):
     entity = db.query(Entity).filter(Entity.id == entity_id).first()
     if not entity:
-        return {"error": "Not found"}, 404
+        raise HTTPException(status_code=404, detail="Entity not found")
 
     assets = db.query(EntityAsset).filter(EntityAsset.entity_id == entity_id).all()
     contacts = entity.contacts
@@ -101,20 +107,26 @@ def get_lead(entity_id: int, db: Session = Depends(get_db)):
 def vote_lead(entity_id: int, vote: VoteRequest, db: Session = Depends(get_db)):
     entity = db.query(Entity).filter(Entity.id == entity_id).first()
     if not entity:
-        return {"error": "Not found"}, 404
+        raise HTTPException(status_code=404, detail="Entity not found")
 
-    action = ActionType(vote.action_type)
+    try:
+        action = ActionType(vote.action_type)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid action_type. Must be one of: {[e.value for e in ActionType]}"
+        )
 
     ledger_event = LeadLedger(entity_id=entity_id, action_type=action)
     db.add(ledger_event)
     db.commit()
 
-    # If thumbed up, trigger the deep dive analysis (async in production)
+    # If thumbed up, trigger the deep dive analysis (non-blocking)
     if action == ActionType.USER_THUMB_UP:
         try:
             from services.ai_analyzer import trigger_deep_dive
             trigger_deep_dive(entity_id, db)
         except Exception as e:
-            print(f"Deep dive failed (non-blocking): {e}")
+            logger.error(f"Deep dive failed for entity {entity_id}: {e}")
 
     return {"success": True, "action": action.value}
