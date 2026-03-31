@@ -123,7 +123,7 @@ export default function LeadPipeline({ refreshKey }: { refreshKey: number }) {
               <p className="text-gray-400 text-xs mb-1">{lead.address}</p>
               <p className="text-gray-500 text-xs mb-3">{lead.county} County</p>
 
-              {lead.characteristics?.carrier && (
+              {!!lead.characteristics?.carrier && (
                 <div className="text-xs text-gray-400 mb-3 space-y-0.5">
                   <p>Carrier: <span className="text-white">{String(lead.characteristics.carrier)}</span></p>
                   <p>Premium: <span className="text-white">{String(lead.characteristics.premium)}</span></p>

@@ -1,5 +1,6 @@
 import os
 import threading
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,7 +9,16 @@ from routes.regions import router as regions_router
 from routes.leads import router as leads_router
 from routes.admin import router as admin_router
 
-app = FastAPI(title="Insure Lead Generation API")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    from agents.hunter import run_hunter_loop
+    thread = threading.Thread(target=run_hunter_loop, daemon=True)
+    thread.start()
+    yield
+
+
+app = FastAPI(title="Insure Lead Generation API", lifespan=lifespan)
 
 frontend_url = os.getenv("FRONTEND_URL", "http://localhost:3000")
 
@@ -23,13 +33,6 @@ app.add_middleware(
 app.include_router(regions_router)
 app.include_router(leads_router)
 app.include_router(admin_router)
-
-
-@app.on_event("startup")
-def start_hunter():
-    from agents.hunter import run_hunter_loop
-    thread = threading.Thread(target=run_hunter_loop, daemon=True)
-    thread.start()
 
 
 @app.get("/health")
