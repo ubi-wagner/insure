@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from database import get_db
-from database.models import ActionType, Entity, EntityAsset, Engagement, LeadLedger, Policy
+from database.models import ActionType, Contact, Entity, EntityAsset, Engagement, LeadLedger, Policy
 from services.event_bus import EventStatus, EventType, emit
 
 router = APIRouter()
@@ -71,6 +71,7 @@ def list_leads(
     min_premium: Optional[float] = Query(None),
     max_premium: Optional[float] = Query(None),
     heat: Optional[str] = Query(None),
+    construction: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
     db: Session = Depends(get_db),
 ):
@@ -147,6 +148,18 @@ def list_leads(
         # Heat filter
         if heat and heat_score != heat:
             continue
+
+        # Construction class filter
+        if construction:
+            cc = (characteristics.get("construction_class") or "").lower()
+            if construction == "fire_resistive" and "fire resistive" not in cc:
+                continue
+            elif construction == "non_combustible" and "fire resistive" not in cc and "non-combustible" not in cc:
+                continue
+            elif construction == "masonry" and "fire resistive" not in cc and "non-combustible" not in cc and "masonry" not in cc:
+                continue
+            elif construction == "frame" and "frame" not in cc:
+                continue
 
         results.append(
             {
@@ -323,6 +336,46 @@ def vote_lead(entity_id: int, vote: VoteRequest, db: Session = Depends(get_db)):
     return {"success": True, "action": action.value, "pipeline_stage": entity.pipeline_stage}
 
 
+class CreateEngagementRequest(BaseModel):
+    style: str
+    subject: str
+    body: str
+    channel: str = "EMAIL"
+
+
+@router.post("/api/leads/{entity_id}/engagements")
+def create_engagement(entity_id: int, req: CreateEngagementRequest, db: Session = Depends(get_db)):
+    """Create an outreach engagement from a generated email."""
+    entity = db.query(Entity).filter(Entity.id == entity_id).first()
+    if not entity:
+        raise HTTPException(status_code=404, detail="Entity not found")
+
+    engagement = Engagement(
+        entity_id=entity_id,
+        engagement_type="OUTREACH",
+        channel=req.channel,
+        status="QUEUED",
+        subject=req.subject,
+        body=req.body,
+        style=req.style,
+    )
+    db.add(engagement)
+
+    ledger = LeadLedger(
+        entity_id=entity_id,
+        action_type="ENGAGEMENT_CREATED",
+        detail=f"Outreach queued: {req.style} via {req.channel}",
+    )
+    db.add(ledger)
+    db.commit()
+    db.refresh(engagement)
+
+    emit(EventType.DB_OPERATION, "create_engagement", EventStatus.SUCCESS,
+         detail=f"Engagement {engagement.id} for '{entity.name}' ({req.style})", entity_id=entity_id)
+
+    return {"success": True, "engagement_id": engagement.id, "status": engagement.status}
+
+
 class StageChangeRequest(BaseModel):
     stage: str
 
@@ -353,3 +406,49 @@ def change_stage(entity_id: int, req: StageChangeRequest, db: Session = Depends(
          detail=f"'{entity.name}': {old_stage} → {req.stage}", entity_id=entity_id)
 
     return {"success": True, "pipeline_stage": entity.pipeline_stage}
+
+
+class CreateContactRequest(BaseModel):
+    name: str
+    title: str = ""
+    email: str | None = None
+    phone: str | None = None
+    is_primary: int = 0
+
+
+@router.post("/api/leads/{entity_id}/contacts")
+def create_contact(entity_id: int, req: CreateContactRequest, db: Session = Depends(get_db)):
+    """Add a contact/decision maker to an entity."""
+    entity = db.query(Entity).filter(Entity.id == entity_id).first()
+    if not entity:
+        raise HTTPException(status_code=404, detail="Entity not found")
+
+    contact = Contact(
+        entity_id=entity_id,
+        name=req.name,
+        title=req.title,
+        email=req.email,
+        phone=req.phone,
+        is_primary=req.is_primary,
+    )
+    db.add(contact)
+
+    ledger = LeadLedger(
+        entity_id=entity_id,
+        action_type="CONTACT_ADDED",
+        detail=f"Added contact: {req.name} ({req.title})",
+    )
+    db.add(ledger)
+    db.commit()
+    db.refresh(contact)
+
+    emit(EventType.DB_OPERATION, "create_contact", EventStatus.SUCCESS,
+         detail=f"Contact '{req.name}' added to '{entity.name}'", entity_id=entity_id)
+
+    return {
+        "success": True,
+        "contact": {
+            "id": contact.id, "name": contact.name, "title": contact.title,
+            "email": contact.email, "phone": contact.phone, "is_primary": contact.is_primary,
+        },
+    }
