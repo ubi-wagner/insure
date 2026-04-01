@@ -94,20 +94,18 @@ def run_on_target(entity: Entity, db: Session) -> list[str]:
 # Import enrichers to trigger their @register_enricher decorators
 def _load_enrichers():
     """Import all enricher modules so they register themselves."""
-    try:
-        from agents.enrichers import fema_flood  # noqa: F401
-    except ImportError as e:
-        logger.warning(f"Failed to load fema_flood enricher: {e}")
-
-    try:
-        from agents.enrichers import property_appraiser  # noqa: F401
-    except ImportError as e:
-        logger.warning(f"Failed to load property_appraiser enricher: {e}")
-
-    try:
-        from agents.enrichers import sunbiz  # noqa: F401
-    except ImportError as e:
-        logger.warning(f"Failed to load sunbiz enricher: {e}")
+    modules = [
+        "fema_flood",           # NEW stage: FEMA flood zone (coordinate-based)
+        "fdot_parcels",         # NEW stage: FDOT/DOR statewide parcels (coordinate-based)
+        "property_appraiser",   # NEW stage: County PA GIS lookup (coordinate-based)
+        "sunbiz",               # CANDIDATE stage: Sunbiz HOA/condo search
+        "dbpr_condo",           # TARGET stage: DBPR condo registry + CAM lookup
+    ]
+    for module in modules:
+        try:
+            __import__(f"agents.enrichers.{module}")
+        except ImportError as e:
+            logger.warning(f"Failed to load {module} enricher: {e}")
 
 
 _load_enrichers()

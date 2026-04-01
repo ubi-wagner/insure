@@ -337,6 +337,7 @@ def get_lead(entity_id: int, db: Session = Depends(get_db)):
             for ch in children
         ],
         "enrichment_sources": entity.enrichment_sources or {},
+        "readiness": _compute_readiness(entity, db),
     }
 
 
@@ -372,8 +373,16 @@ def vote_lead(entity_id: int, vote: VoteRequest, db: Session = Depends(get_db)):
     emit(EventType.DB_OPERATION, "vote_lead", EventStatus.SUCCESS,
          detail=f"{action.value} on '{entity.name}'", entity_id=entity_id)
 
-    # If thumbed up, trigger the deep dive analysis (non-blocking)
+    # If thumbed up, trigger CANDIDATE-stage enrichments + AI deep dive
     if action == ActionType.USER_THUMB_UP:
+        # Run CANDIDATE enrichments (Sunbiz, etc.)
+        try:
+            from agents.enrichers.pipeline import run_on_candidate
+            run_on_candidate(entity, db)
+        except Exception as e:
+            logger.warning(f"CANDIDATE enrichment failed for entity {entity_id}: {e}")
+
+        # AI Kill & Cook analysis
         emit(EventType.AI_ANALYZER, "deep_dive_start", EventStatus.PENDING,
              detail=f"Starting for '{entity.name}'", entity_id=entity_id)
         try:
@@ -427,13 +436,78 @@ def create_engagement(entity_id: int, req: CreateEngagementRequest, db: Session 
     return {"success": True, "engagement_id": engagement.id, "status": engagement.status}
 
 
+def _compute_readiness(entity: Entity, db: Session) -> dict:
+    """Compute pipeline readiness — what's available and what's missing for each stage."""
+    chars = entity.characteristics or {}
+    sources = entity.enrichment_sources or {}
+    contacts = entity.contacts
+    has_emails = bool(chars.get("emails"))
+    has_contacts = len(contacts) > 0
+    has_primary_contact = any(c.is_primary for c in contacts)
+    has_contact_email = any(c.email for c in contacts)
+    has_carrier = bool(chars.get("carrier"))
+    has_tiv = bool(chars.get("tiv") or chars.get("tiv_estimate"))
+    has_flood = "fema_flood" in sources
+    has_property_data = "fdot_parcels" in sources or "property_appraiser" in sources
+    has_sunbiz = "sunbiz" in sources
+    has_dbpr = "dbpr_condo" in sources
+    has_decision_maker = bool(chars.get("decision_maker") or has_primary_contact)
+    has_property_manager = bool(chars.get("property_manager") or chars.get("dbpr_management_company"))
+
+    return {
+        "candidate": {
+            "ready": True,  # Any lead can become a candidate
+            "checks": {
+                "flood_zone": {"done": has_flood, "label": "FEMA flood zone"},
+                "property_data": {"done": has_property_data, "label": "Property appraiser data"},
+                "tiv": {"done": has_tiv, "label": "TIV estimate"},
+            },
+        },
+        "target": {
+            "ready": has_sunbiz or has_contacts,
+            "checks": {
+                "association_search": {"done": has_sunbiz, "label": "Sunbiz association search"},
+                "contacts": {"done": has_contacts, "label": "At least one contact"},
+                "carrier": {"done": has_carrier, "label": "Current carrier identified"},
+                "ai_analysis": {"done": has_emails, "label": "AI Kill & Cook analysis"},
+            },
+        },
+        "opportunity": {
+            "ready": has_decision_maker and (has_emails or has_contact_email),
+            "checks": {
+                "decision_maker": {"done": has_decision_maker, "label": "Decision maker identified"},
+                "contact_email": {"done": has_contact_email, "label": "Contact email available"},
+                "emails_generated": {"done": has_emails, "label": "Outreach emails generated"},
+                "property_manager": {"done": has_property_manager, "label": "Property manager identified"},
+                "dbpr_lookup": {"done": has_dbpr, "label": "DBPR condo registry checked"},
+            },
+        },
+    }
+
+
+@router.get("/api/leads/{entity_id}/readiness")
+def get_readiness(entity_id: int, db: Session = Depends(get_db)):
+    """Get pipeline readiness checks for a lead — what data is available/missing."""
+    entity = db.query(Entity).filter(Entity.id == entity_id).first()
+    if not entity:
+        raise HTTPException(status_code=404, detail="Entity not found")
+
+    readiness = _compute_readiness(entity, db)
+    return {
+        "entity_id": entity_id,
+        "current_stage": entity.pipeline_stage,
+        "readiness": readiness,
+    }
+
+
 class StageChangeRequest(BaseModel):
     stage: str
+    force: bool = False  # Allow override of readiness checks
 
 
 @router.post("/api/leads/{entity_id}/stage")
 def change_stage(entity_id: int, req: StageChangeRequest, db: Session = Depends(get_db)):
-    """Manually advance or change an entity's pipeline stage."""
+    """Advance or change an entity's pipeline stage with readiness validation."""
     valid_stages = ["NEW", "CANDIDATE", "TARGET", "OPPORTUNITY", "CUSTOMER", "CHURNED", "ARCHIVED"]
     if req.stage not in valid_stages:
         raise HTTPException(status_code=400, detail=f"Invalid stage. Must be one of: {valid_stages}")
@@ -441,6 +515,25 @@ def change_stage(entity_id: int, req: StageChangeRequest, db: Session = Depends(
     entity = db.query(Entity).filter(Entity.id == entity_id).first()
     if not entity:
         raise HTTPException(status_code=404, detail="Entity not found")
+
+    # Check readiness for forward progression (skip for demotions/archive)
+    forward_stages = ["CANDIDATE", "TARGET", "OPPORTUNITY", "CUSTOMER"]
+    if req.stage in forward_stages and not req.force:
+        readiness = _compute_readiness(entity, db)
+        stage_key = req.stage.lower()
+        if stage_key in readiness and not readiness[stage_key]["ready"]:
+            missing = [
+                check["label"]
+                for check in readiness[stage_key]["checks"].values()
+                if not check["done"]
+            ]
+            return {
+                "success": False,
+                "error": "readiness_check_failed",
+                "message": f"Not ready for {req.stage}. Missing: {', '.join(missing)}",
+                "missing": missing,
+                "readiness": readiness[stage_key],
+            }
 
     old_stage = entity.pipeline_stage
     entity.pipeline_stage = req.stage

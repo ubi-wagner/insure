@@ -61,6 +61,10 @@ interface LeadDetail {
   contacts: { id: number; name: string; title: string; email: string | null; phone: string | null; is_primary: number; source: string | null; source_url: string | null }[];
   children: ChildEntity[];
   enrichment_sources: Record<string, { source: string; timestamp: string; fields_updated: string[]; url: string | null }>;
+  readiness: Record<string, {
+    ready: boolean;
+    checks: Record<string, { done: boolean; label: string }>;
+  }>;
 }
 
 const HEAT_STYLES: Record<string, string> = {
@@ -86,6 +90,7 @@ export default function LeadDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<TabName>("overview");
   const [stageChanging, setStageChanging] = useState(false);
+  const [stageError, setStageError] = useState<string | null>(null);
   const [sendingStyle, setSendingStyle] = useState<string | null>(null);
   const [showAddContact, setShowAddContact] = useState(false);
   const [contactForm, setContactForm] = useState({ name: "", title: "", email: "", phone: "", is_primary: 0 });
@@ -134,16 +139,23 @@ export default function LeadDetailPage() {
     setSavingContact(false);
   }
 
-  async function handleStageChange(newStage: string) {
+  async function handleStageChange(newStage: string, force = false) {
     setStageChanging(true);
+    setStageError(null);
     try {
       const res = await fetch(`/api/proxy/leads/${id}/stage`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ stage: newStage }),
+        body: JSON.stringify({ stage: newStage, force }),
       });
-      if (res.ok) {
-        setLead((prev) => prev ? { ...prev, pipeline_stage: newStage } : prev);
+      const data = await res.json();
+      if (data.success) {
+        // Refresh full lead data (enrichments may have run)
+        const updated = await fetch(`/api/proxy/leads/${id}`);
+        if (updated.ok) setLead(await updated.json());
+        else setLead((prev) => prev ? { ...prev, pipeline_stage: newStage } : prev);
+      } else if (data.error === "readiness_check_failed") {
+        setStageError(data.message);
       }
     } catch {}
     setStageChanging(false);
@@ -235,6 +247,48 @@ export default function LeadDetailPage() {
             ))}
           </div>
         )}
+        {/* Stage error / readiness warning */}
+        {stageError && (
+          <div className="mt-2 bg-amber-900/30 border border-amber-800 rounded px-3 py-2 flex items-center justify-between">
+            <p className="text-amber-300 text-xs">{stageError}</p>
+            <button onClick={() => {
+              const nextStage = lead.pipeline_stage === "NEW" ? "CANDIDATE" :
+                lead.pipeline_stage === "CANDIDATE" ? "TARGET" :
+                lead.pipeline_stage === "TARGET" ? "OPPORTUNITY" : "";
+              if (nextStage) handleStageChange(nextStage, true);
+            }}
+              className="bg-amber-800 hover:bg-amber-700 text-amber-200 text-xs px-2 py-1 rounded ml-3 shrink-0">
+              Force Advance
+            </button>
+          </div>
+        )}
+        {/* Next stage readiness checklist */}
+        {lead.readiness && (() => {
+          const nextStageKey = lead.pipeline_stage === "NEW" ? "candidate" :
+            lead.pipeline_stage === "CANDIDATE" ? "target" :
+            lead.pipeline_stage === "TARGET" ? "opportunity" : null;
+          if (!nextStageKey || !lead.readiness[nextStageKey]) return null;
+          const r = lead.readiness[nextStageKey];
+          const checks = Object.values(r.checks);
+          const done = checks.filter(c => c.done).length;
+          return (
+            <div className="mt-2 flex items-center gap-3 text-xs">
+              <span className="text-gray-500">Next ({nextStageKey.toUpperCase()}):</span>
+              <div className="flex gap-1.5">
+                {checks.map((check) => (
+                  <span key={check.label} className={`px-1.5 py-0.5 rounded ${
+                    check.done ? "bg-green-900/50 text-green-400" : "bg-gray-800 text-gray-600"
+                  }`} title={check.label}>
+                    {check.done ? "\u2713" : "\u2717"} {check.label}
+                  </span>
+                ))}
+              </div>
+              <span className={`font-medium ${r.ready ? "text-green-400" : "text-gray-600"}`}>
+                {done}/{checks.length} {r.ready ? "Ready" : ""}
+              </span>
+            </div>
+          );
+        })()}
       </div>
 
       {/* Tabs */}
