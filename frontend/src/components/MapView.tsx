@@ -12,6 +12,7 @@ interface RegionFormData {
 export default function MapView({ onRegionCreated }: { onRegionCreated: () => void }) {
   const mapRef = useRef<HTMLDivElement>(null);
   const [map, setMap] = useState<google.maps.Map | null>(null);
+  const [mapError, setMapError] = useState<string | null>(null);
   const [pendingRect, setPendingRect] = useState<google.maps.Rectangle | null>(null);
   const [pendingBounds, setPendingBounds] = useState<{ north: number; south: number; east: number; west: number } | null>(null);
   const [showForm, setShowForm] = useState(false);
@@ -21,9 +22,9 @@ export default function MapView({ onRegionCreated }: { onRegionCreated: () => vo
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
-    const apiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
+    const apiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY || process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
     if (!apiKey) {
-      console.error("Google Maps API key not set");
+      setMapError("NEXT_PUBLIC_GOOGLE_MAPS_API_KEY is not configured. Set it in Railway environment variables and rebuild the frontend.");
       return;
     }
 
@@ -82,6 +83,8 @@ export default function MapView({ onRegionCreated }: { onRegionCreated: () => vo
 
         setMap(mapInstance);
       });
+    }).catch((err) => {
+      setMapError(`Google Maps failed to load: ${err.message || err}`);
     });
   }, []);
 
@@ -108,7 +111,6 @@ export default function MapView({ onRegionCreated }: { onRegionCreated: () => vo
       const res = await fetch(`/api/proxy/regions`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-
         body: JSON.stringify({
           name: formData.name,
           bounding_box: pendingBounds,
@@ -144,6 +146,28 @@ export default function MapView({ onRegionCreated }: { onRegionCreated: () => vo
     setShowForm(false);
   }
 
+  // No API key or load error — show setup instructions
+  if (mapError) {
+    return (
+      <div className="w-full h-full bg-gray-900 border border-gray-800 flex flex-col items-center justify-center gap-4 px-8">
+        <div className="w-12 h-12 rounded-full bg-yellow-900/50 flex items-center justify-center">
+          <span className="text-yellow-400 text-2xl">!</span>
+        </div>
+        <h3 className="text-lg font-semibold text-gray-200">Map Not Configured</h3>
+        <p className="text-gray-400 text-sm text-center max-w-md">{mapError}</p>
+        <div className="bg-gray-800 rounded-lg p-4 text-xs text-gray-400 max-w-md w-full">
+          <p className="font-semibold text-gray-300 mb-2">Setup steps:</p>
+          <ol className="list-decimal list-inside space-y-1">
+            <li>Get a Google Maps API key from <span className="text-blue-400">console.cloud.google.com</span></li>
+            <li>Enable Maps JavaScript API, Drawing, Places, and Geocoding APIs</li>
+            <li>In Railway, add env var: <code className="text-green-400">NEXT_PUBLIC_GOOGLE_MAPS_KEY</code></li>
+            <li>Redeploy the frontend service (rebuild required)</li>
+          </ol>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="relative">
       {/* Search bar */}
@@ -164,7 +188,7 @@ export default function MapView({ onRegionCreated }: { onRegionCreated: () => vo
       </form>
 
       {/* Map */}
-      <div ref={mapRef} className="w-full h-[500px] rounded-lg" />
+      <div ref={mapRef} className="w-full h-full" />
 
       {/* Region form modal */}
       {showForm && (
