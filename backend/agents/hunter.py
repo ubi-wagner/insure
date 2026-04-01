@@ -1,15 +1,22 @@
 """
-Hunter Agent - Polls for PENDING regions and scrapes for condo/HOA properties.
+Hunter Agent - Phase II
 
-Uses Crawl4AI to crawl public property directories, filtering results
-to fall within the bounding box of each region of interest.
+Polls for PENDING regions and discovers real multi-story residential
+buildings using the OpenStreetMap Overpass API (free, no key needed).
+
+Flow: Draw region → Hunter queries Overpass → Filters for condos/apartments
+→ Reverse geocodes for address/county → Saves as NEW leads
+
+Target counties (V1): Pasco, Pinellas, Hillsborough, Manatee, Sarasota,
+Charlotte, Lee, Collier, Palm Beach, Miami-Dade, Broward
 """
 
-import os
-import time
 import json
 import logging
+import os
+import time
 
+import httpx
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -24,128 +31,238 @@ from database.models import (
 from agents.geo_helper import get_bounding_box_center, get_county_from_coords, is_within_bounds
 from services.event_bus import EventStatus, EventType, emit
 
-
 logger = logging.getLogger(__name__)
 
-PROXY_URL = os.getenv("PROXY_URL")
 POLL_INTERVAL = int(os.getenv("HUNTER_POLL_INTERVAL", "30"))
+
+# V1 target counties — Jason's territory
+TARGET_COUNTIES = {
+    "Pasco", "Pinellas", "Hillsborough", "Manatee", "Sarasota",
+    "Charlotte", "Lee", "Collier", "Palm Beach", "Miami-Dade", "Broward",
+}
+
+# Overpass API endpoint (free, no key)
+OVERPASS_URL = "https://overpass-api.de/api/interpreter"
+
+# Min building levels to consider (filters out small residential)
+MIN_LEVELS = 3
+
+# Nominatim endpoint for reverse geocoding
+NOMINATIM_URL = "https://nominatim.openstreetmap.org/reverse"
+
+
+def build_overpass_query(bbox: dict, min_levels: int = MIN_LEVELS) -> str:
+    """Build an Overpass QL query for multi-story residential buildings in a bounding box."""
+    # Overpass bbox format: south,west,north,east
+    bb = f"{bbox['south']},{bbox['west']},{bbox['north']},{bbox['east']}"
+    levels_regex = f"^[{min_levels}-9]|[1-9][0-9]"
+
+    return f"""
+[out:json][timeout:60];
+(
+  way["building"="apartments"]({bb});
+  way["building"="residential"]["building:levels"~"{levels_regex}"]({bb});
+  way["building"="condominium"]({bb});
+  way["building"="hotel"]["building:levels"~"{levels_regex}"]({bb});
+  relation["building"="apartments"]({bb});
+  relation["building"="condominium"]({bb});
+);
+out center tags;
+"""
+
+
+def query_overpass(query: str) -> list[dict]:
+    """Execute an Overpass API query and return elements."""
+    try:
+        with httpx.Client(timeout=60) as client:
+            resp = client.post(OVERPASS_URL, data={"data": query})
+            resp.raise_for_status()
+            data = resp.json()
+            return data.get("elements", [])
+    except Exception as e:
+        logger.error(f"Overpass API error: {e}")
+        emit(EventType.HUNTER, "overpass_query", EventStatus.ERROR, detail=str(e)[:200])
+        return []
+
+
+def reverse_geocode(lat: float, lon: float) -> dict:
+    """Reverse geocode coordinates to get address details via Nominatim."""
+    try:
+        with httpx.Client(timeout=15) as client:
+            resp = client.get(NOMINATIM_URL, params={
+                "format": "json",
+                "lat": lat,
+                "lon": lon,
+                "zoom": 18,
+                "addressdetails": 1,
+            }, headers={"User-Agent": "insure-lead-gen/1.0"})
+            resp.raise_for_status()
+            return resp.json()
+    except Exception as e:
+        logger.warning(f"Geocode failed for {lat},{lon}: {e}")
+        return {}
+
+
+def parse_osm_element(element: dict) -> dict | None:
+    """Parse an OSM element into a property candidate."""
+    tags = element.get("tags", {})
+    center = element.get("center", {})
+
+    lat = center.get("lat") or element.get("lat")
+    lon = center.get("lon") or element.get("lon")
+    if not lat or not lon:
+        return None
+
+    name = tags.get("name", "")
+    levels = tags.get("building:levels", "")
+    addr_street = tags.get("addr:street", "")
+    addr_number = tags.get("addr:housenumber", "")
+    addr_city = tags.get("addr:city", "")
+    addr_state = tags.get("addr:state", "FL")
+    addr_zip = tags.get("addr:postcode", "")
+
+    # Build address from components
+    address_parts = []
+    if addr_number and addr_street:
+        address_parts.append(f"{addr_number} {addr_street}")
+    elif addr_street:
+        address_parts.append(addr_street)
+    if addr_city:
+        address_parts.append(addr_city)
+    address_parts.append(addr_state)
+    if addr_zip:
+        address_parts.append(addr_zip)
+
+    address = ", ".join(address_parts) if address_parts else ""
+
+    # If no name, generate from address or coordinates
+    if not name:
+        if addr_street:
+            name = f"{addr_number} {addr_street}".strip() if addr_number else addr_street
+        else:
+            name = f"Building at {lat:.4f}, {lon:.4f}"
+
+    return {
+        "name": name,
+        "address": address,
+        "latitude": float(lat),
+        "longitude": float(lon),
+        "characteristics": {
+            "stories": int(levels) if levels and levels.isdigit() else None,
+            "construction": tags.get("building:material"),
+            "building_type": tags.get("building"),
+            "osm_id": element.get("id"),
+        },
+    }
+
+
+def enrich_with_geocode(prop: dict) -> dict:
+    """Enrich a property with reverse geocode data if address is incomplete."""
+    if prop.get("address") and len(prop["address"]) > 10:
+        return prop  # Already has a decent address
+
+    geo = reverse_geocode(prop["latitude"], prop["longitude"])
+    if not geo:
+        return prop
+
+    address_data = geo.get("address", {})
+    display = geo.get("display_name", "")
+
+    # Build address from geocode
+    road = address_data.get("road", "")
+    house = address_data.get("house_number", "")
+    city = address_data.get("city") or address_data.get("town") or address_data.get("village", "")
+    state = address_data.get("state", "Florida")
+    postcode = address_data.get("postcode", "")
+    county = address_data.get("county", "").replace(" County", "")
+
+    if road:
+        addr = f"{house} {road}".strip() if house else road
+        if city:
+            addr += f", {city}"
+        addr += f", FL {postcode}".strip()
+        prop["address"] = addr
+
+    if not prop.get("address") and display:
+        prop["address"] = display.split(",")[0]
+
+    prop["county"] = county
+    return prop
 
 
 def process_region(region: RegionOfInterest, db: Session) -> int:
-    """Process a single region: determine county and scrape for properties."""
+    """Process a single region: query Overpass and save discovered properties."""
     bbox = region.bounding_box
     center_lat, center_lng = get_bounding_box_center(bbox)
 
-    # Determine the county via reverse geocoding
+    # Determine county
     county = get_county_from_coords(center_lat, center_lng)
     if county:
         region.target_county = county
         db.commit()
 
-    logger.info(f"Processing region '{region.name}' - County: {county}")
     emit(EventType.HUNTER, "process_region", EventStatus.PENDING,
          detail=f"Region '{region.name}' county={county}", region_id=region.id)
+    logger.info(f"Processing region '{region.name}' - County: {county}")
 
-    found_count = 0
+    # Query OSM Overpass for buildings
+    min_levels = (region.parameters or {}).get("stories", MIN_LEVELS)
+    query = build_overpass_query(bbox, min_levels)
+    elements = query_overpass(query)
 
-    try:
-        found_count = crawl_for_properties(region, county, db)
-    except Exception as e:
-        logger.error(f"Crawl error for region '{region.name}': {e}")
-        emit(EventType.HUNTER, "crawl", EventStatus.ERROR,
-             detail=f"Region '{region.name}': {str(e)[:200]}", region_id=region.id)
-        return 0
+    if not elements:
+        logger.info(f"No buildings found in region '{region.name}'")
+        emit(EventType.HUNTER, "overpass_query", EventStatus.SUCCESS,
+             detail=f"0 buildings in '{region.name}'", region_id=region.id)
 
-    # Only mark region as completed on success
+    found = 0
+    for element in elements:
+        prop = parse_osm_element(element)
+        if not prop:
+            continue
+
+        # Verify within bounds (Overpass bbox is approximate)
+        if not is_within_bounds(prop["latitude"], prop["longitude"], bbox):
+            continue
+
+        # Enrich with geocode if address is sparse
+        prop = enrich_with_geocode(prop)
+
+        # Set county from geocode or region
+        if not prop.get("county"):
+            prop["county"] = county
+
+        # Rate limit Nominatim (1 req/sec policy)
+        time.sleep(1.1)
+
+        found += save_property(prop, region, db)
+
+    # Mark region as completed
     region.status = RegionStatus.COMPLETED
     db.commit()
 
     emit(EventType.HUNTER, "process_region", EventStatus.SUCCESS,
-         detail=f"Region '{region.name}' done, {found_count} properties found", region_id=region.id)
-    return found_count
-
-
-def crawl_for_properties(region: RegionOfInterest, county: str | None, db: Session) -> int:
-    """
-    Use Crawl4AI to scrape public property/condo directories.
-    Filters results to fall within the region's bounding box.
-    """
-    try:
-        from crawl4ai import WebCrawler
-
-        crawler = WebCrawler()
-        crawler.warmup()
-    except ImportError:
-        logger.warning("Crawl4AI not available, using fallback scraper")
-        return crawl_fallback(region, county, db)
-    except Exception as e:
-        logger.warning(f"Crawl4AI init error: {e}, using fallback")
-        return crawl_fallback(region, county, db)
-
-    bbox = region.bounding_box
-    params = region.parameters or {}
-    min_stories = params.get("stories", 3)
-
-    # Target Florida condo/HOA public registries
-    search_county = county or "Florida"
-    target_urls = [
-        f"https://www.myfloridalicense.com/datamart/search-condos?county={search_county}",
-    ]
-
-    found = 0
-    for url in target_urls:
-        try:
-            result = crawler.run(url=url, proxy=PROXY_URL if PROXY_URL else None)
-            if result and result.success:
-                properties = parse_property_results(result.extracted_content or result.html, bbox)
-                for prop in properties:
-                    found += save_property(prop, region, db)
-        except Exception as e:
-            logger.error(f"Error crawling {url}: {e}")
-
+         detail=f"Region '{region.name}' done, {found}/{len(elements)} properties saved",
+         region_id=region.id)
+    logger.info(f"Region '{region.name}' completed. Found {found} new properties from {len(elements)} OSM elements.")
     return found
-
-
-def crawl_fallback(region: RegionOfInterest, county: str | None, db: Session) -> int:
-    """Fallback when Crawl4AI is not available - does nothing in dev."""
-    logger.info("Fallback mode - no properties scraped. Use seed script for testing.")
-    return 0
-
-
-def parse_property_results(content: str, bbox: dict) -> list[dict]:
-    """Parse crawled content and extract properties within bounding box."""
-    properties = []
-
-    if not content:
-        return properties
-
-    # Try to parse as JSON first (structured extraction)
-    try:
-        data = json.loads(content) if isinstance(content, str) else content
-        if isinstance(data, list):
-            for item in data:
-                lat = item.get("latitude") or item.get("lat")
-                lng = item.get("longitude") or item.get("lng") or item.get("lon")
-                if lat and lng and is_within_bounds(float(lat), float(lng), bbox):
-                    properties.append({
-                        "name": item.get("name", "Unknown Property"),
-                        "address": item.get("address", ""),
-                        "latitude": float(lat),
-                        "longitude": float(lng),
-                    })
-    except (json.JSONDecodeError, TypeError) as e:
-        logger.warning(f"Failed to parse property results: {e}, content preview: {str(content)[:200]}")
-
-    return properties
 
 
 def save_property(prop: dict, region: RegionOfInterest, db: Session) -> int:
     """Save a property to the database if not already exists."""
+    # Dedupe by name+address or by OSM ID
+    osm_id = (prop.get("characteristics") or {}).get("osm_id")
+    if osm_id:
+        existing = db.query(Entity).filter(
+            Entity.characteristics.op("->>")(  "osm_id") == str(osm_id)
+        ).first()
+        if existing:
+            return 0
+
     existing = db.query(Entity).filter(
         Entity.name == prop["name"],
         Entity.address == prop.get("address", ""),
     ).first()
-
     if existing:
         return 0
 
@@ -153,19 +270,20 @@ def save_property(prop: dict, region: RegionOfInterest, db: Session) -> int:
         entity = Entity(
             name=prop["name"],
             address=prop.get("address", ""),
-            county=region.target_county,
+            county=prop.get("county") or region.target_county,
             latitude=prop.get("latitude"),
             longitude=prop.get("longitude"),
-            characteristics={},
+            characteristics=prop.get("characteristics", {}),
+            pipeline_stage="NEW",
         )
         db.add(entity)
         db.commit()
         db.refresh(entity)
 
-        # Write HUNT_FOUND ledger event
         ledger = LeadLedger(
             entity_id=entity.id,
-            action_type=ActionType.HUNT_FOUND,
+            action_type=ActionType.HUNT_FOUND.value,
+            detail=f"Discovered via OSM Overpass in region '{region.name}'",
         )
         db.add(ledger)
         db.commit()
@@ -182,24 +300,17 @@ def save_property(prop: dict, region: RegionOfInterest, db: Session) -> int:
 
 
 def run_hunter_loop():
-    """Main polling loop - runs as a background task."""
+    """Main polling loop — runs as a background task."""
     from services.registry import register, heartbeat
 
-    logger.info("Starting hunter agent loop...")
-
-    # Check capabilities
-    crawl4ai_ok = False
-    try:
-        from crawl4ai import WebCrawler
-        crawl4ai_ok = True
-    except ImportError:
-        pass
+    logger.info("Starting hunter agent loop (Phase II - OSM Overpass)...")
 
     register("hunter", capabilities={
-        "crawl4ai": crawl4ai_ok,
+        "data_source": "OpenStreetMap Overpass API",
+        "target_counties": list(TARGET_COUNTIES),
+        "min_building_levels": MIN_LEVELS,
         "poll_interval": POLL_INTERVAL,
-        "proxy": bool(PROXY_URL),
-    }, detail=f"Polling every {POLL_INTERVAL}s" + (" (no Crawl4AI)" if not crawl4ai_ok else ""))
+    }, detail=f"Polling every {POLL_INTERVAL}s — OSM Overpass")
 
     while True:
         db = SessionLocal()
@@ -216,7 +327,12 @@ def run_hunter_loop():
                 heartbeat("hunter", detail="Idle, no pending regions")
 
             for region in pending_regions:
-                process_region(region, db)
+                try:
+                    process_region(region, db)
+                except Exception as e:
+                    logger.error(f"Region '{region.name}' failed: {e}")
+                    emit(EventType.HUNTER, "process_region", EventStatus.ERROR,
+                         detail=f"'{region.name}': {str(e)[:200]}")
 
         except Exception as e:
             logger.error(f"Hunter loop error: {e}")
