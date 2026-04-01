@@ -3,8 +3,6 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-
 interface EventItem {
   event_type: string;
   action: string;
@@ -56,7 +54,7 @@ export default function EventStreamPage() {
 
   // Load history on mount
   useEffect(() => {
-    fetch(`${API_URL}/api/events?limit=200`, { credentials: "include" })
+    fetch(`/api/proxy/events?limit=200`, { credentials: "include" })
       .then((res) => res.ok ? res.json() : [])
       .then((data: EventItem[]) => setEvents(data))
       .catch(() => {});
@@ -64,7 +62,7 @@ export default function EventStreamPage() {
 
   // SSE stream
   useEffect(() => {
-    const es = new EventSource(`${API_URL}/api/events/stream`);
+    const es = new EventSource(`/api/proxy/events/stream`);
 
     es.onopen = () => setConnected(true);
 

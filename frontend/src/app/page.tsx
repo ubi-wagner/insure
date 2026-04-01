@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import MapView from "@/components/MapView";
 import LeadPipeline from "@/components/LeadPipeline";
+import StatusBar from "@/components/StatusBar";
 
 export default function Dashboard() {
   const [refreshKey, setRefreshKey] = useState(0);
@@ -39,6 +40,8 @@ export default function Dashboard() {
           </button>
         </div>
       </header>
+
+      <StatusBar />
 
       <main className="max-w-7xl mx-auto px-6 py-6 space-y-8">
         {/* Map Section */}

@@ -2,8 +2,6 @@
 
 import { useEffect, useState } from "react";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-
 interface Lead {
   id: number;
   name: string;
@@ -34,8 +32,8 @@ export default function LeadPipeline({ refreshKey }: { refreshKey: number }) {
   async function fetchLeads() {
     setFetchError(null);
     try {
-      const res = await fetch(`${API_URL}/api/leads?sort_by=${sortBy}`, {
-        credentials: "include",
+      const res = await fetch(`/api/proxy/leads?sort_by=${sortBy}`, {
+
       });
       if (res.ok) {
         const data = await res.json();
@@ -52,10 +50,10 @@ export default function LeadPipeline({ refreshKey }: { refreshKey: number }) {
   async function handleVote(entityId: number, action: "USER_THUMB_UP" | "USER_THUMB_DOWN") {
     setVotingId(entityId);
     try {
-      const res = await fetch(`${API_URL}/api/leads/${entityId}/vote`, {
+      const res = await fetch(`/api/proxy/leads/${entityId}/vote`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        credentials: "include",
+
         body: JSON.stringify({ action_type: action }),
       });
       if (!res.ok) {

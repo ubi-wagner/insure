@@ -100,3 +100,15 @@ class Contact(Base):
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
 
     entity = relationship("Entity", back_populates="contacts")
+
+
+class ServiceRegistry(Base):
+    __tablename__ = "service_registry"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False, unique=True)
+    status = Column(String, nullable=False, default="starting")  # starting, healthy, degraded, down
+    last_heartbeat = Column(DateTime, server_default=func.now(), nullable=False)
+    capabilities = Column(JSONB, nullable=True)  # {"crawl4ai": true, "anthropic_key": true, ...}
+    version = Column(String, nullable=True)
+    detail = Column(String, nullable=True)  # Human-readable status message
