@@ -1,6 +1,9 @@
+import logging
 import os
 import threading
 from contextlib import asynccontextmanager
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -9,12 +12,18 @@ from routes.regions import router as regions_router
 from routes.leads import router as leads_router
 from routes.admin import router as admin_router
 
+logger = logging.getLogger(__name__)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    from agents.hunter import run_hunter_loop
-    thread = threading.Thread(target=run_hunter_loop, daemon=True)
-    thread.start()
+    try:
+        from agents.hunter import run_hunter_loop
+        thread = threading.Thread(target=run_hunter_loop, daemon=True)
+        thread.start()
+        logger.info("Hunter agent started")
+    except Exception as e:
+        logger.error(f"Failed to start hunter agent: {e}")
     yield
 
 
