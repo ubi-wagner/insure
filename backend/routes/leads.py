@@ -99,22 +99,22 @@ def list_leads(
     results = []
 
     for entity in entities:
-        latest_vote = (
-            db.query(LeadLedger)
-            .filter(
-                LeadLedger.entity_id == entity.id,
-                LeadLedger.action_type.in_([ActionType.USER_THUMB_UP, ActionType.USER_THUMB_DOWN]),
+        # Use pipeline_stage from DB; fall back to vote-based for legacy
+        entity_status = entity.pipeline_stage or "NEW"
+        if entity_status == "NEW":
+            latest_vote = (
+                db.query(LeadLedger)
+                .filter(
+                    LeadLedger.entity_id == entity.id,
+                    LeadLedger.action_type.in_([ActionType.USER_THUMB_UP, ActionType.USER_THUMB_DOWN]),
+                )
+                .order_by(LeadLedger.created_at.desc())
+                .first()
             )
-            .order_by(LeadLedger.created_at.desc())
-            .first()
-        )
-
-        if latest_vote and latest_vote.action_type == ActionType.USER_THUMB_UP:
-            entity_status = "CANDIDATE"
-        elif latest_vote and latest_vote.action_type == ActionType.USER_THUMB_DOWN:
-            entity_status = "REJECTED"
-        else:
-            entity_status = "NEW"
+            if latest_vote and latest_vote.action_type == ActionType.USER_THUMB_UP:
+                entity_status = "CANDIDATE"
+            elif latest_vote and latest_vote.action_type == ActionType.USER_THUMB_DOWN:
+                entity_status = "REJECTED"
 
         # Status filter
         if status_filter and entity_status != status_filter:
@@ -245,6 +245,13 @@ def vote_lead(entity_id: int, vote: VoteRequest, db: Session = Depends(get_db)):
 
     ledger_event = LeadLedger(entity_id=entity_id, action_type=action)
     db.add(ledger_event)
+
+    # Update pipeline stage
+    if action == ActionType.USER_THUMB_UP and entity.pipeline_stage == "NEW":
+        entity.pipeline_stage = "CANDIDATE"
+    elif action == ActionType.USER_THUMB_DOWN:
+        entity.pipeline_stage = "ARCHIVED"
+
     db.commit()
 
     emit(EventType.DB_OPERATION, "vote_lead", EventStatus.SUCCESS,

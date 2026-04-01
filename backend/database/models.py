@@ -25,6 +25,16 @@ class RegionStatus(str, enum.Enum):
     COMPLETED = "COMPLETED"
 
 
+class PipelineStage(str, enum.Enum):
+    NEW = "NEW"
+    CANDIDATE = "CANDIDATE"
+    TARGET = "TARGET"
+    OPPORTUNITY = "OPPORTUNITY"
+    CUSTOMER = "CUSTOMER"
+    CHURNED = "CHURNED"
+    ARCHIVED = "ARCHIVED"
+
+
 class ActionType(str, enum.Enum):
     HUNT_FOUND = "HUNT_FOUND"
     USER_THUMB_UP = "USER_THUMB_UP"
@@ -59,6 +69,7 @@ class Entity(Base):
     latitude = Column(Float, nullable=True)
     longitude = Column(Float, nullable=True)
     characteristics = Column(JSONB, nullable=True)
+    pipeline_stage = Column(String, default="NEW", nullable=False)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
 
     ledger_events = relationship("LeadLedger", back_populates="entity")
@@ -100,6 +111,23 @@ class Contact(Base):
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
 
     entity = relationship("Entity", back_populates="contacts")
+
+
+class BrokerProfile(Base):
+    __tablename__ = "broker_profiles"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    title = Column(String, nullable=True)
+    company = Column(String, nullable=True)
+    email = Column(String, nullable=True)
+    phone_office = Column(String, nullable=True)
+    phone_cell = Column(String, nullable=True)
+    address = Column(String, nullable=True)
+    signature_block = Column(Text, nullable=True)
+    preferences = Column(JSONB, nullable=True)  # email tone, follow-up intervals, etc.
+    is_active = Column(Integer, default=1, nullable=False)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
 
 
 class ServiceRegistry(Base):

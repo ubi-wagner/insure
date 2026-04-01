@@ -9,11 +9,15 @@ const FALLBACK_CENTER: [number, number] = [27.8428, -82.6993];
 const FALLBACK_ZOOM = 12;
 const STORAGE_KEY = "insure_map_view";
 
-// Pipeline stage → icon shape + color scheme
-const STAGE_STYLES: Record<string, { shape: string; bg: string; border: string }> = {
-  NEW:       { shape: "diamond",  bg: "#6b7280", border: "#374151" }, // gray — general candidate
-  CANDIDATE: { shape: "circle",   bg: "#22c55e", border: "#166534" }, // green — target
-  REJECTED:  { shape: "square",   bg: "#991b1b", border: "#450a0a" }, // dark red — passed
+// Pipeline stage → border color
+const STAGE_STYLES: Record<string, { border: string }> = {
+  NEW:         { border: "#6b7280" }, // gray
+  CANDIDATE:   { border: "#a855f7" }, // purple
+  TARGET:      { border: "#f59e0b" }, // amber
+  OPPORTUNITY: { border: "#3b82f6" }, // blue
+  CUSTOMER:    { border: "#22c55e" }, // green
+  CHURNED:     { border: "#9ca3af" }, // light gray
+  ARCHIVED:    { border: "#450a0a" }, // dark red
 };
 
 // Heat score → fill color override for ranking
@@ -335,9 +339,11 @@ export default function MapViewInner({
         <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-blue-500" /> Cool</div>
         <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-gray-500" /> New</div>
         <p className="text-gray-500 font-semibold mt-1.5 mb-1">Border = Stage</p>
-        <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full border-2 border-green-700" /> Target</div>
-        <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full border-2 border-gray-600" /> Candidate</div>
-        <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full border-2 border-red-900" /> Rejected</div>
+        <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full border-2 border-green-500" /> Customer</div>
+        <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full border-2 border-blue-500" /> Opportunity</div>
+        <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full border-2 border-amber-500" /> Target</div>
+        <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full border-2 border-purple-500" /> Candidate</div>
+        <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full border-2 border-gray-500" /> New</div>
       </div>
 
       {/* Map */}

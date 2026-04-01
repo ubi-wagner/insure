@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from database import SessionLocal
 from database.models import (
     ActionType,
+    BrokerProfile,
     Contact,
     DocType,
     Entity,
@@ -455,9 +456,195 @@ The association is actively seeking alternative market quotes for 2025.
 ]
 
 
+# Jason's actual customers — already converted, full pipeline
+CUSTOMER_PROPERTIES = [
+    {
+        "name": "Clearwater Point Condominiums",
+        "address": "500 N Osceola Ave, Clearwater, FL 33755",
+        "county": "Pinellas",
+        "latitude": 27.9720,
+        "longitude": -82.7990,
+        "pipeline_stage": "CUSTOMER",
+        "characteristics": {
+            "stories": 11,
+            "construction": "Fire Resistive",
+            "year_built": 1975,
+            "tiv": "$24,000,000",
+            "carrier": "Citizens Property Insurance Corporation",
+            "premium": "$720,000",
+            "expiration": "March 1, 2026",
+            "deductible": "3% Named Storm",
+            "decision_maker": "Board President",
+            "key_risks": ["Aging structure", "Coastal wind exposure", "SIRS compliance"],
+            "notes": "Long-term customer. Renewed 2024. Good loss history.",
+        },
+        "contacts": [
+            {"name": "Property Manager", "title": "Community Association Manager"},
+        ],
+    },
+    {
+        "name": "Gulfview Condominiums",
+        "address": "530 Gulfview Blvd, Clearwater, FL 33767",
+        "county": "Pinellas",
+        "latitude": 27.9700,
+        "longitude": -82.8250,
+        "pipeline_stage": "CUSTOMER",
+        "characteristics": {
+            "stories": 8,
+            "construction": "Fire Resistive",
+            "tiv": "$26,000,000",
+            "carrier": "Heritage Insurance Holdings",
+            "premium": "$780,000",
+            "expiration": "June 15, 2026",
+            "deductible": "5% Named Storm",
+            "decision_maker": "Board President",
+            "key_risks": ["Direct beachfront exposure", "Hurricane surge zone"],
+            "notes": "Clearwater Beach location. Competitive market — watch for poaching.",
+        },
+        "contacts": [
+            {"name": "Property Manager", "title": "Community Association Manager"},
+        ],
+    },
+    {
+        "name": "Boca Bayou Condominiums",
+        "address": "5500 NW 2nd Ave, Boca Raton, FL 33487",
+        "county": "Palm Beach",
+        "latitude": 26.3780,
+        "longitude": -80.0870,
+        "pipeline_stage": "CUSTOMER",
+        "characteristics": {
+            "stories": 7,
+            "construction": "Fire Resistive",
+            "year_built": 1970,
+            "tiv": "$19,000,000",
+            "carrier": "Slide Insurance Company",
+            "premium": "$475,000",
+            "expiration": "September 1, 2026",
+            "deductible": "3% Named Storm",
+            "decision_maker": "Board President",
+            "key_risks": ["Aging 1970s structure", "SB 4-D milestone inspection due"],
+            "notes": "Boca Raton expansion account. Stable board, good reserves.",
+        },
+        "contacts": [
+            {"name": "Property Manager", "title": "Community Association Manager"},
+        ],
+    },
+    {
+        "name": "1451 Brickell Condominiums",
+        "address": "1451 Brickell Ave, Miami, FL 33131",
+        "county": "Miami-Dade",
+        "latitude": 25.7550,
+        "longitude": -80.1900,
+        "pipeline_stage": "CUSTOMER",
+        "characteristics": {
+            "stories": 56,
+            "construction": "Fire Resistive",
+            "year_built": 2017,
+            "tiv": "$105,000,000",
+            "carrier": "Lloyds of London",
+            "premium": "$3,150,000",
+            "expiration": "December 1, 2025",
+            "deductible": "5% Named Storm / $100,000 AOP",
+            "decision_maker": "Board President",
+            "key_risks": ["High-rise wind exposure", "Brickell flood zone", "Large TIV concentration"],
+            "notes": "Flagship account. Newer construction, impact glass throughout. Multi-layered program.",
+        },
+        "contacts": [
+            {"name": "Property Manager", "title": "Community Association Manager"},
+        ],
+    },
+    {
+        "name": "Saltaire St. Petersburg",
+        "address": "301 1st St S, Saint Petersburg, FL 33701",
+        "county": "Pinellas",
+        "latitude": 27.7700,
+        "longitude": -82.6350,
+        "pipeline_stage": "CUSTOMER",
+        "characteristics": {
+            "stories": 34,
+            "construction": "Fire Resistive",
+            "year_built": 2023,
+            "tiv": "$180,000,000",
+            "opening_protection": "Impact rated",
+            "carrier": "Zurich Insurance Group",
+            "premium": "$3,600,000",
+            "expiration": "April 1, 2026",
+            "deductible": "3% Named Storm / $50,000 AOP",
+            "decision_maker": "Board President",
+            "key_risks": ["New construction premium adjustment", "Waterfront exposure", "Large TIV"],
+            "notes": "Newest and largest account. Brand new building, excellent construction credits. Premium account.",
+        },
+        "contacts": [
+            {"name": "Property Manager", "title": "Community Association Manager"},
+        ],
+    },
+    {
+        "name": "Isla Del Sol Condominiums",
+        "address": "400 64th Ave, St. Petersburg, FL 33706",
+        "county": "Pinellas",
+        "latitude": 27.7280,
+        "longitude": -82.7340,
+        "pipeline_stage": "CUSTOMER",
+        "characteristics": {
+            "stories": 13,
+            "construction": "Fire Resistive",
+            "year_built": 1973,
+            "tiv": "$26,000,000",
+            "carrier": "Citizens Property Insurance Corporation",
+            "premium": "$910,000",
+            "expiration": "August 1, 2026",
+            "deductible": "5% Named Storm",
+            "decision_maker": "Board President",
+            "key_risks": ["1973 construction", "Wind mitigation credits limited", "Isla Del Sol flood zone"],
+            "notes": "Solid renewal account. Near Sirata Beach. Good referral source for nearby properties.",
+        },
+        "contacts": [
+            {"name": "Property Manager", "title": "Community Association Manager"},
+        ],
+    },
+]
+
+
+# Jason's broker profile
+BROKER_PROFILE = {
+    "name": "Jason L. Dillon",
+    "title": "Commercial Insurance Advisor",
+    "company": "The Hilb Group",
+    "email": "Jdillon@hilbgroup.com",
+    "phone_office": "(727) 450-7934",
+    "phone_cell": "(814) 659-5491",
+    "address": "28100 US Hwy. 19 N Suite 201, Clearwater, FL 33761",
+    "signature_block": """Jason L. Dillon
+Commercial Insurance Advisor
+The Hilb Group
+28100 US Hwy. 19 N Suite 201
+Clearwater, FL 33761
+(727) 450-7934 office | (814) 659-5491 cell
+Jdillon@hilbgroup.com""",
+    "preferences": {
+        "default_tone": "informal",
+        "follow_up_days": 14,
+        "max_auto_emails_per_day": 5,
+        "focus_counties": ["Pinellas", "Hillsborough", "Palm Beach", "Miami-Dade"],
+        "min_tiv_target": 15000000,
+    },
+}
+
+
 def seed():
     db = SessionLocal()
     try:
+        # --- Seed broker profile ---
+        existing_broker = db.query(BrokerProfile).filter(BrokerProfile.email == BROKER_PROFILE["email"]).first()
+        if existing_broker:
+            print(f"  Broker exists: {BROKER_PROFILE['name']}")
+        else:
+            broker = BrokerProfile(**BROKER_PROFILE)
+            db.add(broker)
+            db.commit()
+            print(f"  Created broker profile: {BROKER_PROFILE['name']}")
+
+        # --- Seed prospect leads (with full docs) ---
         for prop in SEED_PROPERTIES:
             existing = db.query(Entity).filter(Entity.name == prop["name"]).first()
             if existing:
@@ -505,6 +692,38 @@ def seed():
 
             db.commit()
             print(f"  Seeded 3 docs + {len(prop['contacts'])} contacts for {prop['name']}")
+
+        # --- Seed customer properties (already converted) ---
+        for cust in CUSTOMER_PROPERTIES:
+            existing = db.query(Entity).filter(Entity.name == cust["name"]).first()
+            if existing:
+                print(f"  Skipping (exists): {cust['name']}")
+                continue
+
+            entity = Entity(
+                name=cust["name"],
+                address=cust["address"],
+                county=cust["county"],
+                latitude=cust["latitude"],
+                longitude=cust["longitude"],
+                characteristics=cust["characteristics"],
+                pipeline_stage=cust["pipeline_stage"],
+            )
+            db.add(entity)
+            db.commit()
+            db.refresh(entity)
+            print(f"  Created customer: {cust['name']} (id={entity.id})")
+
+            for contact in cust.get("contacts", []):
+                c = Contact(entity_id=entity.id, name=contact["name"], title=contact["title"])
+                db.add(c)
+
+            # Customers get the full HUNT_FOUND + THUMB_UP ledger trail
+            for action in [ActionType.HUNT_FOUND, ActionType.USER_THUMB_UP]:
+                db.add(LeadLedger(entity_id=entity.id, action_type=action))
+
+            db.commit()
+            print(f"  Seeded customer: {cust['name']} ({cust['pipeline_stage']})")
 
         print("\nSeed complete!")
     finally:

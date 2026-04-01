@@ -140,15 +140,19 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
     setTimeout(fetchLeads, 50);
   }
 
+  const STAGE_BADGE: Record<string, string> = {
+    NEW: "bg-gray-700 text-gray-300",
+    CANDIDATE: "bg-purple-900 text-purple-200",
+    TARGET: "bg-amber-900 text-amber-200",
+    OPPORTUNITY: "bg-blue-900 text-blue-200",
+    CUSTOMER: "bg-green-800 text-green-200",
+    CHURNED: "bg-gray-800 text-gray-400",
+    ARCHIVED: "bg-red-900 text-red-300",
+  };
+
   function getStatusBadge(status: string) {
-    switch (status) {
-      case "CANDIDATE":
-        return <span className="bg-green-700 text-green-100 text-xs px-2 py-0.5 rounded-full">Candidate</span>;
-      case "REJECTED":
-        return <span className="bg-red-900 text-red-200 text-xs px-2 py-0.5 rounded-full">Rejected</span>;
-      default:
-        return <span className="bg-gray-700 text-gray-300 text-xs px-2 py-0.5 rounded-full">New</span>;
-    }
+    const cls = STAGE_BADGE[status] || STAGE_BADGE.NEW;
+    return <span className={`${cls} text-[10px] px-1.5 py-0.5 rounded-full`}>{status}</span>;
   }
 
   function getHeatBadge(score: string, ratio: number | null) {
@@ -243,10 +247,14 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
             <select value={filters.status_filter}
               onChange={(e) => setFilters({ ...filters, status_filter: e.target.value })}
               className="bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs text-white flex-1">
-              <option value="">All Status</option>
+              <option value="">All Stages</option>
               <option value="NEW">New</option>
               <option value="CANDIDATE">Candidate</option>
-              <option value="REJECTED">Rejected</option>
+              <option value="TARGET">Target</option>
+              <option value="OPPORTUNITY">Opportunity</option>
+              <option value="CUSTOMER">Customer</option>
+              <option value="CHURNED">Churned</option>
+              <option value="ARCHIVED">Archived</option>
             </select>
             <select value={filters.heat}
               onChange={(e) => setFilters({ ...filters, heat: e.target.value })}
