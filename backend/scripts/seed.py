@@ -6,6 +6,7 @@ Usage: DATABASE_URL=... python -m scripts.seed
 """
 
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -19,6 +20,7 @@ from database.models import (
     Entity,
     EntityAsset,
     LeadLedger,
+    Policy,
 )
 
 
@@ -718,12 +720,32 @@ def seed():
                 c = Contact(entity_id=entity.id, name=contact["name"], title=contact["title"])
                 db.add(c)
 
-            # Customers get the full HUNT_FOUND + THUMB_UP ledger trail
+            # Customers get the full ledger trail
             for action in [ActionType.HUNT_FOUND, ActionType.USER_THUMB_UP]:
                 db.add(LeadLedger(entity_id=entity.id, action_type=action))
 
+            # Create Policy record from characteristics
+            chars = cust["characteristics"]
+            premium_str = chars.get("premium", "")
+            tiv_str = chars.get("tiv", "")
+            premium_val = float(re.sub(r'[^\d.]', '', str(premium_str))) if premium_str else None
+            tiv_val = float(re.sub(r'[^\d.]', '', str(tiv_str))) if tiv_str else None
+
+            policy = Policy(
+                entity_id=entity.id,
+                coverage_type="WIND",
+                carrier=chars.get("carrier"),
+                premium=premium_val,
+                tiv=tiv_val,
+                deductible=chars.get("deductible"),
+                expiration=chars.get("expiration"),
+                is_active=1,
+                notes=chars.get("notes", ""),
+            )
+            db.add(policy)
+
             db.commit()
-            print(f"  Seeded customer: {cust['name']} ({cust['pipeline_stage']})")
+            print(f"  Seeded customer + policy: {cust['name']} ({cust['pipeline_stage']})")
 
         print("\nSeed complete!")
     finally:
