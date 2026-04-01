@@ -25,6 +25,7 @@ interface Filters {
   carrier: string;
   status_filter: string;
   heat: string;
+  construction: string;
   min_tiv: string;
   max_tiv: string;
   min_premium: string;
@@ -33,7 +34,7 @@ interface Filters {
 
 const EMPTY_FILTERS: Filters = {
   search: "", county: "", carrier: "", status_filter: "",
-  heat: "", min_tiv: "", max_tiv: "", min_premium: "", max_premium: "",
+  heat: "", construction: "", min_tiv: "", max_tiv: "", min_premium: "", max_premium: "",
 };
 
 type SortBy = "date" | "coast_distance" | "wind_ratio" | "premium" | "tiv";
@@ -77,6 +78,7 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
     if (filters.max_tiv) params.set("max_tiv", filters.max_tiv);
     if (filters.min_premium) params.set("min_premium", filters.min_premium);
     if (filters.max_premium) params.set("max_premium", filters.max_premium);
+    if (filters.construction) params.set("construction", filters.construction);
     return params.toString();
   }
 
@@ -243,10 +245,10 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
               </div>
             </div>
           </div>
-          <div className="flex gap-2">
+          <div className="grid grid-cols-3 gap-2">
             <select value={filters.status_filter}
               onChange={(e) => setFilters({ ...filters, status_filter: e.target.value })}
-              className="bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs text-white flex-1">
+              className="bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs text-white">
               <option value="">All Stages</option>
               <option value="NEW">New</option>
               <option value="CANDIDATE">Candidate</option>
@@ -258,11 +260,20 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
             </select>
             <select value={filters.heat}
               onChange={(e) => setFilters({ ...filters, heat: e.target.value })}
-              className="bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs text-white flex-1">
+              className="bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs text-white">
               <option value="">All Heat</option>
               <option value="hot">Hot</option>
               <option value="warm">Warm</option>
               <option value="cool">Cool</option>
+            </select>
+            <select value={filters.construction}
+              onChange={(e) => setFilters({ ...filters, construction: e.target.value })}
+              className="bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs text-white">
+              <option value="">All Construction</option>
+              <option value="fire_resistive">Fire Resistive</option>
+              <option value="non_combustible">Non-Combustible+</option>
+              <option value="masonry">Masonry+</option>
+              <option value="frame">Frame</option>
             </select>
           </div>
           <div className="flex gap-2">
@@ -351,6 +362,29 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
                         {lead.wind_ratio.toFixed(2)}%
                       </span>
                     </div>
+                  )}
+                </div>
+              )}
+
+              {/* Construction & building info */}
+              {(lead.characteristics?.construction_class || lead.characteristics?.stories) && (
+                <div className="flex gap-2 text-xs mb-2 flex-wrap">
+                  {lead.characteristics?.construction_class && (
+                    <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                      String(lead.characteristics.construction_class).includes("Fire Resistive") ? "bg-emerald-900 text-emerald-300" :
+                      String(lead.characteristics.construction_class).includes("Non-Combustible") ? "bg-sky-900 text-sky-300" :
+                      String(lead.characteristics.construction_class).includes("Masonry") ? "bg-amber-900 text-amber-300" :
+                      String(lead.characteristics.construction_class).includes("Frame") ? "bg-red-900 text-red-300" :
+                      "bg-gray-800 text-gray-400"
+                    }`}>
+                      {String(lead.characteristics.construction_class)}
+                    </span>
+                  )}
+                  {lead.characteristics?.stories && (
+                    <span className="text-gray-500">{String(lead.characteristics.stories)} stories</span>
+                  )}
+                  {lead.characteristics?.units_estimate && (
+                    <span className="text-gray-500">~{String(lead.characteristics.units_estimate)} units</span>
                   )}
                 </div>
               )}

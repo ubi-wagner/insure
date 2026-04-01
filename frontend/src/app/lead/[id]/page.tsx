@@ -85,6 +85,10 @@ export default function LeadDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<TabName>("overview");
   const [stageChanging, setStageChanging] = useState(false);
+  const [sendingStyle, setSendingStyle] = useState<string | null>(null);
+  const [showAddContact, setShowAddContact] = useState(false);
+  const [contactForm, setContactForm] = useState({ name: "", title: "", email: "", phone: "", is_primary: 0 });
+  const [savingContact, setSavingContact] = useState(false);
 
   useEffect(() => {
     fetch(`/api/proxy/leads/${id}`)
@@ -92,6 +96,42 @@ export default function LeadDetailPage() {
       .then(setLead)
       .catch((e) => setError(String(e)));
   }, [id]);
+
+  async function handleSendOutreach(style: string, subject: string, body: string) {
+    setSendingStyle(style);
+    try {
+      const res = await fetch(`/api/proxy/leads/${id}/engagements`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ style, subject, body, channel: "EMAIL" }),
+      });
+      if (res.ok) {
+        // Refresh lead data to show new engagement
+        const updated = await fetch(`/api/proxy/leads/${id}`);
+        if (updated.ok) setLead(await updated.json());
+      }
+    } catch {}
+    setSendingStyle(null);
+  }
+
+  async function handleAddContact() {
+    if (!contactForm.name.trim()) return;
+    setSavingContact(true);
+    try {
+      const res = await fetch(`/api/proxy/leads/${id}/contacts`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(contactForm),
+      });
+      if (res.ok) {
+        const updated = await fetch(`/api/proxy/leads/${id}`);
+        if (updated.ok) setLead(await updated.json());
+        setContactForm({ name: "", title: "", email: "", phone: "", is_primary: 0 });
+        setShowAddContact(false);
+      }
+    } catch {}
+    setSavingContact(false);
+  }
 
   async function handleStageChange(newStage: string) {
     setStageChanging(true);
@@ -216,11 +256,81 @@ export default function LeadDetailPage() {
 
         {activeTab === "overview" && (
           <div className="space-y-6">
+            {/* Building Profile */}
+            {(chars.construction_class || chars.stories || chars.building_type) && (
+              <div>
+                <h2 className="text-sm font-semibold text-gray-300 mb-3">Building Profile</h2>
+                <div className="bg-gray-900 border border-gray-800 rounded-lg p-4">
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                    {chars.construction_class && (
+                      <div>
+                        <p className="text-gray-500 text-xs">Construction Class</p>
+                        <p className={`text-sm font-medium mt-1 ${
+                          String(chars.construction_class).includes("Fire Resistive") ? "text-emerald-400" :
+                          String(chars.construction_class).includes("Non-Combustible") ? "text-sky-400" :
+                          String(chars.construction_class).includes("Masonry") ? "text-amber-400" :
+                          String(chars.construction_class).includes("Frame") ? "text-red-400" : "text-white"
+                        }`}>{String(chars.construction_class)}</p>
+                        {chars.iso_class ? <p className="text-gray-600 text-xs mt-0.5">ISO Class {String(chars.iso_class)}</p> : null}
+                      </div>
+                    )}
+                    {chars.stories && (
+                      <div>
+                        <p className="text-gray-500 text-xs">Stories</p>
+                        <p className="text-white text-sm font-medium mt-1">{String(chars.stories)}</p>
+                      </div>
+                    )}
+                    {chars.building_type && (
+                      <div>
+                        <p className="text-gray-500 text-xs">Building Type</p>
+                        <p className="text-white text-sm font-medium mt-1 capitalize">{String(chars.building_type)}</p>
+                      </div>
+                    )}
+                    {chars.building_material && (
+                      <div>
+                        <p className="text-gray-500 text-xs">Material</p>
+                        <p className="text-white text-sm font-medium mt-1 capitalize">{String(chars.building_material)}</p>
+                      </div>
+                    )}
+                    {chars.year_built && (
+                      <div>
+                        <p className="text-gray-500 text-xs">Year Built</p>
+                        <p className="text-white text-sm font-medium mt-1">{String(chars.year_built)}</p>
+                      </div>
+                    )}
+                    {chars.units_estimate && (
+                      <div>
+                        <p className="text-gray-500 text-xs">Est. Units</p>
+                        <p className="text-white text-sm font-medium mt-1">~{String(chars.units_estimate)}</p>
+                      </div>
+                    )}
+                    {chars.footprint_sqft && (
+                      <div>
+                        <p className="text-gray-500 text-xs">Footprint</p>
+                        <p className="text-white text-sm font-medium mt-1">{Number(chars.footprint_sqft).toLocaleString()} sqft</p>
+                      </div>
+                    )}
+                    {chars.tiv_estimate && (
+                      <div>
+                        <p className="text-gray-500 text-xs">Est. TIV</p>
+                        <p className="text-white text-sm font-semibold mt-1">${Number(chars.tiv_estimate).toLocaleString()}</p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Insurance Intelligence */}
             <div>
               <h2 className="text-sm font-semibold text-gray-300 mb-3">Insurance Intelligence</h2>
               {Object.keys(chars).length > 0 ? (
                 <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-                  {Object.entries(chars).filter(([k]) => k !== "emails").map(([key, val]) => (
+                  {Object.entries(chars)
+                    .filter(([k]) => !["emails", "osm_tags", "osm_id", "construction_class", "iso_class",
+                      "building_material", "building_type", "year_built", "stories", "units_estimate",
+                      "footprint_sqft", "tiv_estimate", "height_m"].includes(k))
+                    .map(([key, val]) => (
                     <div key={key} className="bg-gray-900 border border-gray-800 rounded-lg p-3">
                       <p className="text-gray-500 text-xs capitalize">{key.replace(/_/g, " ")}</p>
                       <p className="text-white text-sm mt-1">
@@ -233,6 +343,8 @@ export default function LeadDetailPage() {
                 <p className="text-gray-600 text-sm">No intelligence yet. Click Hunt to trigger analysis.</p>
               )}
             </div>
+
+            {/* Location */}
             <div>
               <h2 className="text-sm font-semibold text-gray-300 mb-3">Location</h2>
               <div className="bg-gray-900 border border-gray-800 rounded-lg p-4 text-sm">
@@ -308,21 +420,35 @@ export default function LeadDetailPage() {
             {!lead.emails || Object.keys(lead.emails).length === 0 ? (
               <p className="text-gray-600 text-sm">No emails generated yet. Mark as Candidate to trigger AI analysis.</p>
             ) : (
-              Object.entries(lead.emails).map(([style, email]) => (
+              Object.entries(lead.emails).map(([style, email]) => {
+                const emailObj = typeof email === "object" && email !== null ? email as {subject?: string; body?: string} : null;
+                return (
                 <div key={style} className="bg-gray-900 border border-gray-800 rounded-lg p-4">
-                  <span className="bg-purple-900 text-purple-300 text-xs px-2 py-0.5 rounded font-medium uppercase">{style}</span>
-                  {typeof email === "object" && email !== null ? (
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="bg-purple-900 text-purple-300 text-xs px-2 py-0.5 rounded font-medium uppercase">{style}</span>
+                    {emailObj && (
+                      <button
+                        onClick={() => handleSendOutreach(style, emailObj.subject || "", emailObj.body || "")}
+                        disabled={sendingStyle === style}
+                        className="bg-green-700 hover:bg-green-600 disabled:opacity-50 text-white text-xs px-3 py-1 rounded font-medium"
+                      >
+                        {sendingStyle === style ? "Queuing..." : "Send as Outreach"}
+                      </button>
+                    )}
+                  </div>
+                  {emailObj ? (
                     <>
-                      <p className="text-white text-sm font-medium mt-2 mb-2">Subject: {(email as {subject?: string}).subject || ""}</p>
+                      <p className="text-white text-sm font-medium mb-2">Subject: {emailObj.subject || ""}</p>
                       <div className="bg-gray-800 rounded p-3 text-sm text-gray-300 whitespace-pre-wrap">
-                        {(email as {body?: string}).body || ""}
+                        {emailObj.body || ""}
                       </div>
                     </>
                   ) : (
                     <pre className="text-sm text-gray-300 whitespace-pre-wrap mt-2">{String(email)}</pre>
                   )}
                 </div>
-              ))
+                );
+              })
             )}
           </div>
         )}
@@ -357,9 +483,47 @@ export default function LeadDetailPage() {
 
         {activeTab === "contacts" && (
           <div className="space-y-4">
-            <h2 className="text-sm font-semibold text-gray-300 mb-3">Contacts & Decision Makers</h2>
-            {lead.contacts.length === 0 ? (
-              <p className="text-gray-600 text-sm">No contacts found.</p>
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-sm font-semibold text-gray-300">Contacts & Decision Makers</h2>
+              <button
+                onClick={() => setShowAddContact(!showAddContact)}
+                className="bg-blue-600 hover:bg-blue-700 text-white text-xs px-3 py-1 rounded font-medium"
+              >
+                {showAddContact ? "Cancel" : "+ Add Contact"}
+              </button>
+            </div>
+            {showAddContact && (
+              <div className="bg-gray-900 border border-gray-800 rounded-lg p-4 space-y-3">
+                <div className="grid grid-cols-2 gap-3">
+                  <input type="text" placeholder="Name *" value={contactForm.name}
+                    onChange={(e) => setContactForm({ ...contactForm, name: e.target.value })}
+                    className="bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-white" />
+                  <input type="text" placeholder="Title (e.g. Property Manager)" value={contactForm.title}
+                    onChange={(e) => setContactForm({ ...contactForm, title: e.target.value })}
+                    className="bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-white" />
+                  <input type="email" placeholder="Email" value={contactForm.email}
+                    onChange={(e) => setContactForm({ ...contactForm, email: e.target.value })}
+                    className="bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-white" />
+                  <input type="tel" placeholder="Phone" value={contactForm.phone}
+                    onChange={(e) => setContactForm({ ...contactForm, phone: e.target.value })}
+                    className="bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-white" />
+                </div>
+                <div className="flex items-center justify-between">
+                  <label className="flex items-center gap-2 text-sm text-gray-400">
+                    <input type="checkbox" checked={contactForm.is_primary === 1}
+                      onChange={(e) => setContactForm({ ...contactForm, is_primary: e.target.checked ? 1 : 0 })}
+                      className="rounded bg-gray-800 border-gray-600" />
+                    Primary contact
+                  </label>
+                  <button onClick={handleAddContact} disabled={savingContact || !contactForm.name.trim()}
+                    className="bg-green-700 hover:bg-green-600 disabled:opacity-50 text-white text-xs px-4 py-1.5 rounded font-medium">
+                    {savingContact ? "Saving..." : "Save Contact"}
+                  </button>
+                </div>
+              </div>
+            )}
+            {lead.contacts.length === 0 && !showAddContact ? (
+              <p className="text-gray-600 text-sm">No contacts found. Add one to start outreach.</p>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 {lead.contacts.map((contact) => (
