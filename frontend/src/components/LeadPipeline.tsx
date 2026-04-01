@@ -47,15 +47,16 @@ const HEAT_COLORS: Record<string, string> = {
 
 interface PipelineProps {
   refreshKey: number;
-  onLeadsLoaded?: (leads: { id: number; name: string; latitude: number; longitude: number; heat_score: string; status: string }[]) => void;
+  onLeadsLoaded?: (leads: { id: number; name: string; latitude: number; longitude: number; heat_score: string; status: string; listIndex: number }[]) => void;
   onLeadHover?: (id: number | null) => void;
-  onFlyTo?: (lat: number, lng: number) => void;
+  selectedLeadId?: number | null;
+  onFlyTo?: (lat: number, lng: number, id: number) => void;
+  onOpenDetails?: (id: number) => void;
 }
 
-export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, onFlyTo }: PipelineProps) {
+export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, selectedLeadId, onFlyTo, onOpenDetails }: PipelineProps) {
   const [leads, setLeads] = useState<Lead[]>([]);
   const [sortBy, setSortBy] = useState<SortBy>("date");
-  const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [votingId, setVotingId] = useState<number | null>(null);
   const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
@@ -86,9 +87,10 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, o
       if (res.ok) {
         const data = await res.json();
         setLeads(data);
-        onLeadsLoaded?.(data.map((l: Lead) => ({
+        onLeadsLoaded?.(data.map((l: Lead, i: number) => ({
           id: l.id, name: l.name, latitude: l.latitude,
           longitude: l.longitude, heat_score: l.heat_score, status: l.status,
+          listIndex: i + 1,
         })));
       } else {
         setFetchError(`Failed to load leads (${res.status})`);
@@ -290,17 +292,27 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, o
 
       {/* Lead cards */}
       <div className="space-y-3">
-        {leads.map((lead) => (
+        {leads.map((lead, idx) => {
+          const num = idx + 1;
+          const isSelected = lead.id === selectedLeadId;
+          return (
           <div
             key={lead.id}
-            onClick={() => setSelectedLead(lead)}
+            id={`lead-card-${lead.id}`}
             onMouseEnter={() => onLeadHover?.(lead.id)}
             onMouseLeave={() => onLeadHover?.(null)}
-            className="bg-gray-900 rounded-lg border border-gray-800 overflow-hidden cursor-pointer hover:border-gray-600 transition-colors"
+            className={`bg-gray-900 rounded-lg border overflow-hidden transition-colors ${
+              isSelected ? "border-blue-500 ring-1 ring-blue-500/50" : "border-gray-800 hover:border-gray-600"
+            }`}
           >
             <div className="p-3">
               <div className="flex items-start justify-between mb-1.5">
-                <h3 className="font-semibold text-sm leading-tight flex-1 mr-2">{lead.name}</h3>
+                <div className="flex items-start gap-2 flex-1 mr-2">
+                  <span className="bg-gray-800 text-gray-400 text-[10px] font-bold w-5 h-5 rounded flex items-center justify-center shrink-0 mt-0.5">
+                    {num}
+                  </span>
+                  <h3 className="font-semibold text-sm leading-tight">{lead.name}</h3>
+                </div>
                 <div className="flex gap-1 shrink-0">
                   {getHeatBadge(lead.heat_score, lead.wind_ratio)}
                   {getStatusBadge(lead.status)}
@@ -359,13 +371,20 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, o
                 </button>
                 {lead.latitude && lead.longitude && (
                   <button
-                    onClick={(e) => { e.stopPropagation(); onFlyTo?.(lead.latitude, lead.longitude); }}
+                    onClick={(e) => { e.stopPropagation(); onFlyTo?.(lead.latitude, lead.longitude, lead.id); }}
                     className="bg-gray-800 hover:bg-gray-700 text-gray-400 text-xs py-1.5 px-2 rounded"
                     title="Show on map"
                   >
                     Map
                   </button>
                 )}
+                <button
+                  onClick={(e) => { e.stopPropagation(); onOpenDetails?.(lead.id); }}
+                  className="bg-blue-900 hover:bg-blue-800 text-blue-300 text-xs py-1.5 px-2 rounded"
+                  title="Open details page"
+                >
+                  Details
+                </button>
                 <button
                   onClick={(e) => { e.stopPropagation(); handleFindSimilar(lead); }}
                   className="bg-gray-800 hover:bg-gray-700 text-gray-400 text-xs py-1.5 px-2 rounded"
@@ -376,69 +395,10 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, o
               </div>
             </div>
           </div>
-        ))}
+          );
+        })}
       </div>
 
-      {/* Detail modal */}
-      {selectedLead && (
-        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4" onClick={() => setSelectedLead(null)}>
-          <div className="bg-gray-900 rounded-xl border border-gray-700 max-w-2xl w-full max-h-[80vh] overflow-y-auto p-6" onClick={(e) => e.stopPropagation()}>
-            <div className="flex justify-between items-start mb-4">
-              <div>
-                <h2 className="text-xl font-bold">{selectedLead.name}</h2>
-                <div className="flex gap-2 mt-1">
-                  {getHeatBadge(selectedLead.heat_score, selectedLead.wind_ratio)}
-                  {getStatusBadge(selectedLead.status)}
-                </div>
-              </div>
-              <button onClick={() => setSelectedLead(null)} className="text-gray-400 hover:text-white text-xl">&times;</button>
-            </div>
-            <p className="text-gray-400 text-sm mb-1">{selectedLead.address}</p>
-            <p className="text-gray-500 text-sm mb-4">{selectedLead.county} County</p>
-
-            {/* Key metrics */}
-            {(selectedLead.tiv_parsed || selectedLead.premium_parsed) && (
-              <div className="grid grid-cols-3 gap-3 mb-4">
-                <div className="bg-gray-800 rounded-lg p-3 text-center">
-                  <p className="text-gray-500 text-xs">TIV</p>
-                  <p className="text-white font-semibold">{formatDollar(selectedLead.tiv_parsed)}</p>
-                </div>
-                <div className="bg-gray-800 rounded-lg p-3 text-center">
-                  <p className="text-gray-500 text-xs">Premium</p>
-                  <p className="text-white font-semibold">{formatDollar(selectedLead.premium_parsed)}</p>
-                </div>
-                <div className="bg-gray-800 rounded-lg p-3 text-center">
-                  <p className="text-gray-500 text-xs">Wind Ratio</p>
-                  <p className={`font-semibold ${selectedLead.heat_score === "hot" ? "text-red-400" : "text-white"}`}>
-                    {selectedLead.wind_ratio !== null ? `${selectedLead.wind_ratio.toFixed(2)}%` : "—"}
-                  </p>
-                </div>
-              </div>
-            )}
-
-            {selectedLead.characteristics && Object.keys(selectedLead.characteristics).length > 0 && (
-              <div className="mb-4">
-                <h3 className="text-sm font-semibold text-gray-300 mb-2">Insurance Intelligence</h3>
-                <pre className="bg-gray-800 rounded p-3 text-xs text-gray-300 overflow-x-auto">
-                  {JSON.stringify(selectedLead.characteristics, null, 2)}
-                </pre>
-              </div>
-            )}
-
-            {!!selectedLead.emails && (
-              <div>
-                <h3 className="text-sm font-semibold text-gray-300 mb-2">Generated Emails</h3>
-                {Object.entries(selectedLead.emails).map(([style, email]) => (
-                  <div key={style} className="mb-3 bg-gray-800 rounded p-3">
-                    <p className="text-blue-400 text-xs font-semibold uppercase mb-1">{style}</p>
-                    <pre className="text-xs text-gray-300 whitespace-pre-wrap">{typeof email === "object" ? JSON.stringify(email, null, 2) : String(email)}</pre>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
     </div>
   );
 }
