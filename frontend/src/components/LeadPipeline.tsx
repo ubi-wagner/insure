@@ -368,7 +368,7 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
               {/* Construction & building info */}
               {!!(lead.characteristics?.construction_class || lead.characteristics?.stories) && (
                 <div className="flex gap-2 text-xs mb-2 flex-wrap">
-                  {lead.characteristics?.construction_class && (
+                  {!!lead.characteristics?.construction_class && (
                     <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
                       String(lead.characteristics.construction_class).includes("Fire Resistive") ? "bg-emerald-900 text-emerald-300" :
                       String(lead.characteristics.construction_class).includes("Non-Combustible") ? "bg-sky-900 text-sky-300" :
@@ -379,13 +379,13 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
                       {String(lead.characteristics.construction_class)}
                     </span>
                   )}
-                  {lead.characteristics?.stories && (
+                  {!!lead.characteristics?.stories && (
                     <span className="text-gray-500">{String(lead.characteristics.stories)} stories</span>
                   )}
-                  {lead.characteristics?.units_estimate && (
+                  {!!lead.characteristics?.units_estimate && (
                     <span className="text-gray-500">~{String(lead.characteristics.units_estimate)} units</span>
                   )}
-                  {lead.characteristics?.flood_zone && (
+                  {!!lead.characteristics?.flood_zone && (
                     <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
                       String(lead.characteristics.flood_risk) === "extreme" ? "bg-red-900 text-red-300" :
                       String(lead.characteristics.flood_risk) === "high" ? "bg-orange-900 text-orange-300" :
