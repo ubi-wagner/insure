@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import MapView from "@/components/MapView";
 import LeadPipeline from "@/components/LeadPipeline";
 
@@ -23,12 +24,20 @@ export default function Dashboard() {
           <h1 className="text-lg font-bold">Insure</h1>
           <span className="text-gray-500 text-sm">Hunt · Kill · Cook</span>
         </div>
-        <button
-          onClick={handleLogout}
-          className="text-gray-400 hover:text-white text-sm"
-        >
-          Logout
-        </button>
+        <div className="flex items-center gap-4">
+          <Link
+            href="/events"
+            className="text-gray-400 hover:text-white text-sm"
+          >
+            Event Stream
+          </Link>
+          <button
+            onClick={handleLogout}
+            className="text-gray-400 hover:text-white text-sm"
+          >
+            Logout
+          </button>
+        </div>
       </header>
 
       <main className="max-w-7xl mx-auto px-6 py-6 space-y-8">

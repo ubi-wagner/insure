@@ -15,6 +15,7 @@ import anthropic
 from sqlalchemy.orm import Session
 
 from database.models import DocType, Entity, EntityAsset
+from services.event_bus import EventStatus, EventType, emit
 
 logger = logging.getLogger(__name__)
 
@@ -143,6 +144,8 @@ def trigger_deep_dive(entity_id: int, db: Session):
 
     # --- THE KILL ---
     logger.info(f"Running KILL analysis for '{entity.name}'...")
+    emit(EventType.AI_ANALYZER, "kill_start", EventStatus.PENDING,
+         detail=f"Analyzing docs for '{entity.name}'", entity_id=entity_id)
     try:
         kill_response = client.messages.create(
             model="claude-sonnet-4-20250514",
@@ -160,6 +163,8 @@ def trigger_deep_dive(entity_id: int, db: Session):
         )
     except Exception as e:
         logger.error(f"KILL API call failed for '{entity.name}': {e}")
+        emit(EventType.AI_ANALYZER, "kill", EventStatus.ERROR,
+             detail=str(e)[:200], entity_id=entity_id)
         return
 
     kill_text = kill_response.content[0].text.strip()
@@ -173,9 +178,13 @@ def trigger_deep_dive(entity_id: int, db: Session):
     entity.characteristics = characteristics
     db.commit()
     logger.info(f"KILL complete: carrier={intel.get('carrier')}, premium={intel.get('premium')}")
+    emit(EventType.AI_ANALYZER, "kill", EventStatus.SUCCESS,
+         detail=f"carrier={intel.get('carrier')}, premium={intel.get('premium')}", entity_id=entity_id)
 
     # --- THE COOK ---
     logger.info(f"Running COOK analysis for '{entity.name}'...")
+    emit(EventType.AI_ANALYZER, "cook_start", EventStatus.PENDING,
+         detail=f"Generating emails for '{entity.name}'", entity_id=entity_id)
     try:
         cook_response = client.messages.create(
             model="claude-sonnet-4-20250514",
@@ -201,6 +210,8 @@ def trigger_deep_dive(entity_id: int, db: Session):
         )
     except Exception as e:
         logger.error(f"COOK API call failed for '{entity.name}': {e}")
+        emit(EventType.AI_ANALYZER, "cook", EventStatus.ERROR,
+             detail=str(e)[:200], entity_id=entity_id)
         return
 
     cook_text = cook_response.content[0].text.strip()
@@ -214,3 +225,5 @@ def trigger_deep_dive(entity_id: int, db: Session):
     entity.characteristics = characteristics
     db.commit()
     logger.info(f"COOK complete: {len(emails)} email styles generated")
+    emit(EventType.AI_ANALYZER, "cook", EventStatus.SUCCESS,
+         detail=f"{len(emails)} email styles generated", entity_id=entity_id)
