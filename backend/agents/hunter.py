@@ -410,6 +410,25 @@ def save_property(prop: dict, region: RegionOfInterest, db: Session) -> int:
 
     emit(EventType.DB_OPERATION, "save_property", EventStatus.SUCCESS,
          detail=f"Saved '{entity.name}' (id={entity.id})", entity_id=entity.id)
+
+    # Run NEW-stage enrichments (FEMA flood, property appraiser)
+    try:
+        from agents.enrichers.pipeline import run_on_new_lead
+        run_on_new_lead(entity, db)
+    except Exception as e:
+        logger.warning(f"Enrichment failed for '{entity.name}': {e}")
+
+    # Record Overpass as the discovery source
+    from agents.enrichers import record_enrichment
+    osm_id = (prop.get("characteristics") or {}).get("osm_id")
+    record_enrichment(
+        entity, db,
+        source_id="overpass",
+        fields_updated=list((prop.get("characteristics") or {}).keys()),
+        source_url=f"https://www.openstreetmap.org/way/{osm_id}" if osm_id else None,
+        detail=f"Discovered via OSM Overpass in region '{region.name}'",
+    )
+
     return 1
 
 

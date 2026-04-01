@@ -53,6 +53,12 @@ class DocType(str, enum.Enum):
     AUDIT = "AUDIT"
     IE_REPORT = "IE_REPORT"
     SUNBIZ = "SUNBIZ"
+    BROCHURE = "BROCHURE"
+    DEC_PAGE = "DEC_PAGE"
+    LOSS_RUN = "LOSS_RUN"
+    PROPERTY_APPRAISER = "PROPERTY_APPRAISER"
+    FEMA_FLOOD = "FEMA_FLOOD"
+    OTHER = "OTHER"
 
 
 class CoverageType(str, enum.Enum):
@@ -113,6 +119,7 @@ class Entity(Base):
     latitude = Column(Float, nullable=True)
     longitude = Column(Float, nullable=True)
     characteristics = Column(JSONB, nullable=True)
+    enrichment_sources = Column(JSONB, nullable=True)  # {source_id: {source, timestamp, fields, url}}
     pipeline_stage = Column(String, default="NEW", nullable=False)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
 
@@ -133,6 +140,8 @@ class LeadLedger(Base):
     entity_id = Column(Integer, ForeignKey("entities.id"), nullable=False)
     action_type = Column(String, nullable=False)  # Using String for flexibility with new types
     detail = Column(String, nullable=True)  # Human-readable context
+    source = Column(String, nullable=True)  # e.g., "overpass", "sunbiz", "property_appraiser"
+    source_url = Column(String, nullable=True)  # Link to original source
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
 
     entity = relationship("Entity", back_populates="ledger_events")
@@ -146,6 +155,8 @@ class EntityAsset(Base):
     doc_type = Column(Enum(DocType), nullable=False)
     s3_url = Column(String, nullable=True)
     extracted_text = Column(Text, nullable=True)
+    source = Column(String, nullable=True)  # "user_upload", "web_scrape", "api"
+    filename = Column(String, nullable=True)  # Original filename for uploads
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
 
     entity = relationship("Entity", back_populates="assets")
@@ -161,6 +172,8 @@ class Contact(Base):
     email = Column(String, nullable=True)
     phone = Column(String, nullable=True)
     is_primary = Column(Integer, default=0, nullable=False)
+    source = Column(String, nullable=True)  # "sunbiz", "property_appraiser", "manual", "user_upload"
+    source_url = Column(String, nullable=True)  # Link to source document
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
 
     entity = relationship("Entity", back_populates="contacts")
