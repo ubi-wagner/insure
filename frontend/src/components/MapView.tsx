@@ -149,7 +149,7 @@ export default function MapView({ onRegionCreated }: { onRegionCreated: () => vo
   // No API key or load error — show setup instructions
   if (mapError) {
     return (
-      <div className="w-full h-[500px] rounded-lg bg-gray-900 border border-gray-800 flex flex-col items-center justify-center gap-4 px-8">
+      <div className="w-full h-full bg-gray-900 border border-gray-800 flex flex-col items-center justify-center gap-4 px-8">
         <div className="w-12 h-12 rounded-full bg-yellow-900/50 flex items-center justify-center">
           <span className="text-yellow-400 text-2xl">!</span>
         </div>
@@ -188,7 +188,7 @@ export default function MapView({ onRegionCreated }: { onRegionCreated: () => vo
       </form>
 
       {/* Map */}
-      <div ref={mapRef} className="w-full h-[500px] rounded-lg" />
+      <div ref={mapRef} className="w-full h-full" />
 
       {/* Region form modal */}
       {showForm && (

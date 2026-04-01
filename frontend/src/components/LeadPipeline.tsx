@@ -118,8 +118,8 @@ export default function LeadPipeline({ refreshKey }: { refreshKey: number }) {
         </div>
       )}
 
-      {/* Lead cards grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+      {/* Lead cards */}
+      <div className="space-y-3">
         {leads.map((lead) => (
           <div
             key={lead.id}

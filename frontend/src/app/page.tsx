@@ -18,9 +18,9 @@ export default function Dashboard() {
   }
 
   return (
-    <div className="min-h-screen">
+    <div className="h-screen flex flex-col">
       {/* Top Bar */}
-      <header className="bg-gray-900 border-b border-gray-800 px-6 py-3 flex items-center justify-between">
+      <header className="bg-gray-900 border-b border-gray-800 px-6 py-2 flex items-center justify-between shrink-0">
         <div className="flex items-center gap-3">
           <h1 className="text-lg font-bold">Insure</h1>
           <span className="text-gray-500 text-sm">Hunt · Kill · Cook</span>
@@ -43,17 +43,19 @@ export default function Dashboard() {
 
       <StatusBar />
 
-      <main className="max-w-7xl mx-auto px-6 py-6 space-y-8">
-        {/* Map Section */}
-        <section>
-          <h2 className="text-xl font-bold mb-3">Region Targeting</h2>
+      {/* Split layout: map left, cards right */}
+      <main className="flex-1 flex overflow-hidden">
+        {/* Map panel — fills left side */}
+        <div className="flex-1 relative">
           <MapView onRegionCreated={() => setRefreshKey((k) => k + 1)} />
-        </section>
+        </div>
 
-        {/* Pipeline Section */}
-        <section>
-          <LeadPipeline refreshKey={refreshKey} />
-        </section>
+        {/* Lead panel — scrollable right sidebar */}
+        <div className="w-[420px] border-l border-gray-800 bg-gray-950 flex flex-col shrink-0">
+          <div className="p-4 overflow-y-auto flex-1">
+            <LeadPipeline refreshKey={refreshKey} />
+          </div>
+        </div>
       </main>
     </div>
   );
