@@ -42,7 +42,15 @@ interface RegionFormData {
   name: string;
   stories: number;
   coastDistance: number;
+  constructionFilter: string;
 }
+
+const SEARCH_PROFILES: Record<string, { label: string; stories: number; construction: string }> = {
+  coastal_highrise: { label: "Coastal High-Rise (7+ floors, fire resistive)", stories: 7, construction: "fire_resistive" },
+  midrise_value:    { label: "Mid-Rise Value (3-6 floors, any)", stories: 3, construction: "any" },
+  premium_new:      { label: "Premium New Build (10+ floors)", stories: 10, construction: "any" },
+  custom:           { label: "Custom", stories: 3, construction: "any" },
+};
 
 interface Props {
   onRegionCreated: () => void;
@@ -103,7 +111,8 @@ export default function MapViewInner({
 
   const [pendingBounds, setPendingBounds] = useState<{ north: number; south: number; east: number; west: number } | null>(null);
   const [showForm, setShowForm] = useState(false);
-  const [formData, setFormData] = useState<RegionFormData>({ name: "", stories: 3, coastDistance: 5 });
+  const [formData, setFormData] = useState<RegionFormData>({ name: "", stories: 7, coastDistance: 5, constructionFilter: "fire_resistive" });
+  const [searchProfile, setSearchProfile] = useState("coastal_highrise");
   const [searchQuery, setSearchQuery] = useState("");
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -284,12 +293,18 @@ export default function MapViewInner({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           name: formData.name, bounding_box: pendingBounds,
-          parameters: { stories: formData.stories, coast_distance: formData.coastDistance },
+          parameters: {
+            stories: formData.stories,
+            coast_distance: formData.coastDistance,
+            construction_filter: formData.constructionFilter,
+            search_profile: searchProfile,
+          },
         }),
       });
       if (res.ok) {
         setShowForm(false);
-        setFormData({ name: "", stories: 3, coastDistance: 5 });
+        setFormData({ name: "", stories: 7, coastDistance: 5, constructionFilter: "fire_resistive" });
+        setSearchProfile("coastal_highrise");
         setPendingBounds(null);
         onRegionCreated();
       } else {
@@ -352,7 +367,7 @@ export default function MapViewInner({
       {/* Region form */}
       {showForm && (
         <div className="absolute inset-0 bg-black/50 flex items-center justify-center z-[1001]">
-          <form onSubmit={handleSubmitRegion} className="bg-gray-900 p-6 rounded-xl border border-gray-700 w-80">
+          <form onSubmit={handleSubmitRegion} className="bg-gray-900 p-6 rounded-xl border border-gray-700 w-96">
             <h3 className="text-lg font-bold mb-4">New Hunt Region</h3>
             {pendingBounds && (
               <p className="text-gray-500 text-xs mb-3">
@@ -360,23 +375,57 @@ export default function MapViewInner({
                 {Math.abs(pendingBounds.west).toFixed(4)}°W – {Math.abs(pendingBounds.east).toFixed(4)}°W
               </p>
             )}
+
+            {/* Search profile */}
+            <div className="mb-3">
+              <label className="block text-gray-400 text-sm mb-1">Search Profile</label>
+              <select value={searchProfile}
+                onChange={(e) => {
+                  const p = SEARCH_PROFILES[e.target.value];
+                  setSearchProfile(e.target.value);
+                  if (e.target.value !== "custom") {
+                    setFormData({ ...formData, stories: p.stories, constructionFilter: p.construction });
+                  }
+                }}
+                className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-white text-sm">
+                {Object.entries(SEARCH_PROFILES).map(([k, v]) => (
+                  <option key={k} value={k}>{v.label}</option>
+                ))}
+              </select>
+            </div>
+
             <div className="mb-3">
               <label className="block text-gray-400 text-sm mb-1">Region Name</label>
               <input type="text" required value={formData.name}
                 onChange={(e) => setFormData({ ...formData, name: e.target.value })}
                 className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-white text-sm" placeholder="e.g. Clearwater Beach Condos" />
             </div>
-            <div className="mb-3">
-              <label className="block text-gray-400 text-sm mb-1">Min Stories</label>
-              <input type="number" min={1} value={formData.stories}
-                onChange={(e) => setFormData({ ...formData, stories: parseInt(e.target.value) })}
-                className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-white text-sm" />
+
+            <div className="grid grid-cols-2 gap-3 mb-3">
+              <div>
+                <label className="block text-gray-400 text-sm mb-1">Min Stories</label>
+                <input type="number" min={1} value={formData.stories}
+                  onChange={(e) => { setFormData({ ...formData, stories: parseInt(e.target.value) }); setSearchProfile("custom"); }}
+                  className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-white text-sm" />
+              </div>
+              <div>
+                <label className="block text-gray-400 text-sm mb-1">Max Coast Dist (mi)</label>
+                <input type="number" min={0} step={0.1} value={formData.coastDistance}
+                  onChange={(e) => setFormData({ ...formData, coastDistance: parseFloat(e.target.value) })}
+                  className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-white text-sm" />
+              </div>
             </div>
+
             <div className="mb-4">
-              <label className="block text-gray-400 text-sm mb-1">Max Coast Distance (mi)</label>
-              <input type="number" min={0} step={0.1} value={formData.coastDistance}
-                onChange={(e) => setFormData({ ...formData, coastDistance: parseFloat(e.target.value) })}
-                className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-white text-sm" />
+              <label className="block text-gray-400 text-sm mb-1">Construction Type</label>
+              <select value={formData.constructionFilter}
+                onChange={(e) => { setFormData({ ...formData, constructionFilter: e.target.value }); setSearchProfile("custom"); }}
+                className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-white text-sm">
+                <option value="any">Any Construction</option>
+                <option value="fire_resistive">Fire Resistive Only</option>
+                <option value="non_combustible">Non-Combustible+</option>
+                <option value="masonry">Masonry+</option>
+              </select>
             </div>
             {submitError && <p className="text-red-400 text-xs mb-3">{submitError}</p>}
             <div className="flex gap-2">

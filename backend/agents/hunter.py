@@ -67,8 +67,95 @@ def build_overpass_query(bbox: dict, min_levels: int = MIN_LEVELS) -> str:
   relation["building"="apartments"]({bb});
   relation["building"="condominium"]({bb});
 );
-out center tags;
+out center tags geom;
 """
+
+
+def estimate_footprint_sqft(element: dict) -> float | None:
+    """Estimate building footprint area from OSM geometry nodes."""
+    geometry = element.get("geometry") or element.get("bounds")
+    if not geometry:
+        return None
+
+    # If we have geometry nodes, estimate area using bounding rectangle
+    if isinstance(geometry, list) and len(geometry) >= 3:
+        lats = [p["lat"] for p in geometry]
+        lons = [p["lon"] for p in geometry]
+        # Rough conversion: 1 degree lat ≈ 364,000 ft, 1 degree lon ≈ 288,000 ft at FL latitude
+        height_ft = (max(lats) - min(lats)) * 364_000
+        width_ft = (max(lons) - min(lons)) * 288_000
+        area_sqft = height_ft * width_ft * 0.85  # 85% fill factor for non-rectangular buildings
+        return round(area_sqft) if area_sqft > 500 else None
+
+    return None
+
+
+# ─── Construction class inference ───
+
+# ISO Building Construction Types:
+# Class 1: Fire Resistive (concrete/steel frame, non-combustible throughout)
+# Class 2: Non-Combustible (steel frame, non-combustible walls)
+# Class 3: Non-Combustible (masonry, limited combustible)
+# Class 4: Masonry Non-Combustible
+# Class 5: Wood Frame (combustible)
+# Class 6: Mixed/Other
+
+MATERIAL_TO_CONSTRUCTION: dict[str, dict] = {
+    "concrete":             {"class": "Fire Resistive",           "iso": 1, "cost_per_sqft": 350},
+    "reinforced_concrete":  {"class": "Fire Resistive",           "iso": 1, "cost_per_sqft": 375},
+    "steel":                {"class": "Non-Combustible",          "iso": 2, "cost_per_sqft": 325},
+    "steel_frame":          {"class": "Non-Combustible",          "iso": 2, "cost_per_sqft": 325},
+    "brick":                {"class": "Masonry Non-Combustible",  "iso": 4, "cost_per_sqft": 275},
+    "masonry":              {"class": "Masonry Non-Combustible",  "iso": 4, "cost_per_sqft": 275},
+    "block":                {"class": "Masonry Non-Combustible",  "iso": 4, "cost_per_sqft": 275},
+    "wood":                 {"class": "Frame",                    "iso": 5, "cost_per_sqft": 200},
+    "timber":               {"class": "Frame",                    "iso": 5, "cost_per_sqft": 200},
+}
+
+# Default: high-rise (7+) in FL is almost always fire resistive concrete
+DEFAULT_HIGHRISE_CONSTRUCTION = {"class": "Fire Resistive (inferred)", "iso": 1, "cost_per_sqft": 325}
+DEFAULT_MIDRISE_CONSTRUCTION  = {"class": "Unknown — verify",          "iso": 0, "cost_per_sqft": 275}
+
+# Avg floor area estimates when footprint not available (sqft)
+AVG_FLOOR_SQFT = {
+    "small": 8_000,     # 3-5 stories
+    "midrise": 15_000,  # 6-9 stories
+    "highrise": 22_000, # 10+ stories
+}
+
+
+def infer_construction(tags: dict, stories: int | None) -> dict:
+    """Infer construction class from OSM tags and building height."""
+    material = (tags.get("building:material") or tags.get("building:structure") or "").lower()
+
+    if material in MATERIAL_TO_CONSTRUCTION:
+        return MATERIAL_TO_CONSTRUCTION[material]
+
+    # Infer from height: FL high-rises (7+) are almost always fire resistive concrete
+    if stories and stories >= 7:
+        return DEFAULT_HIGHRISE_CONSTRUCTION
+    return DEFAULT_MIDRISE_CONSTRUCTION
+
+
+def estimate_tiv(stories: int | None, footprint_sqft: float | None, construction: dict) -> float | None:
+    """Estimate Total Insurable Value from building dimensions and construction type."""
+    if not stories:
+        return None
+
+    if footprint_sqft and footprint_sqft > 500:
+        floor_area = footprint_sqft
+    elif stories >= 10:
+        floor_area = AVG_FLOOR_SQFT["highrise"]
+    elif stories >= 6:
+        floor_area = AVG_FLOOR_SQFT["midrise"]
+    else:
+        floor_area = AVG_FLOOR_SQFT["small"]
+
+    cost_per_sqft = construction.get("cost_per_sqft", 275)
+    total_sqft = floor_area * stories
+    tiv = total_sqft * cost_per_sqft
+
+    return round(tiv, -3)  # Round to nearest thousand
 
 
 def query_overpass(query: str) -> list[dict]:
@@ -104,7 +191,7 @@ def reverse_geocode(lat: float, lon: float) -> dict:
 
 
 def parse_osm_element(element: dict) -> dict | None:
-    """Parse an OSM element into a property candidate."""
+    """Parse an OSM element into a property candidate with construction + TIV estimate."""
     tags = element.get("tags", {})
     center = element.get("center", {})
 
@@ -114,7 +201,9 @@ def parse_osm_element(element: dict) -> dict | None:
         return None
 
     name = tags.get("name", "")
-    levels = tags.get("building:levels", "")
+    levels_str = tags.get("building:levels", "")
+    stories = int(levels_str) if levels_str and levels_str.isdigit() else None
+
     addr_street = tags.get("addr:street", "")
     addr_number = tags.get("addr:housenumber", "")
     addr_city = tags.get("addr:city", "")
@@ -142,16 +231,41 @@ def parse_osm_element(element: dict) -> dict | None:
         else:
             name = f"Building at {lat:.4f}, {lon:.4f}"
 
+    # Construction class inference
+    construction = infer_construction(tags, stories)
+
+    # Footprint + TIV estimation
+    footprint = estimate_footprint_sqft(element)
+    tiv_estimate = estimate_tiv(stories, footprint, construction)
+
+    # Units estimate (avg ~1,200 sqft per unit for FL condos)
+    units_estimate = None
+    if stories and footprint:
+        total_sqft = footprint * stories
+        units_estimate = max(1, round(total_sqft * 0.75 / 1200))  # 75% residential efficiency
+
     return {
         "name": name,
         "address": address,
         "latitude": float(lat),
         "longitude": float(lon),
         "characteristics": {
-            "stories": int(levels) if levels and levels.isdigit() else None,
-            "construction": tags.get("building:material"),
+            "stories": stories,
+            "construction_class": construction["class"],
+            "iso_class": construction["iso"],
+            "building_material": tags.get("building:material") or tags.get("building:structure"),
             "building_type": tags.get("building"),
+            "year_built": tags.get("start_date") or tags.get("year_built"),
+            "height_m": tags.get("height"),
+            "units_estimate": units_estimate,
+            "footprint_sqft": footprint,
+            "tiv_estimate": tiv_estimate,
+            "tiv": f"${tiv_estimate:,.0f}" if tiv_estimate else None,
             "osm_id": element.get("id"),
+            "osm_tags": {
+                k: v for k, v in tags.items()
+                if k.startswith(("building", "roof", "addr", "name", "operator", "phone", "website"))
+            },
         },
     }
 
