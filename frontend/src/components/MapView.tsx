@@ -3,6 +3,10 @@
 import { useEffect, useRef, useState } from "react";
 import { Loader } from "@googlemaps/js-api-loader";
 
+// Pinellas Park, FL — default home base
+const DEFAULT_CENTER = { lat: 27.8428, lng: -82.6993 };
+const DEFAULT_ZOOM = 12;
+
 interface RegionFormData {
   name: string;
   stories: number;
@@ -13,6 +17,7 @@ export default function MapView({ onRegionCreated }: { onRegionCreated: () => vo
   const mapRef = useRef<HTMLDivElement>(null);
   const [map, setMap] = useState<google.maps.Map | null>(null);
   const [mapError, setMapError] = useState<string | null>(null);
+  const [mapLoading, setMapLoading] = useState(true);
   const [pendingRect, setPendingRect] = useState<google.maps.Rectangle | null>(null);
   const [pendingBounds, setPendingBounds] = useState<{ north: number; south: number; east: number; west: number } | null>(null);
   const [showForm, setShowForm] = useState(false);
@@ -22,27 +27,60 @@ export default function MapView({ onRegionCreated }: { onRegionCreated: () => vo
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
-    const apiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY || process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
-    if (!apiKey) {
-      setMapError("NEXT_PUBLIC_GOOGLE_MAPS_API_KEY is not configured. Set it in Railway environment variables and rebuild the frontend.");
-      return;
-    }
+    async function initMap() {
+      // Try build-time key first, then fetch from server at runtime
+      let apiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY || process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY || "";
 
-    const loader = new Loader({
-      apiKey,
-      version: "weekly",
-      libraries: ["drawing", "places", "geocoding"],
-    });
+      if (!apiKey) {
+        try {
+          const res = await fetch("/api/maps-key");
+          if (res.ok) {
+            const data = await res.json();
+            apiKey = data.key || "";
+          }
+        } catch {
+          // fall through to error
+        }
+      }
 
-    loader.importLibrary("maps").then(() => {
-      loader.importLibrary("drawing").then(() => {
+      if (!apiKey) {
+        setMapError("Google Maps API key not configured. Add GOOGLE_MAPS_KEY to the frontend Railway service and redeploy.");
+        setMapLoading(false);
+        return;
+      }
+
+      try {
+        const loader = new Loader({
+          apiKey,
+          version: "weekly",
+          libraries: ["drawing", "places", "geocoding"],
+        });
+
+        await loader.importLibrary("maps");
+        await loader.importLibrary("drawing");
+
         if (!mapRef.current) return;
 
         const mapInstance = new google.maps.Map(mapRef.current, {
-          center: { lat: 27.9506, lng: -82.4572 }, // Tampa, FL
-          zoom: 10,
+          center: DEFAULT_CENTER,
+          zoom: DEFAULT_ZOOM,
           mapTypeId: "hybrid",
           styles: [{ featureType: "all", elementType: "labels", stylers: [{ visibility: "on" }] }],
+        });
+
+        // Home marker
+        new google.maps.Marker({
+          position: DEFAULT_CENTER,
+          map: mapInstance,
+          title: "Home Base — Pinellas Park, FL",
+          icon: {
+            path: google.maps.SymbolPath.CIRCLE,
+            scale: 8,
+            fillColor: "#3b82f6",
+            fillOpacity: 1,
+            strokeColor: "#1e40af",
+            strokeWeight: 2,
+          },
         });
 
         const drawingManager = new google.maps.drawing.DrawingManager({
@@ -82,10 +120,13 @@ export default function MapView({ onRegionCreated }: { onRegionCreated: () => vo
         });
 
         setMap(mapInstance);
-      });
-    }).catch((err) => {
-      setMapError(`Google Maps failed to load: ${err.message || err}`);
-    });
+      } catch (err) {
+        setMapError(`Google Maps failed to load: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      setMapLoading(false);
+    }
+
+    initMap();
   }, []);
 
   async function handleSearch(e: React.FormEvent) {
@@ -146,7 +187,16 @@ export default function MapView({ onRegionCreated }: { onRegionCreated: () => vo
     setShowForm(false);
   }
 
-  // No API key or load error — show setup instructions
+  // Loading state
+  if (mapLoading) {
+    return (
+      <div className="w-full h-full bg-gray-900 flex items-center justify-center">
+        <div className="text-gray-500 text-sm">Loading map...</div>
+      </div>
+    );
+  }
+
+  // No API key or load error
   if (mapError) {
     return (
       <div className="w-full h-full bg-gray-900 border border-gray-800 flex flex-col items-center justify-center gap-4 px-8">
@@ -160,8 +210,8 @@ export default function MapView({ onRegionCreated }: { onRegionCreated: () => vo
           <ol className="list-decimal list-inside space-y-1">
             <li>Get a Google Maps API key from <span className="text-blue-400">console.cloud.google.com</span></li>
             <li>Enable Maps JavaScript API, Drawing, Places, and Geocoding APIs</li>
-            <li>In Railway, add env var: <code className="text-green-400">NEXT_PUBLIC_GOOGLE_MAPS_KEY</code></li>
-            <li>Redeploy the frontend service (rebuild required)</li>
+            <li>In Railway, add env var: <code className="text-green-400">GOOGLE_MAPS_KEY</code> on the frontend service</li>
+            <li>Redeploy the frontend service</li>
           </ol>
         </div>
       </div>
@@ -169,7 +219,7 @@ export default function MapView({ onRegionCreated }: { onRegionCreated: () => vo
   }
 
   return (
-    <div className="relative">
+    <div className="relative w-full h-full">
       {/* Search bar */}
       <form onSubmit={handleSearch} className="absolute top-3 left-3 z-10 flex gap-2">
         <input
