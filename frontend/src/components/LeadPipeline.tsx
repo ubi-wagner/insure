@@ -68,7 +68,7 @@ export default function LeadPipeline({ refreshKey }: { refreshKey: number }) {
   }
 
   function getStaticMapUrl(lat: number, lng: number) {
-    const key = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
+    const key = process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY || process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
     if (!key) return null;
     return `https://maps.googleapis.com/maps/api/staticmap?center=${lat},${lng}&zoom=16&size=400x200&maptype=hybrid&key=${key}&markers=color:red%7C${lat},${lng}`;
   }
