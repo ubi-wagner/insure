@@ -17,6 +17,17 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Run migrations at startup
+    try:
+        from alembic.config import Config
+        from alembic import command
+        alembic_cfg = Config("alembic.ini")
+        command.upgrade(alembic_cfg, "head")
+        logger.info("Database migrations completed")
+    except Exception as e:
+        logger.error(f"Migration failed (app will continue): {e}")
+
+    # Start hunter agent
     try:
         from agents.hunter import run_hunter_loop
         thread = threading.Thread(target=run_hunter_loop, daemon=True)
