@@ -3,12 +3,33 @@
 import { useEffect, useRef, useState } from "react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
-import "leaflet-draw";
-import "leaflet-draw/dist/leaflet.draw.css";
 
 // Pinellas Park, FL — default home base
 const DEFAULT_CENTER: [number, number] = [27.8428, -82.6993];
 const DEFAULT_ZOOM = 12;
+
+// Heat score → marker color
+const HEAT_COLORS: Record<string, string> = {
+  hot: "#ef4444",
+  warm: "#f97316",
+  cool: "#3b82f6",
+  none: "#6b7280",
+};
+
+const STATUS_BORDER: Record<string, string> = {
+  CANDIDATE: "#22c55e",
+  REJECTED: "#991b1b",
+  NEW: "#ffffff",
+};
+
+interface LeadLocation {
+  id: number;
+  name: string;
+  latitude: number;
+  longitude: number;
+  heat_score: string;
+  status: string;
+}
 
 interface RegionFormData {
   name: string;
@@ -16,88 +37,66 @@ interface RegionFormData {
   coastDistance: number;
 }
 
-export default function MapViewInner({ onRegionCreated }: { onRegionCreated: () => void }) {
+interface Props {
+  onRegionCreated: () => void;
+  leads?: LeadLocation[];
+  hoveredLeadId?: number | null;
+  flyToTarget?: { lat: number; lng: number } | null;
+}
+
+export default function MapViewInner({ onRegionCreated, leads = [], hoveredLeadId, flyToTarget }: Props) {
   const mapRef = useRef<HTMLDivElement>(null);
   const mapInstance = useRef<L.Map | null>(null);
+  const markersRef = useRef<Map<number, L.CircleMarker>>(new Map());
+  const regionsLayerRef = useRef<L.FeatureGroup | null>(null);
+
+  // Two-click rectangle state
+  const [drawMode, setDrawMode] = useState(false);
+  const firstCornerRef = useRef<L.LatLng | null>(null);
+  const previewRectRef = useRef<L.Rectangle | null>(null);
+
   const [pendingBounds, setPendingBounds] = useState<{ north: number; south: number; east: number; west: number } | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [formData, setFormData] = useState<RegionFormData>({ name: "", stories: 3, coastDistance: 5 });
   const [searchQuery, setSearchQuery] = useState("");
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const drawnLayerRef = useRef<L.Layer | null>(null);
-  const drawnItemsRef = useRef<L.FeatureGroup | null>(null);
 
+  // ─── Init map ───
   useEffect(() => {
     if (!mapRef.current || mapInstance.current) return;
 
     const map = L.map(mapRef.current, {
       center: DEFAULT_CENTER,
       zoom: DEFAULT_ZOOM,
-      zoomControl: true,
+      zoomSnap: 1,           // Discrete zoom steps
+      zoomAnimation: false,   // No smooth zoom
+      fadeAnimation: false,    // No tile fade
+      markerZoomAnimation: false,
+      inertia: false,         // No pan momentum
     });
 
-    // OpenStreetMap tile layer
+    // OSM tiles
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a>',
       maxZoom: 19,
     }).addTo(map);
 
-    // Home base marker
+    // Home marker
     L.circleMarker(DEFAULT_CENTER, {
-      radius: 8,
+      radius: 10,
       fillColor: "#3b82f6",
       fillOpacity: 1,
       color: "#1e40af",
-      weight: 2,
+      weight: 3,
     })
-      .bindTooltip("Home Base — Pinellas Park, FL", { permanent: false })
+      .bindTooltip("Home — Pinellas Park, FL", { permanent: false })
       .addTo(map);
 
-    // Drawing layer
-    const drawnItems = new L.FeatureGroup();
-    map.addLayer(drawnItems);
-    drawnItemsRef.current = drawnItems;
-
-    // Drawing controls
-    const drawControl = new L.Control.Draw({
-      position: "topright",
-      draw: {
-        rectangle: {
-          shapeOptions: {
-            color: "#3b82f6",
-            weight: 2,
-            fillOpacity: 0.15,
-          },
-        },
-        polyline: false,
-        polygon: false,
-        circle: false,
-        marker: false,
-        circlemarker: false,
-      },
-      edit: {
-        featureGroup: drawnItems,
-      },
-    });
-    map.addControl(drawControl);
-
-    // Handle rectangle drawn
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    map.on(L.Draw.Event.CREATED, (e: any) => {
-      const layer = e.layer;
-      drawnItems.addLayer(layer);
-      drawnLayerRef.current = layer;
-
-      const bounds = (layer as L.Rectangle).getBounds();
-      setPendingBounds({
-        north: bounds.getNorth(),
-        south: bounds.getSouth(),
-        east: bounds.getEast(),
-        west: bounds.getWest(),
-      });
-      setShowForm(true);
-    });
+    // Layer for drawn regions
+    const regionsLayer = new L.FeatureGroup();
+    map.addLayer(regionsLayer);
+    regionsLayerRef.current = regionsLayer;
 
     mapInstance.current = map;
 
@@ -107,6 +106,146 @@ export default function MapViewInner({ onRegionCreated }: { onRegionCreated: () 
     };
   }, []);
 
+  // ─── Two-click rectangle drawing ───
+  useEffect(() => {
+    const map = mapInstance.current;
+    if (!map) return;
+
+    function handleClick(e: L.LeafletMouseEvent) {
+      if (!firstCornerRef.current) {
+        // First click — set first corner
+        firstCornerRef.current = e.latlng;
+        // Show crosshair cursor
+        map!.getContainer().style.cursor = "crosshair";
+      } else {
+        // Second click — complete rectangle
+        const corner1 = firstCornerRef.current;
+        const corner2 = e.latlng;
+
+        const bounds = L.latLngBounds(corner1, corner2);
+
+        // Remove preview
+        if (previewRectRef.current) {
+          map!.removeLayer(previewRectRef.current);
+          previewRectRef.current = null;
+        }
+
+        // Draw final rectangle
+        const rect = L.rectangle(bounds, {
+          color: "#3b82f6",
+          weight: 2,
+          fillOpacity: 0.15,
+        });
+        regionsLayerRef.current?.addLayer(rect);
+
+        setPendingBounds({
+          north: bounds.getNorth(),
+          south: bounds.getSouth(),
+          east: bounds.getEast(),
+          west: bounds.getWest(),
+        });
+
+        // Reset
+        firstCornerRef.current = null;
+        map!.getContainer().style.cursor = "";
+        setDrawMode(false);
+        setShowForm(true);
+      }
+    }
+
+    function handleMouseMove(e: L.LeafletMouseEvent) {
+      if (!firstCornerRef.current) return;
+      // Update preview rectangle
+      const bounds = L.latLngBounds(firstCornerRef.current, e.latlng);
+      if (previewRectRef.current) {
+        previewRectRef.current.setBounds(bounds);
+      } else {
+        previewRectRef.current = L.rectangle(bounds, {
+          color: "#3b82f6",
+          weight: 1,
+          fillOpacity: 0.1,
+          dashArray: "5,5",
+        }).addTo(map!);
+      }
+    }
+
+    if (drawMode) {
+      map.getContainer().style.cursor = "crosshair";
+      map.dragging.disable();
+      map.on("click", handleClick);
+      map.on("mousemove", handleMouseMove);
+    } else {
+      map.getContainer().style.cursor = "";
+      map.dragging.enable();
+      map.off("click", handleClick);
+      map.off("mousemove", handleMouseMove);
+      // Clean up preview if draw cancelled
+      if (previewRectRef.current) {
+        map.removeLayer(previewRectRef.current);
+        previewRectRef.current = null;
+      }
+      firstCornerRef.current = null;
+    }
+
+    return () => {
+      map.off("click", handleClick);
+      map.off("mousemove", handleMouseMove);
+    };
+  }, [drawMode]);
+
+  // ─── Lead markers ───
+  useEffect(() => {
+    const map = mapInstance.current;
+    if (!map) return;
+
+    // Remove old markers
+    markersRef.current.forEach((marker) => map.removeLayer(marker));
+    markersRef.current.clear();
+
+    // Add markers for leads with coordinates
+    for (const lead of leads) {
+      if (!lead.latitude || !lead.longitude) continue;
+
+      const fill = HEAT_COLORS[lead.heat_score] || HEAT_COLORS.none;
+      const border = STATUS_BORDER[lead.status] || STATUS_BORDER.NEW;
+
+      const marker = L.circleMarker([lead.latitude, lead.longitude], {
+        radius: 7,
+        fillColor: fill,
+        fillOpacity: 0.9,
+        color: border,
+        weight: 2,
+      });
+
+      marker.bindTooltip(lead.name, { permanent: false, direction: "top", offset: [0, -8] });
+      marker.addTo(map);
+      markersRef.current.set(lead.id, marker);
+    }
+  }, [leads]);
+
+  // ─── Highlight hovered lead ───
+  useEffect(() => {
+    markersRef.current.forEach((marker, id) => {
+      if (id === hoveredLeadId) {
+        marker.setRadius(12);
+        marker.setStyle({ weight: 3 });
+        marker.openTooltip();
+      } else {
+        marker.setRadius(7);
+        marker.setStyle({ weight: 2 });
+        marker.closeTooltip();
+      }
+    });
+  }, [hoveredLeadId]);
+
+  // ─── Fly to target ───
+  useEffect(() => {
+    if (flyToTarget && mapInstance.current) {
+      mapInstance.current.setView([flyToTarget.lat, flyToTarget.lng], 15);
+    }
+  }, [flyToTarget]);
+
+  // ─── Search (Nominatim) ───
   async function handleSearch(e: React.FormEvent) {
     e.preventDefault();
     if (!mapInstance.current || !searchQuery) return;
@@ -126,6 +265,7 @@ export default function MapViewInner({ onRegionCreated }: { onRegionCreated: () 
     }
   }
 
+  // ─── Region submission ───
   async function handleSubmitRegion(e: React.FormEvent) {
     e.preventDefault();
     if (!pendingBounds) return;
@@ -163,34 +303,80 @@ export default function MapViewInner({ onRegionCreated }: { onRegionCreated: () 
   }
 
   function handleCancelRegion() {
-    if (drawnLayerRef.current && drawnItemsRef.current) {
-      drawnItemsRef.current.removeLayer(drawnLayerRef.current);
-      drawnLayerRef.current = null;
+    // Remove last drawn rectangle
+    if (regionsLayerRef.current) {
+      const layers = regionsLayerRef.current.getLayers();
+      if (layers.length > 0) {
+        regionsLayerRef.current.removeLayer(layers[layers.length - 1]);
+      }
     }
     setPendingBounds(null);
     setShowForm(false);
   }
 
+  function handleGoHome() {
+    mapInstance.current?.setView(DEFAULT_CENTER, DEFAULT_ZOOM);
+  }
+
   return (
     <div className="relative w-full h-full">
-      {/* Search bar */}
+      {/* Top-left: Search bar */}
       <form onSubmit={handleSearch} className="absolute top-3 left-3 z-[1000] flex gap-2">
         <input
           type="text"
-          placeholder="Search zip code or address..."
+          placeholder="Search zip or address..."
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
-          className="bg-gray-900/90 border border-gray-700 rounded px-3 py-2 text-white text-sm w-64 focus:outline-none focus:border-blue-500"
+          className="bg-gray-900/90 border border-gray-700 rounded px-3 py-2 text-white text-sm w-56 focus:outline-none focus:border-blue-500"
         />
-        <button
-          type="submit"
-          className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded text-sm font-medium"
-        >
+        <button type="submit" className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded text-sm font-medium">
           Go
         </button>
       </form>
 
-      {/* Map */}
+      {/* Top-right: Map tools */}
+      <div className="absolute top-3 right-3 z-[1000] flex flex-col gap-1.5">
+        <button
+          onClick={() => setDrawMode(!drawMode)}
+          className={`px-3 py-2 rounded text-sm font-medium shadow-lg ${
+            drawMode
+              ? "bg-blue-600 text-white ring-2 ring-blue-400"
+              : "bg-gray-900/90 text-gray-300 hover:bg-gray-800 border border-gray-700"
+          }`}
+          title="Draw hunt region (click two corners)"
+        >
+          {drawMode ? "Drawing... (click 2 corners)" : "Draw Region"}
+        </button>
+        <button
+          onClick={handleGoHome}
+          className="bg-gray-900/90 border border-gray-700 text-gray-300 hover:bg-gray-800 px-3 py-2 rounded text-sm shadow-lg"
+          title="Return to Pinellas Park"
+        >
+          Home
+        </button>
+        <button
+          onClick={() => mapInstance.current?.zoomIn()}
+          className="bg-gray-900/90 border border-gray-700 text-gray-300 hover:bg-gray-800 px-3 py-1.5 rounded text-sm shadow-lg"
+        >
+          +
+        </button>
+        <button
+          onClick={() => mapInstance.current?.zoomOut()}
+          className="bg-gray-900/90 border border-gray-700 text-gray-300 hover:bg-gray-800 px-3 py-1.5 rounded text-sm shadow-lg"
+        >
+          −
+        </button>
+      </div>
+
+      {/* Bottom-left: Legend */}
+      <div className="absolute bottom-6 left-3 z-[1000] bg-gray-900/90 border border-gray-700 rounded px-3 py-2 text-xs space-y-1">
+        <div className="flex items-center gap-2"><span className="w-3 h-3 rounded-full bg-red-500 inline-block" /> Hot</div>
+        <div className="flex items-center gap-2"><span className="w-3 h-3 rounded-full bg-orange-500 inline-block" /> Warm</div>
+        <div className="flex items-center gap-2"><span className="w-3 h-3 rounded-full bg-blue-500 inline-block" /> Cool</div>
+        <div className="flex items-center gap-2"><span className="w-3 h-3 rounded-full bg-gray-500 inline-block" /> New</div>
+      </div>
+
+      {/* Map container */}
       <div ref={mapRef} className="w-full h-full" />
 
       {/* Region form modal */}
@@ -204,8 +390,8 @@ export default function MapViewInner({ onRegionCreated }: { onRegionCreated: () 
 
             {pendingBounds && (
               <p className="text-gray-500 text-xs mb-3">
-                {pendingBounds.south.toFixed(4)}N to {pendingBounds.north.toFixed(4)}N,{" "}
-                {pendingBounds.west.toFixed(4)}W to {pendingBounds.east.toFixed(4)}W
+                {pendingBounds.south.toFixed(4)}°N to {pendingBounds.north.toFixed(4)}°N,{" "}
+                {Math.abs(pendingBounds.west).toFixed(4)}°W to {Math.abs(pendingBounds.east).toFixed(4)}°W
               </p>
             )}
 

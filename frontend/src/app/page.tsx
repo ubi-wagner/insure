@@ -1,15 +1,31 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import MapView from "@/components/MapView";
 import LeadPipeline from "@/components/LeadPipeline";
 import StatusBar from "@/components/StatusBar";
 
+interface LeadLocation {
+  id: number;
+  name: string;
+  latitude: number;
+  longitude: number;
+  heat_score: string;
+  status: string;
+}
+
 export default function Dashboard() {
   const [refreshKey, setRefreshKey] = useState(0);
+  const [leads, setLeads] = useState<LeadLocation[]>([]);
+  const [hoveredLeadId, setHoveredLeadId] = useState<number | null>(null);
+  const [flyToTarget, setFlyToTarget] = useState<{ lat: number; lng: number } | null>(null);
   const router = useRouter();
+
+  const handleLeadsLoaded = useCallback((loadedLeads: LeadLocation[]) => {
+    setLeads(loadedLeads);
+  }, []);
 
   async function handleLogout() {
     await fetch("/api/auth", { method: "DELETE" });
@@ -26,16 +42,10 @@ export default function Dashboard() {
           <span className="text-gray-500 text-sm">Hunt · Kill · Cook</span>
         </div>
         <div className="flex items-center gap-4">
-          <Link
-            href="/events"
-            className="text-gray-400 hover:text-white text-sm"
-          >
+          <Link href="/events" className="text-gray-400 hover:text-white text-sm">
             Event Stream
           </Link>
-          <button
-            onClick={handleLogout}
-            className="text-gray-400 hover:text-white text-sm"
-          >
+          <button onClick={handleLogout} className="text-gray-400 hover:text-white text-sm">
             Logout
           </button>
         </div>
@@ -45,15 +55,25 @@ export default function Dashboard() {
 
       {/* Split layout: map left, cards right */}
       <main className="flex-1 flex overflow-hidden">
-        {/* Map panel — fills left side */}
+        {/* Map panel */}
         <div className="flex-1 relative">
-          <MapView onRegionCreated={() => setRefreshKey((k) => k + 1)} />
+          <MapView
+            onRegionCreated={() => setRefreshKey((k) => k + 1)}
+            leads={leads}
+            hoveredLeadId={hoveredLeadId}
+            flyToTarget={flyToTarget}
+          />
         </div>
 
-        {/* Lead panel — scrollable right sidebar */}
+        {/* Lead panel */}
         <div className="w-[420px] border-l border-gray-800 bg-gray-950 flex flex-col shrink-0">
           <div className="p-4 overflow-y-auto flex-1">
-            <LeadPipeline refreshKey={refreshKey} />
+            <LeadPipeline
+              refreshKey={refreshKey}
+              onLeadsLoaded={handleLeadsLoaded}
+              onLeadHover={setHoveredLeadId}
+              onFlyTo={(lat, lng) => setFlyToTarget({ lat, lng })}
+            />
           </div>
         </div>
       </main>

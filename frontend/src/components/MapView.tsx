@@ -2,6 +2,22 @@
 
 import dynamic from "next/dynamic";
 
+interface LeadLocation {
+  id: number;
+  name: string;
+  latitude: number;
+  longitude: number;
+  heat_score: string;
+  status: string;
+}
+
+interface MapViewProps {
+  onRegionCreated: () => void;
+  leads?: LeadLocation[];
+  hoveredLeadId?: number | null;
+  flyToTarget?: { lat: number; lng: number } | null;
+}
+
 const MapViewInner = dynamic(() => import("./MapViewInner"), {
   ssr: false,
   loading: () => (
@@ -11,6 +27,6 @@ const MapViewInner = dynamic(() => import("./MapViewInner"), {
   ),
 });
 
-export default function MapView({ onRegionCreated }: { onRegionCreated: () => void }) {
-  return <MapViewInner onRegionCreated={onRegionCreated} />;
+export default function MapView(props: MapViewProps) {
+  return <MapViewInner {...props} />;
 }

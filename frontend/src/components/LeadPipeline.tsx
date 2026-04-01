@@ -45,7 +45,14 @@ const HEAT_COLORS: Record<string, string> = {
   none: "bg-gray-700 text-gray-400",
 };
 
-export default function LeadPipeline({ refreshKey }: { refreshKey: number }) {
+interface PipelineProps {
+  refreshKey: number;
+  onLeadsLoaded?: (leads: { id: number; name: string; latitude: number; longitude: number; heat_score: string; status: string }[]) => void;
+  onLeadHover?: (id: number | null) => void;
+  onFlyTo?: (lat: number, lng: number) => void;
+}
+
+export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, onFlyTo }: PipelineProps) {
   const [leads, setLeads] = useState<Lead[]>([]);
   const [sortBy, setSortBy] = useState<SortBy>("date");
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
@@ -77,7 +84,12 @@ export default function LeadPipeline({ refreshKey }: { refreshKey: number }) {
     try {
       const res = await fetch(`/api/proxy/leads?${buildQueryString()}`);
       if (res.ok) {
-        setLeads(await res.json());
+        const data = await res.json();
+        setLeads(data);
+        onLeadsLoaded?.(data.map((l: Lead) => ({
+          id: l.id, name: l.name, latitude: l.latitude,
+          longitude: l.longitude, heat_score: l.heat_score, status: l.status,
+        })));
       } else {
         setFetchError(`Failed to load leads (${res.status})`);
       }
@@ -282,6 +294,8 @@ export default function LeadPipeline({ refreshKey }: { refreshKey: number }) {
           <div
             key={lead.id}
             onClick={() => setSelectedLead(lead)}
+            onMouseEnter={() => onLeadHover?.(lead.id)}
+            onMouseLeave={() => onLeadHover?.(null)}
             className="bg-gray-900 rounded-lg border border-gray-800 overflow-hidden cursor-pointer hover:border-gray-600 transition-colors"
           >
             <div className="p-3">
@@ -343,6 +357,15 @@ export default function LeadPipeline({ refreshKey }: { refreshKey: number }) {
                 >
                   Reject
                 </button>
+                {lead.latitude && lead.longitude && (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); onFlyTo?.(lead.latitude, lead.longitude); }}
+                    className="bg-gray-800 hover:bg-gray-700 text-gray-400 text-xs py-1.5 px-2 rounded"
+                    title="Show on map"
+                  >
+                    Map
+                  </button>
+                )}
                 <button
                   onClick={(e) => { e.stopPropagation(); handleFindSimilar(lead); }}
                   className="bg-gray-800 hover:bg-gray-700 text-gray-400 text-xs py-1.5 px-2 rounded"
