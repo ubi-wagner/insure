@@ -627,8 +627,12 @@ Jdillon@hilbgroup.com""",
         "default_tone": "informal",
         "follow_up_days": 14,
         "max_auto_emails_per_day": 5,
-        "focus_counties": ["Pinellas", "Hillsborough", "Palm Beach", "Miami-Dade"],
+        "target_counties": [
+            "Pasco", "Pinellas", "Hillsborough", "Manatee", "Sarasota",
+            "Charlotte", "Lee", "Collier", "Palm Beach", "Miami-Dade", "Broward",
+        ],
         "min_tiv_target": 15000000,
+        "min_stories": 3,
     },
 }
 
