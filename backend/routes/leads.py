@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from database import get_db
-from database.models import ActionType, Contact, Entity, EntityAsset, Engagement, LeadLedger, Policy
+from database.models import ActionType, Contact, DocType, Entity, EntityAsset, Engagement, LeadLedger, Policy
 from services.event_bus import EventStatus, EventType, emit
 
 router = APIRouter()
@@ -269,9 +269,8 @@ def get_lead(entity_id: int, db: Session = Depends(get_db)):
     else:
         wind_ratio = _compute_wind_ratio(characteristics)
 
-    heat_score = _compute_heat_score(characteristics) if wind_ratio is None else (
-        "hot" if wind_ratio >= 3.0 else "warm" if wind_ratio >= 1.5 else "cool"
-    )
+    # Always use composite heat score for consistency with list view
+    heat_score = _compute_heat_score(characteristics)
 
     emit(EventType.DB_OPERATION, "get_lead", EventStatus.SUCCESS,
          detail=f"Entity {entity_id}: {entity.name}", entity_id=entity_id)
@@ -527,13 +526,15 @@ def change_stage(entity_id: int, req: StageChangeRequest, db: Session = Depends(
                 for check in readiness[stage_key]["checks"].values()
                 if not check["done"]
             ]
-            return {
-                "success": False,
-                "error": "readiness_check_failed",
-                "message": f"Not ready for {req.stage}. Missing: {', '.join(missing)}",
-                "missing": missing,
-                "readiness": readiness[stage_key],
-            }
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error": "readiness_check_failed",
+                    "message": f"Not ready for {req.stage}. Missing: {', '.join(missing)}",
+                    "missing": missing,
+                    "readiness": readiness[stage_key],
+                },
+            )
 
     old_stage = entity.pipeline_stage
     entity.pipeline_stage = req.stage
@@ -618,7 +619,6 @@ async def upload_document(
         raise HTTPException(status_code=404, detail="Entity not found")
 
     # Validate doc_type
-    from database.models import DocType
     valid_types = [dt.value for dt in DocType]
     if doc_type not in valid_types:
         raise HTTPException(status_code=400, detail=f"Invalid doc_type. Must be one of: {valid_types}")

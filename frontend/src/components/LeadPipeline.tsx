@@ -109,8 +109,7 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
 
   function clearFilters() {
     setFilters(EMPTY_FILTERS);
-    // fetchLeads will be called by the useEffect when state settles
-    setTimeout(fetchLeads, 0);
+    setTimeout(() => { fetchLeads().catch(console.error); }, 0);
   }
 
   async function handleVote(entityId: number, action: "USER_THUMB_UP" | "USER_THUMB_DOWN") {
@@ -124,7 +123,7 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
       if (!res.ok) {
         console.error("Vote failed:", await res.json().catch(() => ({})));
       }
-      fetchLeads();
+      await fetchLeads();
     } catch (err) {
       console.error("Vote failed:", err);
     }
@@ -139,7 +138,7 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
       carrier: chars.carrier ? String(chars.carrier) : "",
     });
     setShowFilters(true);
-    setTimeout(fetchLeads, 50);
+    setTimeout(() => { fetchLeads().catch(console.error); }, 50);
   }
 
   const STAGE_BADGE: Record<string, string> = {
@@ -341,15 +340,15 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
               <p className="text-gray-600 text-xs mb-2">{lead.county} County</p>
 
               {/* Key metrics row */}
-              {(lead.tiv_parsed || lead.premium_parsed || lead.wind_ratio !== null) && (
+              {(lead.tiv_parsed != null || lead.premium_parsed != null || lead.wind_ratio !== null) && (
                 <div className="flex gap-3 text-xs mb-2 bg-gray-800/50 rounded px-2 py-1.5">
-                  {lead.tiv_parsed && (
+                  {lead.tiv_parsed != null && (
                     <div>
                       <span className="text-gray-500">TIV </span>
                       <span className="text-white">{formatDollar(lead.tiv_parsed)}</span>
                     </div>
                   )}
-                  {lead.premium_parsed && (
+                  {lead.premium_parsed != null && (
                     <div>
                       <span className="text-gray-500">Prem </span>
                       <span className="text-white">{formatDollar(lead.premium_parsed)}</span>
@@ -367,7 +366,7 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
               )}
 
               {/* Construction & building info */}
-              {(lead.characteristics?.construction_class || lead.characteristics?.stories) && (
+              {!!(lead.characteristics?.construction_class || lead.characteristics?.stories) && (
                 <div className="flex gap-2 text-xs mb-2 flex-wrap">
                   {lead.characteristics?.construction_class && (
                     <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
