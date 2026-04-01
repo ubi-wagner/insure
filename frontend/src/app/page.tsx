@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import MapView from "@/components/MapView";
@@ -24,10 +24,42 @@ export default function Dashboard() {
   const [selectedLeadId, setSelectedLeadId] = useState<number | null>(null);
   const [flyToTarget, setFlyToTarget] = useState<{ lat: number; lng: number } | null>(null);
   const [detailIds, setDetailIds] = useState<number[]>([]);
+  const [huntingStatus, setHuntingStatus] = useState<string | null>(null);
+  const huntPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const router = useRouter();
 
   const handleLeadsLoaded = useCallback((loadedLeads: LeadLocation[]) => {
     setLeads(loadedLeads);
+  }, []);
+
+  // Poll for region completion after hunt starts
+  function startHuntPolling(regionId: number) {
+    setHuntingStatus("Hunting...");
+    if (huntPollRef.current) clearInterval(huntPollRef.current);
+    let polls = 0;
+    huntPollRef.current = setInterval(async () => {
+      polls++;
+      try {
+        const res = await fetch(`/api/proxy/regions/${regionId}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data.status === "COMPLETED") {
+          setHuntingStatus(`Found ${data.lead_count} properties`);
+          setRefreshKey((k) => k + 1);
+          if (huntPollRef.current) clearInterval(huntPollRef.current);
+          setTimeout(() => setHuntingStatus(null), 5000);
+        } else {
+          setHuntingStatus(`Hunting... ${data.lead_count > 0 ? `(${data.lead_count} found)` : ""}`);
+          // Also refresh leads periodically so results appear as they're found
+          if (polls % 2 === 0) setRefreshKey((k) => k + 1);
+        }
+      } catch {}
+    }, 3000);
+  }
+
+  // Cleanup polling on unmount
+  useEffect(() => {
+    return () => { if (huntPollRef.current) clearInterval(huntPollRef.current); };
   }, []);
 
   function handleMarkerClick(id: number) {
@@ -89,7 +121,7 @@ export default function Dashboard() {
         {/* Map panel */}
         <div className="flex-1 relative">
           <MapView
-            onRegionCreated={() => setRefreshKey((k) => k + 1)}
+            onRegionCreated={(regionId) => startHuntPolling(regionId)}
             leads={leads}
             hoveredLeadId={hoveredLeadId}
             selectedLeadId={selectedLeadId}
@@ -101,6 +133,12 @@ export default function Dashboard() {
         {/* Lead panel */}
         <div className="w-[420px] border-l border-gray-800 bg-gray-950 flex flex-col shrink-0">
           <div className="p-4 overflow-y-auto flex-1">
+            {huntingStatus && (
+              <div className="bg-blue-900/30 border border-blue-800 rounded-lg px-3 py-2 mb-3 flex items-center gap-2">
+                <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse" />
+                <span className="text-blue-300 text-xs font-medium">{huntingStatus}</span>
+              </div>
+            )}
             <LeadPipeline
               refreshKey={refreshKey}
               onLeadsLoaded={handleLeadsLoaded}

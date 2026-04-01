@@ -19,9 +19,18 @@ interface Lead {
   tiv_parsed: number | null;
 }
 
+interface Region {
+  id: number;
+  name: string;
+  bounding_box: { north: number; south: number; east: number; west: number };
+  target_county: string | null;
+  status: string;
+}
+
 interface Filters {
   search: string;
   county: string;
+  region: string;
   carrier: string;
   status_filter: string;
   heat: string;
@@ -33,9 +42,14 @@ interface Filters {
 }
 
 const EMPTY_FILTERS: Filters = {
-  search: "", county: "", carrier: "", status_filter: "",
+  search: "", county: "", region: "", carrier: "", status_filter: "active",
   heat: "", construction: "", min_tiv: "", max_tiv: "", min_premium: "", max_premium: "",
 };
+
+const TARGET_COUNTIES = [
+  "Pasco", "Pinellas", "Hillsborough", "Manatee", "Sarasota",
+  "Charlotte", "Lee", "Collier", "Palm Beach", "Miami-Dade", "Broward",
+];
 
 type SortBy = "date" | "coast_distance" | "wind_ratio" | "premium" | "tiv";
 
@@ -62,17 +76,27 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
   const [votingId, setVotingId] = useState<number | null>(null);
   const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
   const [showFilters, setShowFilters] = useState(false);
+  const [regions, setRegions] = useState<Region[]>([]);
 
   useEffect(() => {
     fetchLeads();
+    fetchRegions();
   }, [refreshKey, sortBy]);
+
+  async function fetchRegions() {
+    try {
+      const res = await fetch("/api/proxy/regions");
+      if (res.ok) setRegions(await res.json());
+    } catch {}
+  }
 
   function buildQueryString(): string {
     const params = new URLSearchParams({ sort_by: sortBy });
     if (filters.search) params.set("search", filters.search);
     if (filters.county) params.set("county", filters.county);
     if (filters.carrier) params.set("carrier", filters.carrier);
-    if (filters.status_filter) params.set("status_filter", filters.status_filter);
+    // "active" is client-side — don't send to API
+    if (filters.status_filter && filters.status_filter !== "active") params.set("status_filter", filters.status_filter);
     if (filters.heat) params.set("heat", filters.heat);
     if (filters.min_tiv) params.set("min_tiv", filters.min_tiv);
     if (filters.max_tiv) params.set("max_tiv", filters.max_tiv);
@@ -87,7 +111,25 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
     try {
       const res = await fetch(`/api/proxy/leads?${buildQueryString()}`);
       if (res.ok) {
-        const data = await res.json();
+        let data: Lead[] = await res.json();
+
+        // Client-side: filter out archived/churned when "active" is selected
+        if (filters.status_filter === "active") {
+          data = data.filter((l) => !["ARCHIVED", "CHURNED", "REJECTED"].includes(l.status));
+        }
+
+        // Client-side filter by region bounding box
+        if (filters.region) {
+          const region = regions.find((r) => String(r.id) === filters.region);
+          if (region?.bounding_box) {
+            const bb = region.bounding_box;
+            data = data.filter((l) =>
+              l.latitude >= bb.south && l.latitude <= bb.north &&
+              l.longitude >= bb.west && l.longitude <= bb.east
+            );
+          }
+        }
+
         setLeads(data);
         onLeadsLoaded?.(data.map((l: Lead, i: number) => ({
           id: l.id, name: l.name, latitude: l.latitude,
@@ -126,6 +168,29 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
       await fetchLeads();
     } catch (err) {
       console.error("Vote failed:", err);
+    }
+    setVotingId(null);
+  }
+
+  async function handleAdvanceStage(entityId: number, newStage: string) {
+    setVotingId(entityId);
+    try {
+      const res = await fetch(`/api/proxy/leads/${entityId}/stage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ stage: newStage, force: false }),
+      });
+      if (!res.ok && res.status === 422) {
+        // Force advance if readiness fails
+        await fetch(`/api/proxy/leads/${entityId}/stage`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ stage: newStage, force: true }),
+        });
+      }
+      await fetchLeads();
+    } catch (err) {
+      console.error("Stage change failed:", err);
     }
     setVotingId(null);
   }
@@ -205,21 +270,32 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
             className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs text-white"
           />
           <div className="grid grid-cols-2 gap-2">
-            <input
-              type="text"
-              placeholder="County"
-              value={filters.county}
+            <select value={filters.region}
+              onChange={(e) => setFilters({ ...filters, region: e.target.value })}
+              className="bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs text-white">
+              <option value="">All Regions</option>
+              {regions.map((r) => (
+                <option key={r.id} value={String(r.id)}>
+                  {r.name}{r.target_county ? ` (${r.target_county})` : ""}
+                </option>
+              ))}
+            </select>
+            <select value={filters.county}
               onChange={(e) => setFilters({ ...filters, county: e.target.value })}
-              className="bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs text-white"
-            />
-            <input
-              type="text"
-              placeholder="Carrier"
-              value={filters.carrier}
-              onChange={(e) => setFilters({ ...filters, carrier: e.target.value })}
-              className="bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs text-white"
-            />
+              className="bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs text-white">
+              <option value="">All Counties</option>
+              {TARGET_COUNTIES.map((c) => (
+                <option key={c} value={c}>{c}</option>
+              ))}
+            </select>
           </div>
+          <input
+            type="text"
+            placeholder="Carrier"
+            value={filters.carrier}
+            onChange={(e) => setFilters({ ...filters, carrier: e.target.value })}
+            className="bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs text-white"
+          />
           <div className="grid grid-cols-2 gap-2">
             <div>
               <label className="text-gray-600 text-[10px]">TIV Range</label>
@@ -248,14 +324,13 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
             <select value={filters.status_filter}
               onChange={(e) => setFilters({ ...filters, status_filter: e.target.value })}
               className="bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs text-white">
-              <option value="">All Stages</option>
+              <option value="active">Active Pipeline</option>
+              <option value="">All (incl. archived)</option>
               <option value="NEW">New</option>
               <option value="CANDIDATE">Candidate</option>
               <option value="TARGET">Target</option>
               <option value="OPPORTUNITY">Opportunity</option>
               <option value="CUSTOMER">Customer</option>
-              <option value="CHURNED">Churned</option>
-              <option value="ARCHIVED">Archived</option>
             </select>
             <select value={filters.heat}
               onChange={(e) => setFilters({ ...filters, heat: e.target.value })}
@@ -405,22 +480,59 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
                 </p>
               )}
 
+              {/* Stage-aware actions */}
               <div className="flex gap-1.5">
-                <button
-                  onClick={(e) => { e.stopPropagation(); handleVote(lead.id, "USER_THUMB_UP"); }}
-                  disabled={votingId === lead.id || lead.status === "CANDIDATE"}
-                  className="flex-1 bg-green-700 hover:bg-green-600 disabled:opacity-50 text-white text-xs py-1.5 rounded"
-                >
-                  Hunt
-                </button>
-                <button
-                  onClick={(e) => { e.stopPropagation(); handleVote(lead.id, "USER_THUMB_DOWN"); }}
-                  disabled={votingId === lead.id || lead.status === "REJECTED"}
-                  className="flex-1 bg-red-900 hover:bg-red-800 disabled:opacity-50 text-white text-xs py-1.5 rounded"
-                >
-                  Reject
-                </button>
-                {lead.latitude && lead.longitude && (
+                {/* Primary action — stage-dependent */}
+                {lead.status === "NEW" && (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); handleVote(lead.id, "USER_THUMB_UP"); }}
+                    disabled={votingId === lead.id}
+                    className="flex-1 bg-purple-700 hover:bg-purple-600 disabled:opacity-50 text-white text-xs py-1.5 rounded"
+                  >
+                    Investigate
+                  </button>
+                )}
+                {lead.status === "CANDIDATE" && (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); handleAdvanceStage(lead.id, "TARGET"); }}
+                    disabled={votingId === lead.id}
+                    className="flex-1 bg-amber-700 hover:bg-amber-600 disabled:opacity-50 text-white text-xs py-1.5 rounded"
+                  >
+                    Target
+                  </button>
+                )}
+                {lead.status === "TARGET" && (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); handleAdvanceStage(lead.id, "OPPORTUNITY"); }}
+                    disabled={votingId === lead.id}
+                    className="flex-1 bg-blue-700 hover:bg-blue-600 disabled:opacity-50 text-white text-xs py-1.5 rounded"
+                  >
+                    Opportunity
+                  </button>
+                )}
+                {lead.status === "OPPORTUNITY" && (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); onOpenDetails?.(lead.id); }}
+                    className="flex-1 bg-green-700 hover:bg-green-600 text-white text-xs py-1.5 rounded"
+                  >
+                    Engage
+                  </button>
+                )}
+
+                {/* Archive — only for non-customer pre-opportunity stages */}
+                {["NEW", "CANDIDATE", "TARGET"].includes(lead.status) && (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); handleAdvanceStage(lead.id, "ARCHIVED"); }}
+                    disabled={votingId === lead.id}
+                    className="bg-gray-800 hover:bg-gray-700 disabled:opacity-50 text-gray-500 text-xs py-1.5 px-2 rounded"
+                    title="Archive"
+                  >
+                    &times;
+                  </button>
+                )}
+
+                {/* Map — always available */}
+                {lead.latitude != null && lead.longitude != null && (
                   <button
                     onClick={(e) => { e.stopPropagation(); onFlyTo?.(lead.latitude, lead.longitude, lead.id); }}
                     className="bg-gray-800 hover:bg-gray-700 text-gray-400 text-xs py-1.5 px-2 rounded"
@@ -429,19 +541,14 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
                     Map
                   </button>
                 )}
+
+                {/* Details — always available */}
                 <button
                   onClick={(e) => { e.stopPropagation(); onOpenDetails?.(lead.id); }}
                   className="bg-blue-900 hover:bg-blue-800 text-blue-300 text-xs py-1.5 px-2 rounded"
-                  title="Open details page"
+                  title="View details"
                 >
-                  Details
-                </button>
-                <button
-                  onClick={(e) => { e.stopPropagation(); handleFindSimilar(lead); }}
-                  className="bg-gray-800 hover:bg-gray-700 text-gray-400 text-xs py-1.5 px-2 rounded"
-                  title="Find similar properties"
-                >
-                  Similar
+                  View
                 </button>
               </div>
             </div>

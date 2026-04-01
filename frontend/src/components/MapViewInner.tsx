@@ -53,7 +53,7 @@ const SEARCH_PROFILES: Record<string, { label: string; stories: number; construc
 };
 
 interface Props {
-  onRegionCreated: () => void;
+  onRegionCreated: (regionId: number) => void;
   leads?: LeadLocation[];
   hoveredLeadId?: number | null;
   selectedLeadId?: number | null;
@@ -302,11 +302,12 @@ export default function MapViewInner({
         }),
       });
       if (res.ok) {
+        const data = await res.json();
         setShowForm(false);
         setFormData({ name: "", stories: 7, coastDistance: 5, constructionFilter: "fire_resistive" });
         setSearchProfile("coastal_highrise");
         setPendingBounds(null);
-        onRegionCreated();
+        onRegionCreated(data.id);
       } else {
         const errData = await res.json().catch(() => ({}));
         setSubmitError(errData.detail || `Failed (${res.status})`);
