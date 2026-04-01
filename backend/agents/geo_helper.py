@@ -5,7 +5,7 @@ from geopy.distance import geodesic
 def get_county_from_coords(lat: float, lng: float) -> str | None:
     """Reverse geocode coordinates to get the Florida county name."""
     try:
-        geolocator = Nominatim(user_agent="insure-lead-gen")
+        geolocator = Nominatim(user_agent="insure-lead-gen", timeout=10)
         location = geolocator.reverse(f"{lat}, {lng}", exactly_one=True)
         if location and location.raw.get("address"):
             county = location.raw["address"].get("county", "")

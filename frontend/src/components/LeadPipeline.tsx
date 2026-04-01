@@ -14,7 +14,7 @@ interface Lead {
   characteristics: Record<string, unknown> | null;
   created_at: string;
   status: string;
-  emails?: Record<string, string>;
+  emails?: Record<string, string> | null;
 }
 
 type SortBy = "date" | "coast_distance";
@@ -24,93 +24,113 @@ export default function LeadPipeline({ refreshKey }: { refreshKey: number }) {
   const [sortBy, setSortBy] = useState<SortBy>("date");
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
   const [loading, setLoading] = useState(false);
+  const [fetchError, setFetchError] = useState<string | null>(null);
+  const [votingId, setVotingId] = useState<number | null>(null);
 
   useEffect(() => {
     fetchLeads();
   }, [refreshKey, sortBy]);
 
   async function fetchLeads() {
+    setFetchError(null);
     try {
-      const res = await fetch(`${API_URL}/api/leads?sort_by=${sortBy}`);
+      const res = await fetch(`${API_URL}/api/leads?sort_by=${sortBy}`, {
+        credentials: "include",
+      });
       if (res.ok) {
         const data = await res.json();
         setLeads(data);
+      } else {
+        setFetchError(`Failed to load leads (${res.status})`);
       }
     } catch (err) {
       console.error("Failed to fetch leads:", err);
+      setFetchError("Unable to connect to API");
     }
   }
 
   async function handleVote(entityId: number, action: "USER_THUMB_UP" | "USER_THUMB_DOWN") {
-    setLoading(true);
+    setVotingId(entityId);
     try {
-      await fetch(`${API_URL}/api/leads/${entityId}/vote`, {
+      const res = await fetch(`${API_URL}/api/leads/${entityId}/vote`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify({ action_type: action }),
       });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        console.error("Vote failed:", errData);
+      }
       fetchLeads();
     } catch (err) {
       console.error("Vote failed:", err);
     }
-    setLoading(false);
+    setVotingId(null);
   }
 
   function getStaticMapUrl(lat: number, lng: number) {
     const key = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
-    if (!key) return "";
-    return `https://maps.googleapis.com/maps/api/staticmap?center=${lat},${lng}&zoom=18&size=400x200&maptype=satellite&key=${key}&markers=color:red|${lat},${lng}`;
+    if (!key) return null;
+    return `https://maps.googleapis.com/maps/api/staticmap?center=${lat},${lng}&zoom=16&size=400x200&maptype=hybrid&key=${key}&markers=color:red%7C${lat},${lng}`;
   }
 
   function getStatusBadge(status: string) {
     switch (status) {
       case "CANDIDATE":
-        return <span className="bg-green-700 text-green-200 text-xs px-2 py-0.5 rounded">Candidate</span>;
+        return <span className="bg-green-700 text-green-100 text-xs px-2 py-0.5 rounded-full">Candidate</span>;
       case "REJECTED":
-        return <span className="bg-red-700 text-red-200 text-xs px-2 py-0.5 rounded">Rejected</span>;
+        return <span className="bg-red-900 text-red-200 text-xs px-2 py-0.5 rounded-full">Rejected</span>;
       default:
-        return <span className="bg-yellow-700 text-yellow-200 text-xs px-2 py-0.5 rounded">New</span>;
+        return <span className="bg-gray-700 text-gray-300 text-xs px-2 py-0.5 rounded-full">New</span>;
     }
   }
 
   return (
     <div>
-      {/* Header */}
-      <div className="flex items-center justify-between mb-4">
-        <h2 className="text-xl font-bold">Lead Pipeline</h2>
-        <div className="flex gap-2">
-          <button
-            onClick={() => setSortBy("date")}
-            className={`px-3 py-1 rounded text-sm ${sortBy === "date" ? "bg-blue-600" : "bg-gray-700 hover:bg-gray-600"}`}
-          >
-            Date Found
-          </button>
-          <button
-            onClick={() => setSortBy("coast_distance")}
-            className={`px-3 py-1 rounded text-sm ${sortBy === "coast_distance" ? "bg-blue-600" : "bg-gray-700 hover:bg-gray-600"}`}
-          >
-            Coast Distance
-          </button>
-        </div>
+      {/* Sort controls */}
+      <div className="flex items-center gap-3 mb-4">
+        <span className="text-gray-400 text-sm">Sort by:</span>
+        <button
+          onClick={() => setSortBy("date")}
+          className={`text-sm px-3 py-1 rounded ${sortBy === "date" ? "bg-blue-600 text-white" : "bg-gray-800 text-gray-400"}`}
+        >
+          Date
+        </button>
+        <button
+          onClick={() => setSortBy("coast_distance")}
+          className={`text-sm px-3 py-1 rounded ${sortBy === "coast_distance" ? "bg-blue-600 text-white" : "bg-gray-800 text-gray-400"}`}
+        >
+          Coast Proximity
+        </button>
       </div>
 
-      {leads.length === 0 && (
+      {/* Error state */}
+      {fetchError && (
+        <div className="text-red-400 text-center py-4 bg-red-900/20 rounded-lg mb-4">
+          {fetchError}
+          <button onClick={fetchLeads} className="ml-2 underline text-red-300 hover:text-red-200">Retry</button>
+        </div>
+      )}
+
+      {/* Empty state */}
+      {!fetchError && leads.length === 0 && (
         <div className="text-gray-500 text-center py-12">
           No leads found yet. Draw a region on the map to start hunting.
         </div>
       )}
 
-      {/* Lead Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+      {/* Lead cards grid */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {leads.map((lead) => (
           <div
             key={lead.id}
-            className="bg-gray-900 border border-gray-800 rounded-lg overflow-hidden hover:border-gray-600 transition cursor-pointer"
             onClick={() => setSelectedLead(lead)}
+            className="bg-gray-900 rounded-xl border border-gray-800 overflow-hidden cursor-pointer hover:border-gray-600 transition-colors"
           >
-            {lead.latitude && lead.longitude && (
+            {lead.latitude && lead.longitude && getStaticMapUrl(lead.latitude, lead.longitude) && (
               <img
-                src={getStaticMapUrl(lead.latitude, lead.longitude)}
+                src={getStaticMapUrl(lead.latitude, lead.longitude)!}
                 alt={lead.name}
                 className="w-full h-40 object-cover"
               />
@@ -134,17 +154,17 @@ export default function LeadPipeline({ refreshKey }: { refreshKey: number }) {
               <div className="flex gap-2">
                 <button
                   onClick={(e) => { e.stopPropagation(); handleVote(lead.id, "USER_THUMB_UP"); }}
-                  disabled={loading || lead.status === "CANDIDATE"}
+                  disabled={votingId === lead.id || lead.status === "CANDIDATE"}
                   className="flex-1 bg-green-700 hover:bg-green-600 disabled:opacity-50 text-white text-sm py-1.5 rounded flex items-center justify-center gap-1"
                 >
-                  👍 Hunt
+                  Hunt
                 </button>
                 <button
                   onClick={(e) => { e.stopPropagation(); handleVote(lead.id, "USER_THUMB_DOWN"); }}
-                  disabled={loading || lead.status === "REJECTED"}
-                  className="flex-1 bg-red-700 hover:bg-red-600 disabled:opacity-50 text-white text-sm py-1.5 rounded flex items-center justify-center gap-1"
+                  disabled={votingId === lead.id || lead.status === "REJECTED"}
+                  className="flex-1 bg-red-900 hover:bg-red-800 disabled:opacity-50 text-white text-sm py-1.5 rounded flex items-center justify-center gap-1"
                 >
-                  👎 Pass
+                  Reject
                 </button>
               </div>
             </div>
@@ -152,70 +172,37 @@ export default function LeadPipeline({ refreshKey }: { refreshKey: number }) {
         ))}
       </div>
 
-      {/* Lead Detail Modal */}
+      {/* Detail modal */}
       {selectedLead && (
-        <div
-          className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4"
-          onClick={() => setSelectedLead(null)}
-        >
-          <div
-            className="bg-gray-900 border border-gray-700 rounded-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="p-6">
-              <div className="flex items-start justify-between mb-4">
-                <div>
-                  <h2 className="text-xl font-bold">{selectedLead.name}</h2>
-                  <p className="text-gray-400 text-sm">{selectedLead.address}</p>
-                </div>
-                <button
-                  onClick={() => setSelectedLead(null)}
-                  className="text-gray-500 hover:text-white text-xl"
-                >
-                  ✕
-                </button>
-              </div>
-
-              {selectedLead.latitude && selectedLead.longitude && (
-                <img
-                  src={getStaticMapUrl(selectedLead.latitude, selectedLead.longitude)}
-                  alt={selectedLead.name}
-                  className="w-full h-48 object-cover rounded-lg mb-4"
-                />
-              )}
-
-              {selectedLead.characteristics && (
-                <div className="mb-4 p-4 bg-gray-800 rounded-lg">
-                  <h3 className="font-semibold mb-2 text-blue-400">Extracted Intel</h3>
-                  <div className="grid grid-cols-2 gap-2 text-sm">
-                    {Object.entries(selectedLead.characteristics).map(([key, val]) => (
-                      <div key={key}>
-                        <span className="text-gray-400 capitalize">{key.replace(/_/g, " ")}: </span>
-                        <span className="text-white">{String(val)}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {selectedLead.emails && (
-                <div>
-                  <h3 className="font-semibold mb-3 text-blue-400">Email Drafts</h3>
-                  <div className="space-y-3">
-                    {Object.entries(selectedLead.emails).map(([style, content]) => (
-                      <details key={style} className="bg-gray-800 rounded-lg">
-                        <summary className="px-4 py-2 cursor-pointer text-sm font-medium capitalize hover:text-blue-400">
-                          {style.replace(/_/g, " ")} Approach
-                        </summary>
-                        <div className="px-4 pb-3 text-sm text-gray-300 whitespace-pre-wrap">
-                          {String(content)}
-                        </div>
-                      </details>
-                    ))}
-                  </div>
-                </div>
-              )}
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4" onClick={() => setSelectedLead(null)}>
+          <div className="bg-gray-900 rounded-xl border border-gray-700 max-w-2xl w-full max-h-[80vh] overflow-y-auto p-6" onClick={(e) => e.stopPropagation()}>
+            <div className="flex justify-between items-start mb-4">
+              <h2 className="text-xl font-bold">{selectedLead.name}</h2>
+              <button onClick={() => setSelectedLead(null)} className="text-gray-400 hover:text-white text-xl">&times;</button>
             </div>
+            <p className="text-gray-400 text-sm mb-1">{selectedLead.address}</p>
+            <p className="text-gray-500 text-sm mb-4">{selectedLead.county} County</p>
+
+            {selectedLead.characteristics && Object.keys(selectedLead.characteristics).length > 0 && (
+              <div className="mb-4">
+                <h3 className="text-sm font-semibold text-gray-300 mb-2">Insurance Intelligence</h3>
+                <pre className="bg-gray-800 rounded p-3 text-xs text-gray-300 overflow-x-auto">
+                  {JSON.stringify(selectedLead.characteristics, null, 2)}
+                </pre>
+              </div>
+            )}
+
+            {!!selectedLead.emails && (
+              <div>
+                <h3 className="text-sm font-semibold text-gray-300 mb-2">Generated Emails</h3>
+                {Object.entries(selectedLead.emails).map(([style, email]) => (
+                  <div key={style} className="mb-3 bg-gray-800 rounded p-3">
+                    <p className="text-blue-400 text-xs font-semibold uppercase mb-1">{style}</p>
+                    <pre className="text-xs text-gray-300 whitespace-pre-wrap">{typeof email === "object" ? JSON.stringify(email, null, 2) : String(email)}</pre>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       )}
