@@ -16,4 +16,4 @@ RUN playwright install --with-deps chromium
 COPY . .
 
 # Migrations run inside the FastAPI lifespan handler
-CMD uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}
+CMD ["python", "run.py"]
