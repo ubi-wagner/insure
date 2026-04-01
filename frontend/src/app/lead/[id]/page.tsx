@@ -112,11 +112,12 @@ export default function LeadDetailPage() {
         body: JSON.stringify({ style, subject, body, channel: "EMAIL" }),
       });
       if (res.ok) {
-        // Refresh lead data to show new engagement
         const updated = await fetch(`/api/proxy/leads/${id}`);
         if (updated.ok) setLead(await updated.json());
       }
-    } catch {}
+    } catch (err) {
+      console.error("Failed to send outreach:", err);
+    }
     setSendingStyle(null);
   }
 
@@ -135,7 +136,9 @@ export default function LeadDetailPage() {
         setContactForm({ name: "", title: "", email: "", phone: "", is_primary: 0 });
         setShowAddContact(false);
       }
-    } catch {}
+    } catch (err) {
+      console.error("Failed to add contact:", err);
+    }
     setSavingContact(false);
   }
 
@@ -148,16 +151,18 @@ export default function LeadDetailPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ stage: newStage, force }),
       });
-      const data = await res.json();
-      if (data.success) {
-        // Refresh full lead data (enrichments may have run)
+      if (!res.ok && res.status === 422) {
+        const data = await res.json();
+        setStageError(data.detail?.message || "Not ready for this stage");
+      } else if (res.ok) {
         const updated = await fetch(`/api/proxy/leads/${id}`);
         if (updated.ok) setLead(await updated.json());
         else setLead((prev) => prev ? { ...prev, pipeline_stage: newStage } : prev);
-      } else if (data.error === "readiness_check_failed") {
-        setStageError(data.message);
       }
-    } catch {}
+    } catch (err) {
+      console.error("Failed to change stage:", err);
+      setStageError("Network error — could not change stage");
+    }
     setStageChanging(false);
   }
 
@@ -313,12 +318,12 @@ export default function LeadDetailPage() {
         {activeTab === "overview" && (
           <div className="space-y-6">
             {/* Building Profile */}
-            {(chars.construction_class || chars.stories || chars.building_type) && (
+            {!!(chars.construction_class || chars.stories || chars.building_type) && (
               <div>
                 <h2 className="text-sm font-semibold text-gray-300 mb-3">Building Profile</h2>
                 <div className="bg-gray-900 border border-gray-800 rounded-lg p-4">
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                    {chars.construction_class && (
+                    {!!chars.construction_class && (
                       <div>
                         <p className="text-gray-500 text-xs">Construction Class</p>
                         <p className={`text-sm font-medium mt-1 ${
@@ -330,43 +335,43 @@ export default function LeadDetailPage() {
                         {chars.iso_class ? <p className="text-gray-600 text-xs mt-0.5">ISO Class {String(chars.iso_class)}</p> : null}
                       </div>
                     )}
-                    {chars.stories && (
+                    {!!chars.stories && (
                       <div>
                         <p className="text-gray-500 text-xs">Stories</p>
                         <p className="text-white text-sm font-medium mt-1">{String(chars.stories)}</p>
                       </div>
                     )}
-                    {chars.building_type && (
+                    {!!chars.building_type && (
                       <div>
                         <p className="text-gray-500 text-xs">Building Type</p>
                         <p className="text-white text-sm font-medium mt-1 capitalize">{String(chars.building_type)}</p>
                       </div>
                     )}
-                    {chars.building_material && (
+                    {!!chars.building_material && (
                       <div>
                         <p className="text-gray-500 text-xs">Material</p>
                         <p className="text-white text-sm font-medium mt-1 capitalize">{String(chars.building_material)}</p>
                       </div>
                     )}
-                    {chars.year_built && (
+                    {!!chars.year_built && (
                       <div>
                         <p className="text-gray-500 text-xs">Year Built</p>
                         <p className="text-white text-sm font-medium mt-1">{String(chars.year_built)}</p>
                       </div>
                     )}
-                    {chars.units_estimate && (
+                    {!!chars.units_estimate && (
                       <div>
                         <p className="text-gray-500 text-xs">Est. Units</p>
                         <p className="text-white text-sm font-medium mt-1">~{String(chars.units_estimate)}</p>
                       </div>
                     )}
-                    {chars.footprint_sqft && (
+                    {!!chars.footprint_sqft && (
                       <div>
                         <p className="text-gray-500 text-xs">Footprint</p>
                         <p className="text-white text-sm font-medium mt-1">{Number(chars.footprint_sqft).toLocaleString()} sqft</p>
                       </div>
                     )}
-                    {chars.tiv_estimate && (
+                    {!!chars.tiv_estimate && (
                       <div>
                         <p className="text-gray-500 text-xs">Est. TIV</p>
                         <p className="text-white text-sm font-semibold mt-1">${Number(chars.tiv_estimate).toLocaleString()}</p>
@@ -378,7 +383,7 @@ export default function LeadDetailPage() {
             )}
 
             {/* Flood & Risk Profile */}
-            {chars.flood_zone && (
+            {!!chars.flood_zone && (
               <div>
                 <h2 className="text-sm font-semibold text-gray-300 mb-3">Flood & Risk Profile</h2>
                 <div className="bg-gray-900 border border-gray-800 rounded-lg p-4">
@@ -400,13 +405,13 @@ export default function LeadDetailPage() {
                         </p>
                       </div>
                     )}
-                    {chars.flood_base_elev_ft && (
+                    {!!chars.flood_base_elev_ft && (
                       <div>
                         <p className="text-gray-500 text-xs">Base Flood Elevation</p>
                         <p className="text-white text-sm font-medium mt-1">{String(chars.flood_base_elev_ft)} ft</p>
                       </div>
                     )}
-                    {chars.fema_map_url && (
+                    {!!chars.fema_map_url && (
                       <div>
                         <p className="text-gray-500 text-xs">FEMA Map</p>
                         <a href={String(chars.fema_map_url)} target="_blank" rel="noopener noreferrer"
@@ -419,36 +424,36 @@ export default function LeadDetailPage() {
             )}
 
             {/* Property Appraiser */}
-            {chars.pa_lookup_url && (
+            {!!chars.pa_lookup_url && (
               <div>
                 <h2 className="text-sm font-semibold text-gray-300 mb-3">Property Appraiser</h2>
                 <div className="bg-gray-900 border border-gray-800 rounded-lg p-4">
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                    {chars.pa_owner && (
+                    {!!chars.pa_owner && (
                       <div>
                         <p className="text-gray-500 text-xs">Owner</p>
                         <p className="text-white text-sm font-medium mt-1">{String(chars.pa_owner)}</p>
                       </div>
                     )}
-                    {chars.pa_assessed_value && (
+                    {!!chars.pa_assessed_value && (
                       <div>
                         <p className="text-gray-500 text-xs">Assessed Value</p>
                         <p className="text-white text-sm font-medium mt-1">${Number(chars.pa_assessed_value).toLocaleString()}</p>
                       </div>
                     )}
-                    {chars.pa_year_built && (
+                    {!!chars.pa_year_built && (
                       <div>
                         <p className="text-gray-500 text-xs">Year Built (PA)</p>
                         <p className="text-white text-sm font-medium mt-1">{String(chars.pa_year_built)}</p>
                       </div>
                     )}
-                    {chars.pa_building_sqft && (
+                    {!!chars.pa_building_sqft && (
                       <div>
                         <p className="text-gray-500 text-xs">Building Sqft</p>
                         <p className="text-white text-sm font-medium mt-1">{Number(chars.pa_building_sqft).toLocaleString()}</p>
                       </div>
                     )}
-                    {chars.pa_parcel_id && (
+                    {!!chars.pa_parcel_id && (
                       <div>
                         <p className="text-gray-500 text-xs">Parcel ID</p>
                         <p className="text-white text-sm font-medium mt-1">{String(chars.pa_parcel_id)}</p>
@@ -465,30 +470,30 @@ export default function LeadDetailPage() {
             )}
 
             {/* Sunbiz / Association */}
-            {(chars.sunbiz_corp_name || chars.sunbiz_search_url) && (
+            {!!(chars.sunbiz_corp_name || chars.sunbiz_search_url) && (
               <div>
                 <h2 className="text-sm font-semibold text-gray-300 mb-3">Association (Sunbiz)</h2>
                 <div className="bg-gray-900 border border-gray-800 rounded-lg p-4">
                   <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-                    {chars.sunbiz_corp_name && (
+                    {!!chars.sunbiz_corp_name && (
                       <div>
                         <p className="text-gray-500 text-xs">Corporation Name</p>
                         <p className="text-white text-sm font-medium mt-1">{String(chars.sunbiz_corp_name)}</p>
                       </div>
                     )}
-                    {chars.sunbiz_filing_status && (
+                    {!!chars.sunbiz_filing_status && (
                       <div>
                         <p className="text-gray-500 text-xs">Filing Status</p>
                         <p className="text-white text-sm font-medium mt-1">{String(chars.sunbiz_filing_status)}</p>
                       </div>
                     )}
-                    {chars.property_manager && (
+                    {!!chars.property_manager && (
                       <div>
                         <p className="text-gray-500 text-xs">Registered Agent / Mgmt Co.</p>
                         <p className="text-white text-sm font-medium mt-1">{String(chars.property_manager)}</p>
                       </div>
                     )}
-                    {chars.sunbiz_doc_number && (
+                    {!!chars.sunbiz_doc_number && (
                       <div>
                         <p className="text-gray-500 text-xs">Document #</p>
                         <p className="text-white text-sm font-medium mt-1">{String(chars.sunbiz_doc_number)}</p>
@@ -569,8 +574,8 @@ export default function LeadDetailPage() {
                     <div><span className="text-gray-500">TIV: </span><span className="font-semibold">{fmt(pol.tiv)}</span></div>
                     <div><span className="text-gray-500">Expires: </span><span>{pol.expiration || "\u2014"}</span></div>
                     <div><span className="text-gray-500">Deductible: </span><span>{pol.deductible || "\u2014"}</span></div>
-                    {pol.prior_premium && <div><span className="text-gray-500">Prior: </span><span>{fmt(pol.prior_premium)}</span></div>}
-                    {pol.premium && pol.tiv && pol.tiv > 0 && (
+                    {pol.prior_premium != null && <div><span className="text-gray-500">Prior: </span><span>{fmt(pol.prior_premium)}</span></div>}
+                    {pol.premium != null && pol.tiv != null && pol.tiv > 0 && (
                       <div><span className="text-gray-500">Wind Ratio: </span>
                         <span className={pol.premium / pol.tiv * 100 >= 3 ? "text-red-400 font-semibold" : ""}>
                           {(pol.premium / pol.tiv * 100).toFixed(2)}%
@@ -599,13 +604,17 @@ export default function LeadDetailPage() {
                     file.name.toLowerCase().includes("loss") ? "LOSS_RUN" :
                     file.name.toLowerCase().includes("audit") ? "AUDIT" :
                     file.name.toLowerCase().includes("sunbiz") ? "SUNBIZ" : "OTHER";
-                  const formData = new FormData();
-                  formData.append("file", file);
-                  formData.append("doc_type", docType);
-                  const res = await fetch(`/api/proxy/leads/${id}/upload`, { method: "POST", body: formData });
-                  if (res.ok) {
-                    const updated = await fetch(`/api/proxy/leads/${id}`);
-                    if (updated.ok) setLead(await updated.json());
+                  try {
+                    const formData = new FormData();
+                    formData.append("file", file);
+                    formData.append("doc_type", docType);
+                    const res = await fetch(`/api/proxy/leads/${id}/upload`, { method: "POST", body: formData });
+                    if (res.ok) {
+                      const updated = await fetch(`/api/proxy/leads/${id}`);
+                      if (updated.ok) setLead(await updated.json());
+                    }
+                  } catch (err) {
+                    console.error("Upload failed:", err);
                   }
                   e.target.value = "";
                 }} />

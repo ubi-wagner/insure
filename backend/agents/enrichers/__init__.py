@@ -34,7 +34,10 @@ def record_enrichment(
     source_url: str | None = None,
     detail: str = "",
 ):
-    """Record an enrichment event with full provenance tracking."""
+    """Record an enrichment event with full provenance tracking.
+
+    Uses flush (not commit) so the caller controls the transaction boundary.
+    """
     now = datetime.now(timezone.utc).isoformat()
 
     # Update enrichment_sources on entity
@@ -56,7 +59,13 @@ def record_enrichment(
         source_url=source_url,
     )
     db.add(ledger)
-    db.commit()
+
+    try:
+        db.flush()
+    except Exception as e:
+        logger.error(f"Failed to record enrichment {source_id} for entity {entity.id}: {e}")
+        db.rollback()
+        return
 
     emit(EventType.HUNTER, f"enrich_{source_id}", EventStatus.SUCCESS,
          detail=f"{source_id}: {len(fields_updated)} fields for '{entity.name}'",

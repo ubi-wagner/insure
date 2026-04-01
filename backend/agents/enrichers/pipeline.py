@@ -44,10 +44,12 @@ def run_enrichment_for_stage(entity: Entity, stage: str, db: Session) -> list[st
         return []
 
     completed = []
-    existing_sources = entity.enrichment_sources or {}
 
     for enricher_info in enrichers:
         source_id = enricher_info["source_id"]
+
+        # Re-read sources each iteration (prior enrichers may have updated them)
+        existing_sources = entity.enrichment_sources or {}
 
         # Skip if already enriched from this source
         if source_id in existing_sources:
@@ -66,9 +68,12 @@ def run_enrichment_for_stage(entity: Entity, stage: str, db: Session) -> list[st
 
             result = enricher_info["function"](entity, db)
             if result:
+                # Commit after each successful enricher to isolate transactions
+                db.commit()
                 completed.append(source_id)
                 logger.info(f"Enrichment {source_id} completed for entity {entity.id}")
         except Exception as e:
+            db.rollback()
             logger.error(f"Enrichment {source_id} failed for entity {entity.id}: {e}")
             emit(EventType.HUNTER, f"enrich_{source_id}", EventStatus.ERROR,
                  detail=str(e)[:200], entity_id=entity.id)
