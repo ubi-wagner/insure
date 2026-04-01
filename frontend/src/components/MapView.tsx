@@ -9,13 +9,16 @@ interface LeadLocation {
   longitude: number;
   heat_score: string;
   status: string;
+  listIndex: number;
 }
 
 interface MapViewProps {
   onRegionCreated: () => void;
   leads?: LeadLocation[];
   hoveredLeadId?: number | null;
+  selectedLeadId?: number | null;
   flyToTarget?: { lat: number; lng: number } | null;
+  onMarkerClick?: (id: number) => void;
 }
 
 const MapViewInner = dynamic(() => import("./MapViewInner"), {

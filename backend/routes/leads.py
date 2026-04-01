@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from database import get_db
-from database.models import ActionType, Entity, EntityAsset, LeadLedger
+from database.models import ActionType, Entity, EntityAsset, Engagement, LeadLedger, Policy
 from services.event_bus import EventStatus, EventType, emit
 
 router = APIRouter()
@@ -99,22 +99,22 @@ def list_leads(
     results = []
 
     for entity in entities:
-        latest_vote = (
-            db.query(LeadLedger)
-            .filter(
-                LeadLedger.entity_id == entity.id,
-                LeadLedger.action_type.in_([ActionType.USER_THUMB_UP, ActionType.USER_THUMB_DOWN]),
+        # Use pipeline_stage from DB; fall back to vote-based for legacy
+        entity_status = entity.pipeline_stage or "NEW"
+        if entity_status == "NEW":
+            latest_vote = (
+                db.query(LeadLedger)
+                .filter(
+                    LeadLedger.entity_id == entity.id,
+                    LeadLedger.action_type.in_([ActionType.USER_THUMB_UP, ActionType.USER_THUMB_DOWN]),
+                )
+                .order_by(LeadLedger.created_at.desc())
+                .first()
             )
-            .order_by(LeadLedger.created_at.desc())
-            .first()
-        )
-
-        if latest_vote and latest_vote.action_type == ActionType.USER_THUMB_UP:
-            entity_status = "CANDIDATE"
-        elif latest_vote and latest_vote.action_type == ActionType.USER_THUMB_DOWN:
-            entity_status = "REJECTED"
-        else:
-            entity_status = "NEW"
+            if latest_vote and latest_vote.action_type == ActionType.USER_THUMB_UP:
+                entity_status = "CANDIDATE"
+            elif latest_vote and latest_vote.action_type == ActionType.USER_THUMB_DOWN:
+                entity_status = "REJECTED"
 
         # Status filter
         if status_filter and entity_status != status_filter:
@@ -159,6 +159,8 @@ def list_leads(
                 "characteristics": characteristics,
                 "created_at": entity.created_at.isoformat(),
                 "status": entity_status,
+                "pipeline_stage": entity.pipeline_stage,
+                "parent_id": entity.parent_id,
                 "emails": characteristics.get("emails"),
                 # Scoring fields
                 "wind_ratio": wind_ratio,
@@ -191,36 +193,85 @@ def get_lead(entity_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Entity not found")
 
     assets = db.query(EntityAsset).filter(EntityAsset.entity_id == entity_id).all()
+    policies = db.query(Policy).filter(Policy.entity_id == entity_id).order_by(Policy.is_active.desc()).all()
+    engagements_list = db.query(Engagement).filter(Engagement.entity_id == entity_id).order_by(Engagement.created_at.desc()).all()
     contacts = entity.contacts
+    children = entity.children or []
     characteristics = entity.characteristics or {}
+
+    # Compute wind ratio from Policy records if available, else from characteristics
+    active_wind = next((p for p in policies if p.coverage_type == "WIND" and p.is_active), None)
+    if active_wind and active_wind.premium and active_wind.tiv and active_wind.tiv > 0:
+        wind_ratio = round(active_wind.premium / active_wind.tiv * 100, 3)
+    else:
+        wind_ratio = _compute_wind_ratio(characteristics)
+
+    heat_score = _compute_heat_score(characteristics) if wind_ratio is None else (
+        "hot" if wind_ratio >= 3.0 else "warm" if wind_ratio >= 1.5 else "cool"
+    )
 
     emit(EventType.DB_OPERATION, "get_lead", EventStatus.SUCCESS,
          detail=f"Entity {entity_id}: {entity.name}", entity_id=entity_id)
 
     return {
         "id": entity.id,
+        "parent_id": entity.parent_id,
         "name": entity.name,
         "address": entity.address,
         "county": entity.county,
         "latitude": entity.latitude,
         "longitude": entity.longitude,
+        "pipeline_stage": entity.pipeline_stage,
         "characteristics": characteristics,
         "emails": characteristics.get("emails"),
-        "wind_ratio": _compute_wind_ratio(characteristics),
-        "heat_score": _compute_heat_score(characteristics),
-        "premium_parsed": _parse_dollar(characteristics.get("premium")),
-        "tiv_parsed": _parse_dollar(characteristics.get("tiv")),
-        "assets": [
+        "wind_ratio": wind_ratio,
+        "heat_score": heat_score,
+        "premium_parsed": active_wind.premium if active_wind else _parse_dollar(characteristics.get("premium")),
+        "tiv_parsed": active_wind.tiv if active_wind else _parse_dollar(characteristics.get("tiv")),
+        "policies": [
             {
-                "id": a.id,
-                "doc_type": a.doc_type.value,
-                "extracted_text": a.extracted_text,
+                "id": p.id,
+                "coverage_type": p.coverage_type,
+                "carrier": p.carrier,
+                "policy_number": p.policy_number,
+                "premium": p.premium,
+                "tiv": p.tiv,
+                "deductible": p.deductible,
+                "expiration": p.expiration,
+                "prior_premium": p.prior_premium,
+                "premium_increase_pct": p.premium_increase_pct,
+                "is_active": p.is_active,
+                "notes": p.notes,
             }
+            for p in policies
+        ],
+        "engagements": [
+            {
+                "id": eng.id,
+                "type": eng.engagement_type,
+                "channel": eng.channel,
+                "status": eng.status,
+                "subject": eng.subject,
+                "body": eng.body,
+                "style": eng.style,
+                "sent_at": eng.sent_at.isoformat() if eng.sent_at else None,
+                "responded_at": eng.responded_at.isoformat() if eng.responded_at else None,
+                "follow_up_at": eng.follow_up_at.isoformat() if eng.follow_up_at else None,
+                "created_at": eng.created_at.isoformat(),
+            }
+            for eng in engagements_list
+        ],
+        "assets": [
+            {"id": a.id, "doc_type": a.doc_type.value, "extracted_text": a.extracted_text}
             for a in assets
         ],
         "contacts": [
-            {"id": c.id, "name": c.name, "title": c.title}
+            {"id": c.id, "name": c.name, "title": c.title, "email": c.email, "phone": c.phone, "is_primary": c.is_primary}
             for c in contacts
+        ],
+        "children": [
+            {"id": ch.id, "name": ch.name, "address": ch.address, "pipeline_stage": ch.pipeline_stage}
+            for ch in children
         ],
     }
 
@@ -245,6 +296,13 @@ def vote_lead(entity_id: int, vote: VoteRequest, db: Session = Depends(get_db)):
 
     ledger_event = LeadLedger(entity_id=entity_id, action_type=action)
     db.add(ledger_event)
+
+    # Update pipeline stage
+    if action == ActionType.USER_THUMB_UP and entity.pipeline_stage == "NEW":
+        entity.pipeline_stage = "CANDIDATE"
+    elif action == ActionType.USER_THUMB_DOWN:
+        entity.pipeline_stage = "ARCHIVED"
+
     db.commit()
 
     emit(EventType.DB_OPERATION, "vote_lead", EventStatus.SUCCESS,
@@ -262,4 +320,36 @@ def vote_lead(entity_id: int, vote: VoteRequest, db: Session = Depends(get_db)):
             emit(EventType.AI_ANALYZER, "deep_dive", EventStatus.ERROR,
                  detail=str(e)[:200], entity_id=entity_id)
 
-    return {"success": True, "action": action.value}
+    return {"success": True, "action": action.value, "pipeline_stage": entity.pipeline_stage}
+
+
+class StageChangeRequest(BaseModel):
+    stage: str
+
+
+@router.post("/api/leads/{entity_id}/stage")
+def change_stage(entity_id: int, req: StageChangeRequest, db: Session = Depends(get_db)):
+    """Manually advance or change an entity's pipeline stage."""
+    valid_stages = ["NEW", "CANDIDATE", "TARGET", "OPPORTUNITY", "CUSTOMER", "CHURNED", "ARCHIVED"]
+    if req.stage not in valid_stages:
+        raise HTTPException(status_code=400, detail=f"Invalid stage. Must be one of: {valid_stages}")
+
+    entity = db.query(Entity).filter(Entity.id == entity_id).first()
+    if not entity:
+        raise HTTPException(status_code=404, detail="Entity not found")
+
+    old_stage = entity.pipeline_stage
+    entity.pipeline_stage = req.stage
+
+    ledger = LeadLedger(
+        entity_id=entity_id,
+        action_type="STAGE_CHANGE",
+        detail=f"{old_stage} → {req.stage}",
+    )
+    db.add(ledger)
+    db.commit()
+
+    emit(EventType.DB_OPERATION, "stage_change", EventStatus.SUCCESS,
+         detail=f"'{entity.name}': {old_stage} → {req.stage}", entity_id=entity_id)
+
+    return {"success": True, "pipeline_stage": entity.pipeline_stage}

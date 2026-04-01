@@ -14,18 +14,39 @@ interface LeadLocation {
   longitude: number;
   heat_score: string;
   status: string;
+  listIndex: number;
 }
 
 export default function Dashboard() {
   const [refreshKey, setRefreshKey] = useState(0);
   const [leads, setLeads] = useState<LeadLocation[]>([]);
   const [hoveredLeadId, setHoveredLeadId] = useState<number | null>(null);
+  const [selectedLeadId, setSelectedLeadId] = useState<number | null>(null);
   const [flyToTarget, setFlyToTarget] = useState<{ lat: number; lng: number } | null>(null);
+  const [detailIds, setDetailIds] = useState<number[]>([]);
   const router = useRouter();
 
   const handleLeadsLoaded = useCallback((loadedLeads: LeadLocation[]) => {
     setLeads(loadedLeads);
   }, []);
+
+  function handleMarkerClick(id: number) {
+    setSelectedLeadId(id);
+    // Find the lead and zoom to it
+    const lead = leads.find(l => l.id === id);
+    if (lead?.latitude && lead?.longitude) {
+      setFlyToTarget({ lat: lead.latitude, lng: lead.longitude });
+    }
+  }
+
+  function handleOpenDetails(id: number) {
+    setDetailIds(prev => {
+      if (prev.includes(id)) return prev;
+      const next = [...prev, id];
+      return next.length > 5 ? next.slice(-5) : next; // max 5 open
+    });
+    router.push(`/lead/${id}`);
+  }
 
   async function handleLogout() {
     await fetch("/api/auth", { method: "DELETE" });
@@ -42,8 +63,18 @@ export default function Dashboard() {
           <span className="text-gray-500 text-sm">Hunt · Kill · Cook</span>
         </div>
         <div className="flex items-center gap-4">
+          {detailIds.length > 0 && (
+            <div className="flex gap-1">
+              {detailIds.map((id) => (
+                <Link key={id} href={`/lead/${id}`}
+                  className="bg-gray-800 text-gray-400 hover:text-white text-xs px-2 py-1 rounded">
+                  #{id}
+                </Link>
+              ))}
+            </div>
+          )}
           <Link href="/events" className="text-gray-400 hover:text-white text-sm">
-            Event Stream
+            Events
           </Link>
           <button onClick={handleLogout} className="text-gray-400 hover:text-white text-sm">
             Logout
@@ -61,7 +92,9 @@ export default function Dashboard() {
             onRegionCreated={() => setRefreshKey((k) => k + 1)}
             leads={leads}
             hoveredLeadId={hoveredLeadId}
+            selectedLeadId={selectedLeadId}
             flyToTarget={flyToTarget}
+            onMarkerClick={handleMarkerClick}
           />
         </div>
 
@@ -72,7 +105,9 @@ export default function Dashboard() {
               refreshKey={refreshKey}
               onLeadsLoaded={handleLeadsLoaded}
               onLeadHover={setHoveredLeadId}
-              onFlyTo={(lat, lng) => setFlyToTarget({ lat, lng })}
+              selectedLeadId={selectedLeadId}
+              onFlyTo={(lat, lng, id) => { setFlyToTarget({ lat, lng }); setSelectedLeadId(id); }}
+              onOpenDetails={handleOpenDetails}
             />
           </div>
         </div>
