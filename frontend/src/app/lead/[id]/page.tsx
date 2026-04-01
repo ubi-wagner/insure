@@ -57,9 +57,14 @@ interface LeadDetail {
   tiv_parsed: number | null;
   policies: PolicyItem[];
   engagements: EngagementItem[];
-  assets: { id: number; doc_type: string; extracted_text: string }[];
-  contacts: { id: number; name: string; title: string; email: string | null; phone: string | null; is_primary: number }[];
+  assets: { id: number; doc_type: string; extracted_text: string; source: string | null; filename: string | null }[];
+  contacts: { id: number; name: string; title: string; email: string | null; phone: string | null; is_primary: number; source: string | null; source_url: string | null }[];
   children: ChildEntity[];
+  enrichment_sources: Record<string, { source: string; timestamp: string; fields_updated: string[]; url: string | null }>;
+  readiness: Record<string, {
+    ready: boolean;
+    checks: Record<string, { done: boolean; label: string }>;
+  }>;
 }
 
 const HEAT_STYLES: Record<string, string> = {
@@ -76,7 +81,7 @@ function fmt(val: number | null | undefined): string {
   return "$" + val.toLocaleString("en-US", { maximumFractionDigits: 0 });
 }
 
-type TabName = "overview" | "policies" | "documents" | "emails" | "engagements" | "contacts";
+type TabName = "overview" | "policies" | "documents" | "emails" | "engagements" | "contacts" | "sources";
 
 export default function LeadDetailPage() {
   const params = useParams();
@@ -85,6 +90,7 @@ export default function LeadDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<TabName>("overview");
   const [stageChanging, setStageChanging] = useState(false);
+  const [stageError, setStageError] = useState<string | null>(null);
   const [sendingStyle, setSendingStyle] = useState<string | null>(null);
   const [showAddContact, setShowAddContact] = useState(false);
   const [contactForm, setContactForm] = useState({ name: "", title: "", email: "", phone: "", is_primary: 0 });
@@ -133,16 +139,23 @@ export default function LeadDetailPage() {
     setSavingContact(false);
   }
 
-  async function handleStageChange(newStage: string) {
+  async function handleStageChange(newStage: string, force = false) {
     setStageChanging(true);
+    setStageError(null);
     try {
       const res = await fetch(`/api/proxy/leads/${id}/stage`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ stage: newStage }),
+        body: JSON.stringify({ stage: newStage, force }),
       });
-      if (res.ok) {
-        setLead((prev) => prev ? { ...prev, pipeline_stage: newStage } : prev);
+      const data = await res.json();
+      if (data.success) {
+        // Refresh full lead data (enrichments may have run)
+        const updated = await fetch(`/api/proxy/leads/${id}`);
+        if (updated.ok) setLead(await updated.json());
+        else setLead((prev) => prev ? { ...prev, pipeline_stage: newStage } : prev);
+      } else if (data.error === "readiness_check_failed") {
+        setStageError(data.message);
       }
     } catch {}
     setStageChanging(false);
@@ -176,6 +189,7 @@ export default function LeadDetailPage() {
     { key: "emails", label: "Emails", count: lead.emails ? Object.keys(lead.emails).length : 0 },
     { key: "engagements", label: "Engagements", count: lead.engagements.length },
     { key: "contacts", label: "Contacts", count: lead.contacts.length },
+    { key: "sources", label: "Sources", count: Object.keys(lead.enrichment_sources || {}).length },
   ];
 
   return (
@@ -233,6 +247,48 @@ export default function LeadDetailPage() {
             ))}
           </div>
         )}
+        {/* Stage error / readiness warning */}
+        {stageError && (
+          <div className="mt-2 bg-amber-900/30 border border-amber-800 rounded px-3 py-2 flex items-center justify-between">
+            <p className="text-amber-300 text-xs">{stageError}</p>
+            <button onClick={() => {
+              const nextStage = lead.pipeline_stage === "NEW" ? "CANDIDATE" :
+                lead.pipeline_stage === "CANDIDATE" ? "TARGET" :
+                lead.pipeline_stage === "TARGET" ? "OPPORTUNITY" : "";
+              if (nextStage) handleStageChange(nextStage, true);
+            }}
+              className="bg-amber-800 hover:bg-amber-700 text-amber-200 text-xs px-2 py-1 rounded ml-3 shrink-0">
+              Force Advance
+            </button>
+          </div>
+        )}
+        {/* Next stage readiness checklist */}
+        {lead.readiness && (() => {
+          const nextStageKey = lead.pipeline_stage === "NEW" ? "candidate" :
+            lead.pipeline_stage === "CANDIDATE" ? "target" :
+            lead.pipeline_stage === "TARGET" ? "opportunity" : null;
+          if (!nextStageKey || !lead.readiness[nextStageKey]) return null;
+          const r = lead.readiness[nextStageKey];
+          const checks = Object.values(r.checks);
+          const done = checks.filter(c => c.done).length;
+          return (
+            <div className="mt-2 flex items-center gap-3 text-xs">
+              <span className="text-gray-500">Next ({nextStageKey.toUpperCase()}):</span>
+              <div className="flex gap-1.5">
+                {checks.map((check) => (
+                  <span key={check.label} className={`px-1.5 py-0.5 rounded ${
+                    check.done ? "bg-green-900/50 text-green-400" : "bg-gray-800 text-gray-600"
+                  }`} title={check.label}>
+                    {check.done ? "\u2713" : "\u2717"} {check.label}
+                  </span>
+                ))}
+              </div>
+              <span className={`font-medium ${r.ready ? "text-green-400" : "text-gray-600"}`}>
+                {done}/{checks.length} {r.ready ? "Ready" : ""}
+              </span>
+            </div>
+          );
+        })()}
       </div>
 
       {/* Tabs */}
@@ -321,6 +377,133 @@ export default function LeadDetailPage() {
               </div>
             )}
 
+            {/* Flood & Risk Profile */}
+            {chars.flood_zone && (
+              <div>
+                <h2 className="text-sm font-semibold text-gray-300 mb-3">Flood & Risk Profile</h2>
+                <div className="bg-gray-900 border border-gray-800 rounded-lg p-4">
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                    <div>
+                      <p className="text-gray-500 text-xs">FEMA Flood Zone</p>
+                      <p className={`text-sm font-medium mt-1 ${
+                        String(chars.flood_risk) === "extreme" ? "text-red-400" :
+                        String(chars.flood_risk) === "high" ? "text-orange-400" :
+                        String(chars.flood_risk) === "moderate_high" ? "text-amber-400" :
+                        "text-green-400"
+                      }`}>{String(chars.flood_zone_label || chars.flood_zone)}</p>
+                    </div>
+                    {chars.flood_sfha !== undefined && (
+                      <div>
+                        <p className="text-gray-500 text-xs">Special Flood Hazard Area</p>
+                        <p className={`text-sm font-medium mt-1 ${chars.flood_sfha ? "text-red-400" : "text-green-400"}`}>
+                          {chars.flood_sfha ? "Yes — flood insurance required" : "No"}
+                        </p>
+                      </div>
+                    )}
+                    {chars.flood_base_elev_ft && (
+                      <div>
+                        <p className="text-gray-500 text-xs">Base Flood Elevation</p>
+                        <p className="text-white text-sm font-medium mt-1">{String(chars.flood_base_elev_ft)} ft</p>
+                      </div>
+                    )}
+                    {chars.fema_map_url && (
+                      <div>
+                        <p className="text-gray-500 text-xs">FEMA Map</p>
+                        <a href={String(chars.fema_map_url)} target="_blank" rel="noopener noreferrer"
+                          className="text-blue-400 text-sm hover:underline mt-1 block">View on FEMA MSC</a>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Property Appraiser */}
+            {chars.pa_lookup_url && (
+              <div>
+                <h2 className="text-sm font-semibold text-gray-300 mb-3">Property Appraiser</h2>
+                <div className="bg-gray-900 border border-gray-800 rounded-lg p-4">
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                    {chars.pa_owner && (
+                      <div>
+                        <p className="text-gray-500 text-xs">Owner</p>
+                        <p className="text-white text-sm font-medium mt-1">{String(chars.pa_owner)}</p>
+                      </div>
+                    )}
+                    {chars.pa_assessed_value && (
+                      <div>
+                        <p className="text-gray-500 text-xs">Assessed Value</p>
+                        <p className="text-white text-sm font-medium mt-1">${Number(chars.pa_assessed_value).toLocaleString()}</p>
+                      </div>
+                    )}
+                    {chars.pa_year_built && (
+                      <div>
+                        <p className="text-gray-500 text-xs">Year Built (PA)</p>
+                        <p className="text-white text-sm font-medium mt-1">{String(chars.pa_year_built)}</p>
+                      </div>
+                    )}
+                    {chars.pa_building_sqft && (
+                      <div>
+                        <p className="text-gray-500 text-xs">Building Sqft</p>
+                        <p className="text-white text-sm font-medium mt-1">{Number(chars.pa_building_sqft).toLocaleString()}</p>
+                      </div>
+                    )}
+                    {chars.pa_parcel_id && (
+                      <div>
+                        <p className="text-gray-500 text-xs">Parcel ID</p>
+                        <p className="text-white text-sm font-medium mt-1">{String(chars.pa_parcel_id)}</p>
+                      </div>
+                    )}
+                    <div>
+                      <p className="text-gray-500 text-xs">Lookup</p>
+                      <a href={String(chars.pa_lookup_url)} target="_blank" rel="noopener noreferrer"
+                        className="text-blue-400 text-sm hover:underline mt-1 block">View on Property Appraiser</a>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Sunbiz / Association */}
+            {(chars.sunbiz_corp_name || chars.sunbiz_search_url) && (
+              <div>
+                <h2 className="text-sm font-semibold text-gray-300 mb-3">Association (Sunbiz)</h2>
+                <div className="bg-gray-900 border border-gray-800 rounded-lg p-4">
+                  <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+                    {chars.sunbiz_corp_name && (
+                      <div>
+                        <p className="text-gray-500 text-xs">Corporation Name</p>
+                        <p className="text-white text-sm font-medium mt-1">{String(chars.sunbiz_corp_name)}</p>
+                      </div>
+                    )}
+                    {chars.sunbiz_filing_status && (
+                      <div>
+                        <p className="text-gray-500 text-xs">Filing Status</p>
+                        <p className="text-white text-sm font-medium mt-1">{String(chars.sunbiz_filing_status)}</p>
+                      </div>
+                    )}
+                    {chars.property_manager && (
+                      <div>
+                        <p className="text-gray-500 text-xs">Registered Agent / Mgmt Co.</p>
+                        <p className="text-white text-sm font-medium mt-1">{String(chars.property_manager)}</p>
+                      </div>
+                    )}
+                    {chars.sunbiz_doc_number && (
+                      <div>
+                        <p className="text-gray-500 text-xs">Document #</p>
+                        <p className="text-white text-sm font-medium mt-1">{String(chars.sunbiz_doc_number)}</p>
+                      </div>
+                    )}
+                    <div>
+                      <p className="text-gray-500 text-xs">Lookup</p>
+                      <a href={String(chars.sunbiz_detail_url || chars.sunbiz_search_url)} target="_blank" rel="noopener noreferrer"
+                        className="text-blue-400 text-sm hover:underline mt-1 block">View on Sunbiz</a>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
             {/* Insurance Intelligence */}
             <div>
               <h2 className="text-sm font-semibold text-gray-300 mb-3">Insurance Intelligence</h2>
@@ -329,7 +512,15 @@ export default function LeadDetailPage() {
                   {Object.entries(chars)
                     .filter(([k]) => !["emails", "osm_tags", "osm_id", "construction_class", "iso_class",
                       "building_material", "building_type", "year_built", "stories", "units_estimate",
-                      "footprint_sqft", "tiv_estimate", "height_m"].includes(k))
+                      "footprint_sqft", "tiv_estimate", "height_m",
+                      "flood_zone", "flood_zone_label", "flood_zone_subtype", "flood_risk", "flood_sfha",
+                      "flood_base_elev_ft", "flood_score_impact", "fema_map_url",
+                      "pa_owner", "pa_assessed_value", "pa_year_built", "pa_building_sqft", "pa_parcel_id",
+                      "pa_lot_sqft", "pa_acres", "pa_use_code", "pa_last_sale_date", "pa_last_sale_price",
+                      "pa_county", "pa_lookup_url",
+                      "sunbiz_search_url", "sunbiz_search_name", "sunbiz_corp_name", "sunbiz_doc_number",
+                      "sunbiz_detail_url", "sunbiz_filing_status", "sunbiz_registered_agent", "property_manager",
+                      "has_user_intel", "user_doc_types", "_field_sources"].includes(k))
                     .map(([key, val]) => (
                     <div key={key} className="bg-gray-900 border border-gray-800 rounded-lg p-3">
                       <p className="text-gray-500 text-xs capitalize">{key.replace(/_/g, " ")}</p>
@@ -396,14 +587,43 @@ export default function LeadDetailPage() {
 
         {activeTab === "documents" && (
           <div className="space-y-4">
-            <h2 className="text-sm font-semibold text-gray-300 mb-3">Documents</h2>
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-sm font-semibold text-gray-300">Documents</h2>
+              <label className="bg-blue-600 hover:bg-blue-700 text-white text-xs px-3 py-1 rounded font-medium cursor-pointer">
+                + Upload Document
+                <input type="file" className="hidden" onChange={async (e) => {
+                  const file = e.target.files?.[0];
+                  if (!file) return;
+                  const docType = file.name.toLowerCase().includes("brochure") ? "BROCHURE" :
+                    file.name.toLowerCase().includes("dec") ? "DEC_PAGE" :
+                    file.name.toLowerCase().includes("loss") ? "LOSS_RUN" :
+                    file.name.toLowerCase().includes("audit") ? "AUDIT" :
+                    file.name.toLowerCase().includes("sunbiz") ? "SUNBIZ" : "OTHER";
+                  const formData = new FormData();
+                  formData.append("file", file);
+                  formData.append("doc_type", docType);
+                  const res = await fetch(`/api/proxy/leads/${id}/upload`, { method: "POST", body: formData });
+                  if (res.ok) {
+                    const updated = await fetch(`/api/proxy/leads/${id}`);
+                    if (updated.ok) setLead(await updated.json());
+                  }
+                  e.target.value = "";
+                }} />
+              </label>
+            </div>
             {lead.assets.length === 0 ? (
-              <p className="text-gray-600 text-sm">No documents attached.</p>
+              <p className="text-gray-600 text-sm">No documents attached. Upload brochures, dec pages, loss runs, or other intel.</p>
             ) : (
               lead.assets.map((asset) => (
                 <div key={asset.id} className="bg-gray-900 border border-gray-800 rounded-lg p-4">
                   <div className="flex items-center gap-2 mb-3">
                     <span className="bg-blue-900 text-blue-300 text-xs px-2 py-0.5 rounded font-medium">{asset.doc_type}</span>
+                    {asset.source && (
+                      <span className="bg-gray-800 text-gray-500 text-[10px] px-1.5 py-0.5 rounded">via {asset.source}</span>
+                    )}
+                    {asset.filename && (
+                      <span className="text-gray-500 text-xs">{asset.filename}</span>
+                    )}
                   </div>
                   <pre className="text-xs text-gray-300 whitespace-pre-wrap bg-gray-800 rounded p-3 max-h-96 overflow-y-auto">
                     {asset.extracted_text || "No text extracted."}
@@ -531,12 +751,90 @@ export default function LeadDetailPage() {
                     <div className="flex items-center gap-2">
                       <p className="text-white font-medium">{contact.name}</p>
                       {!!contact.is_primary && <span className="bg-green-900 text-green-300 text-[10px] px-1.5 py-0.5 rounded">PRIMARY</span>}
+                      {contact.source && (
+                        <span className="bg-gray-800 text-gray-500 text-[10px] px-1.5 py-0.5 rounded">
+                          via {contact.source}
+                        </span>
+                      )}
                     </div>
                     <p className="text-gray-500 text-sm">{contact.title}</p>
                     {contact.email && <p className="text-blue-400 text-sm mt-1">{contact.email}</p>}
                     {contact.phone && <p className="text-gray-400 text-sm">{contact.phone}</p>}
+                    {contact.source_url && (
+                      <a href={contact.source_url} target="_blank" rel="noopener noreferrer"
+                        className="text-gray-600 text-xs hover:text-blue-400 mt-1 block">Source link</a>
+                    )}
                   </div>
                 ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {activeTab === "sources" && (
+          <div className="space-y-4">
+            <h2 className="text-sm font-semibold text-gray-300 mb-3">Data Sources & Enrichment History</h2>
+            <p className="text-gray-600 text-xs mb-4">
+              Every piece of intelligence is tracked back to its source. Click links to verify data.
+            </p>
+            {Object.keys(lead.enrichment_sources || {}).length === 0 ? (
+              <p className="text-gray-600 text-sm">No enrichment sources recorded yet.</p>
+            ) : (
+              <div className="space-y-3">
+                {Object.entries(lead.enrichment_sources).map(([sourceId, info]) => {
+                  const sourceColors: Record<string, string> = {
+                    overpass: "border-blue-800 bg-blue-950/30",
+                    fema_flood: "border-cyan-800 bg-cyan-950/30",
+                    property_appraiser: "border-amber-800 bg-amber-950/30",
+                    sunbiz: "border-purple-800 bg-purple-950/30",
+                    user_upload: "border-green-800 bg-green-950/30",
+                    ai_analyzer: "border-pink-800 bg-pink-950/30",
+                  };
+                  const badgeColors: Record<string, string> = {
+                    overpass: "bg-blue-900 text-blue-300",
+                    fema_flood: "bg-cyan-900 text-cyan-300",
+                    property_appraiser: "bg-amber-900 text-amber-300",
+                    sunbiz: "bg-purple-900 text-purple-300",
+                    user_upload: "bg-green-900 text-green-300",
+                    ai_analyzer: "bg-pink-900 text-pink-300",
+                  };
+                  const sourceLabels: Record<string, string> = {
+                    overpass: "OpenStreetMap Overpass API",
+                    fema_flood: "FEMA National Flood Hazard Layer",
+                    property_appraiser: "County Property Appraiser",
+                    sunbiz: "Florida Sunbiz (Div. of Corporations)",
+                    user_upload: "User Upload",
+                    ai_analyzer: "AI Analyzer (Claude)",
+                  };
+                  return (
+                    <div key={sourceId} className={`border rounded-lg p-4 ${sourceColors[sourceId] || "border-gray-800 bg-gray-900"}`}>
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="flex items-center gap-2">
+                          <span className={`text-xs px-2 py-0.5 rounded font-medium ${badgeColors[sourceId] || "bg-gray-800 text-gray-400"}`}>
+                            {sourceId}
+                          </span>
+                          <span className="text-gray-400 text-sm">{sourceLabels[sourceId] || sourceId}</span>
+                        </div>
+                        <span className="text-gray-600 text-xs">
+                          {info.timestamp ? new Date(info.timestamp).toLocaleDateString() : ""}
+                        </span>
+                      </div>
+                      <div className="flex flex-wrap gap-1 mb-2">
+                        {info.fields_updated.map((field: string) => (
+                          <span key={field} className="bg-gray-800 text-gray-500 text-[10px] px-1.5 py-0.5 rounded">
+                            {field}
+                          </span>
+                        ))}
+                      </div>
+                      {info.url && (
+                        <a href={info.url} target="_blank" rel="noopener noreferrer"
+                          className="text-blue-400 text-xs hover:underline">
+                          View source
+                        </a>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             )}
           </div>

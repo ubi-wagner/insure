@@ -3,7 +3,7 @@ import re
 import time
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -40,22 +40,72 @@ def _compute_wind_ratio(characteristics: dict) -> float | None:
 
 
 def _compute_heat_score(characteristics: dict) -> str:
-    """Score a lead: hot, warm, cool based on available intel."""
-    wind_ratio = _compute_wind_ratio(characteristics)
-    has_carrier = bool(characteristics.get("carrier"))
-    has_premium = bool(_parse_dollar(characteristics.get("premium")))
-    has_tiv = bool(_parse_dollar(characteristics.get("tiv")))
+    """Multi-factor composite heat score for lead prioritization.
 
+    Factors (cumulative points):
+    - Wind ratio >= 3%: +30 (premium pain point)
+    - Wind ratio 1.5-3%: +15
+    - Has carrier info: +10
+    - Has premium data: +10
+    - Has TIV data: +5
+    - In FEMA flood zone V/VE: +30
+    - In FEMA flood zone A/AE: +20
+    - User uploaded docs (brochure = they're shopping): +25
+    - Has contacts/decision maker: +10
+    - High-rise (7+ stories): +5
+    - Near policy expiration: +15 (future feature)
+
+    Score thresholds: hot >= 40, warm >= 20, cool >= 5, none < 5
+    """
+    score = 0
+
+    # Wind ratio factor
+    wind_ratio = _compute_wind_ratio(characteristics)
     if wind_ratio is not None:
         if wind_ratio >= 3.0:
-            return "hot"     # High premium/TIV = pain point = opportunity
+            score += 30
         elif wind_ratio >= 1.5:
-            return "warm"
-        else:
-            return "cool"
-    elif has_carrier and has_premium:
+            score += 15
+        elif wind_ratio >= 0.5:
+            score += 5
+
+    # Data richness factors
+    if characteristics.get("carrier"):
+        score += 10
+    if _parse_dollar(characteristics.get("premium")):
+        score += 10
+    if _parse_dollar(characteristics.get("tiv")):
+        score += 5
+
+    # FEMA flood zone factor
+    flood_impact = characteristics.get("flood_score_impact")
+    if flood_impact and isinstance(flood_impact, (int, float)):
+        score += int(flood_impact)
+
+    # User intel factor (they uploaded a brochure = actively shopping)
+    if characteristics.get("has_user_intel"):
+        score += 25
+    user_docs = characteristics.get("user_doc_types") or []
+    if "DEC_PAGE" in user_docs:
+        score += 10  # Dec page = can see exact coverage gaps
+    if "LOSS_RUN" in user_docs:
+        score += 10  # Loss run = deep intel
+
+    # Contact availability
+    if characteristics.get("decision_maker") or characteristics.get("sunbiz_registered_agent"):
+        score += 10
+
+    # Building profile bonus
+    stories = characteristics.get("stories")
+    if stories and isinstance(stories, (int, float)) and stories >= 7:
+        score += 5
+
+    # Classify
+    if score >= 40:
+        return "hot"
+    elif score >= 20:
         return "warm"
-    elif has_carrier:
+    elif score >= 5:
         return "cool"
     return "none"
 
@@ -275,17 +325,19 @@ def get_lead(entity_id: int, db: Session = Depends(get_db)):
             for eng in engagements_list
         ],
         "assets": [
-            {"id": a.id, "doc_type": a.doc_type.value, "extracted_text": a.extracted_text}
+            {"id": a.id, "doc_type": a.doc_type.value, "extracted_text": a.extracted_text, "source": a.source, "filename": a.filename}
             for a in assets
         ],
         "contacts": [
-            {"id": c.id, "name": c.name, "title": c.title, "email": c.email, "phone": c.phone, "is_primary": c.is_primary}
+            {"id": c.id, "name": c.name, "title": c.title, "email": c.email, "phone": c.phone, "is_primary": c.is_primary, "source": c.source, "source_url": c.source_url}
             for c in contacts
         ],
         "children": [
             {"id": ch.id, "name": ch.name, "address": ch.address, "pipeline_stage": ch.pipeline_stage}
             for ch in children
         ],
+        "enrichment_sources": entity.enrichment_sources or {},
+        "readiness": _compute_readiness(entity, db),
     }
 
 
@@ -321,8 +373,16 @@ def vote_lead(entity_id: int, vote: VoteRequest, db: Session = Depends(get_db)):
     emit(EventType.DB_OPERATION, "vote_lead", EventStatus.SUCCESS,
          detail=f"{action.value} on '{entity.name}'", entity_id=entity_id)
 
-    # If thumbed up, trigger the deep dive analysis (non-blocking)
+    # If thumbed up, trigger CANDIDATE-stage enrichments + AI deep dive
     if action == ActionType.USER_THUMB_UP:
+        # Run CANDIDATE enrichments (Sunbiz, etc.)
+        try:
+            from agents.enrichers.pipeline import run_on_candidate
+            run_on_candidate(entity, db)
+        except Exception as e:
+            logger.warning(f"CANDIDATE enrichment failed for entity {entity_id}: {e}")
+
+        # AI Kill & Cook analysis
         emit(EventType.AI_ANALYZER, "deep_dive_start", EventStatus.PENDING,
              detail=f"Starting for '{entity.name}'", entity_id=entity_id)
         try:
@@ -376,13 +436,78 @@ def create_engagement(entity_id: int, req: CreateEngagementRequest, db: Session 
     return {"success": True, "engagement_id": engagement.id, "status": engagement.status}
 
 
+def _compute_readiness(entity: Entity, db: Session) -> dict:
+    """Compute pipeline readiness — what's available and what's missing for each stage."""
+    chars = entity.characteristics or {}
+    sources = entity.enrichment_sources or {}
+    contacts = entity.contacts
+    has_emails = bool(chars.get("emails"))
+    has_contacts = len(contacts) > 0
+    has_primary_contact = any(c.is_primary for c in contacts)
+    has_contact_email = any(c.email for c in contacts)
+    has_carrier = bool(chars.get("carrier"))
+    has_tiv = bool(chars.get("tiv") or chars.get("tiv_estimate"))
+    has_flood = "fema_flood" in sources
+    has_property_data = "fdot_parcels" in sources or "property_appraiser" in sources
+    has_sunbiz = "sunbiz" in sources
+    has_dbpr = "dbpr_condo" in sources
+    has_decision_maker = bool(chars.get("decision_maker") or has_primary_contact)
+    has_property_manager = bool(chars.get("property_manager") or chars.get("dbpr_management_company"))
+
+    return {
+        "candidate": {
+            "ready": True,  # Any lead can become a candidate
+            "checks": {
+                "flood_zone": {"done": has_flood, "label": "FEMA flood zone"},
+                "property_data": {"done": has_property_data, "label": "Property appraiser data"},
+                "tiv": {"done": has_tiv, "label": "TIV estimate"},
+            },
+        },
+        "target": {
+            "ready": has_sunbiz or has_contacts,
+            "checks": {
+                "association_search": {"done": has_sunbiz, "label": "Sunbiz association search"},
+                "contacts": {"done": has_contacts, "label": "At least one contact"},
+                "carrier": {"done": has_carrier, "label": "Current carrier identified"},
+                "ai_analysis": {"done": has_emails, "label": "AI Kill & Cook analysis"},
+            },
+        },
+        "opportunity": {
+            "ready": has_decision_maker and (has_emails or has_contact_email),
+            "checks": {
+                "decision_maker": {"done": has_decision_maker, "label": "Decision maker identified"},
+                "contact_email": {"done": has_contact_email, "label": "Contact email available"},
+                "emails_generated": {"done": has_emails, "label": "Outreach emails generated"},
+                "property_manager": {"done": has_property_manager, "label": "Property manager identified"},
+                "dbpr_lookup": {"done": has_dbpr, "label": "DBPR condo registry checked"},
+            },
+        },
+    }
+
+
+@router.get("/api/leads/{entity_id}/readiness")
+def get_readiness(entity_id: int, db: Session = Depends(get_db)):
+    """Get pipeline readiness checks for a lead — what data is available/missing."""
+    entity = db.query(Entity).filter(Entity.id == entity_id).first()
+    if not entity:
+        raise HTTPException(status_code=404, detail="Entity not found")
+
+    readiness = _compute_readiness(entity, db)
+    return {
+        "entity_id": entity_id,
+        "current_stage": entity.pipeline_stage,
+        "readiness": readiness,
+    }
+
+
 class StageChangeRequest(BaseModel):
     stage: str
+    force: bool = False  # Allow override of readiness checks
 
 
 @router.post("/api/leads/{entity_id}/stage")
 def change_stage(entity_id: int, req: StageChangeRequest, db: Session = Depends(get_db)):
-    """Manually advance or change an entity's pipeline stage."""
+    """Advance or change an entity's pipeline stage with readiness validation."""
     valid_stages = ["NEW", "CANDIDATE", "TARGET", "OPPORTUNITY", "CUSTOMER", "CHURNED", "ARCHIVED"]
     if req.stage not in valid_stages:
         raise HTTPException(status_code=400, detail=f"Invalid stage. Must be one of: {valid_stages}")
@@ -390,6 +515,25 @@ def change_stage(entity_id: int, req: StageChangeRequest, db: Session = Depends(
     entity = db.query(Entity).filter(Entity.id == entity_id).first()
     if not entity:
         raise HTTPException(status_code=404, detail="Entity not found")
+
+    # Check readiness for forward progression (skip for demotions/archive)
+    forward_stages = ["CANDIDATE", "TARGET", "OPPORTUNITY", "CUSTOMER"]
+    if req.stage in forward_stages and not req.force:
+        readiness = _compute_readiness(entity, db)
+        stage_key = req.stage.lower()
+        if stage_key in readiness and not readiness[stage_key]["ready"]:
+            missing = [
+                check["label"]
+                for check in readiness[stage_key]["checks"].values()
+                if not check["done"]
+            ]
+            return {
+                "success": False,
+                "error": "readiness_check_failed",
+                "message": f"Not ready for {req.stage}. Missing: {', '.join(missing)}",
+                "missing": missing,
+                "readiness": readiness[stage_key],
+            }
 
     old_stage = entity.pipeline_stage
     entity.pipeline_stage = req.stage
@@ -404,6 +548,13 @@ def change_stage(entity_id: int, req: StageChangeRequest, db: Session = Depends(
 
     emit(EventType.DB_OPERATION, "stage_change", EventStatus.SUCCESS,
          detail=f"'{entity.name}': {old_stage} → {req.stage}", entity_id=entity_id)
+
+    # Trigger stage-appropriate enrichments
+    try:
+        from agents.enrichers.pipeline import run_enrichment_for_stage
+        run_enrichment_for_stage(entity, req.stage, db)
+    except Exception as e:
+        logger.warning(f"Enrichment on stage change failed for entity {entity_id}: {e}")
 
     return {"success": True, "pipeline_stage": entity.pipeline_stage}
 
@@ -451,4 +602,80 @@ def create_contact(entity_id: int, req: CreateContactRequest, db: Session = Depe
             "id": contact.id, "name": contact.name, "title": contact.title,
             "email": contact.email, "phone": contact.phone, "is_primary": contact.is_primary,
         },
+    }
+
+
+@router.post("/api/leads/{entity_id}/upload")
+async def upload_document(
+    entity_id: int,
+    file: UploadFile = File(...),
+    doc_type: str = Form("OTHER"),
+    db: Session = Depends(get_db),
+):
+    """Upload a document (brochure, dec page, loss run, etc.) with source tracking."""
+    entity = db.query(Entity).filter(Entity.id == entity_id).first()
+    if not entity:
+        raise HTTPException(status_code=404, detail="Entity not found")
+
+    # Validate doc_type
+    from database.models import DocType
+    valid_types = [dt.value for dt in DocType]
+    if doc_type not in valid_types:
+        raise HTTPException(status_code=400, detail=f"Invalid doc_type. Must be one of: {valid_types}")
+
+    # Read file content
+    content = await file.read()
+    text_content = ""
+    try:
+        text_content = content.decode("utf-8")
+    except UnicodeDecodeError:
+        text_content = f"[Binary file: {file.filename}, {len(content)} bytes]"
+
+    asset = EntityAsset(
+        entity_id=entity_id,
+        doc_type=doc_type,
+        extracted_text=text_content,
+        source="user_upload",
+        filename=file.filename,
+    )
+    db.add(asset)
+
+    # Record in ledger with source
+    ledger = LeadLedger(
+        entity_id=entity_id,
+        action_type="DOCUMENT_UPLOADED",
+        detail=f"Uploaded {doc_type}: {file.filename}",
+        source="user_upload",
+    )
+    db.add(ledger)
+
+    # Record enrichment source
+    from agents.enrichers import record_enrichment
+    record_enrichment(
+        entity, db,
+        source_id="user_upload",
+        fields_updated=[f"document:{doc_type}:{file.filename}"],
+        detail=f"User uploaded {doc_type}: {file.filename}",
+    )
+
+    # If this is a brochure or dec page, boost the heat score
+    chars = entity.characteristics or {}
+    if doc_type in ("BROCHURE", "DEC_PAGE", "LOSS_RUN"):
+        chars["has_user_intel"] = True
+        chars["user_doc_types"] = list(set(
+            (chars.get("user_doc_types") or []) + [doc_type]
+        ))
+        entity.characteristics = chars
+        db.commit()
+
+    db.refresh(asset)
+
+    emit(EventType.DB_OPERATION, "upload_document", EventStatus.SUCCESS,
+         detail=f"'{file.filename}' ({doc_type}) for '{entity.name}'", entity_id=entity_id)
+
+    return {
+        "success": True,
+        "asset_id": asset.id,
+        "doc_type": doc_type,
+        "filename": file.filename,
     }

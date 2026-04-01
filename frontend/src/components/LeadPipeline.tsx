@@ -386,6 +386,16 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
                   {lead.characteristics?.units_estimate && (
                     <span className="text-gray-500">~{String(lead.characteristics.units_estimate)} units</span>
                   )}
+                  {lead.characteristics?.flood_zone && (
+                    <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                      String(lead.characteristics.flood_risk) === "extreme" ? "bg-red-900 text-red-300" :
+                      String(lead.characteristics.flood_risk) === "high" ? "bg-orange-900 text-orange-300" :
+                      String(lead.characteristics.flood_risk) === "moderate_high" ? "bg-amber-900 text-amber-300" :
+                      "bg-green-900 text-green-300"
+                    }`}>
+                      {String(lead.characteristics.flood_zone)}
+                    </span>
+                  )}
                 </div>
               )}
 
