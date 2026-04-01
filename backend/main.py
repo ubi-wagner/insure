@@ -13,6 +13,7 @@ from routes.regions import router as regions_router
 from routes.leads import router as leads_router
 from routes.admin import router as admin_router
 from routes.events import router as events_router, EventLoggingMiddleware
+from routes.status import router as status_router
 from services.event_bus import EventStatus, EventType, emit, event_bus
 
 logger = logging.getLogger(__name__)
@@ -26,6 +27,7 @@ async def lifespan(app: FastAPI):
     emit(EventType.SYSTEM, "startup", EventStatus.PENDING, detail="Application starting")
 
     # Run migrations at startup
+    migration_ok = False
     try:
         from alembic.config import Config
         from alembic import command
@@ -33,9 +35,29 @@ async def lifespan(app: FastAPI):
         command.upgrade(alembic_cfg, "head")
         logger.info("Database migrations completed")
         emit(EventType.DB_OPERATION, "alembic upgrade head", EventStatus.SUCCESS)
+        migration_ok = True
     except Exception as e:
         logger.error(f"Migration failed (app will continue): {e}")
         emit(EventType.DB_OPERATION, "alembic upgrade head", EventStatus.ERROR, detail=str(e)[:300])
+
+    # Register services in the registry (only if migrations ran)
+    if migration_ok:
+        try:
+            from services.registry import register
+            has_anthropic = bool(os.getenv("ANTHROPIC_API_KEY"))
+            register("api", capabilities={
+                "version": "0.1.0",
+                "migrations": "current",
+            }, detail="FastAPI server running")
+            register("database", capabilities={
+                "migration_head": "a1b2c3d4e5f6",
+            }, detail="Connected, migrations applied")
+            register("ai_analyzer", capabilities={
+                "anthropic_key": has_anthropic,
+                "model": "claude-sonnet-4-20250514" if has_anthropic else None,
+            }, detail="Ready" if has_anthropic else "Disabled (no API key)")
+        except Exception as e:
+            logger.error(f"Service registration failed: {e}")
 
     # Start hunter agent
     try:
@@ -75,6 +97,7 @@ app.include_router(regions_router)
 app.include_router(leads_router)
 app.include_router(admin_router)
 app.include_router(events_router)
+app.include_router(status_router)
 
 
 @app.get("/health")

@@ -3,8 +3,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Loader } from "@googlemaps/js-api-loader";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-
 interface RegionFormData {
   name: string;
   stories: number;
@@ -107,10 +105,10 @@ export default function MapView({ onRegionCreated }: { onRegionCreated: () => vo
     setSubmitError(null);
     setSubmitting(true);
     try {
-      const res = await fetch(`${API_URL}/api/regions`, {
+      const res = await fetch(`/api/proxy/regions`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        credentials: "include",
+
         body: JSON.stringify({
           name: formData.name,
           bounding_box: pendingBounds,

@@ -183,7 +183,24 @@ def save_property(prop: dict, region: RegionOfInterest, db: Session) -> int:
 
 def run_hunter_loop():
     """Main polling loop - runs as a background task."""
+    from services.registry import register, heartbeat
+
     logger.info("Starting hunter agent loop...")
+
+    # Check capabilities
+    crawl4ai_ok = False
+    try:
+        from crawl4ai import WebCrawler
+        crawl4ai_ok = True
+    except ImportError:
+        pass
+
+    register("hunter", capabilities={
+        "crawl4ai": crawl4ai_ok,
+        "poll_interval": POLL_INTERVAL,
+        "proxy": bool(PROXY_URL),
+    }, detail=f"Polling every {POLL_INTERVAL}s" + (" (no Crawl4AI)" if not crawl4ai_ok else ""))
+
     while True:
         db = SessionLocal()
         try:
@@ -193,11 +210,17 @@ def run_hunter_loop():
                 .all()
             )
 
+            if pending_regions:
+                heartbeat("hunter", detail=f"Processing {len(pending_regions)} region(s)")
+            else:
+                heartbeat("hunter", detail="Idle, no pending regions")
+
             for region in pending_regions:
                 process_region(region, db)
 
         except Exception as e:
             logger.error(f"Hunter loop error: {e}")
+            heartbeat("hunter", status="degraded", detail=f"Error: {str(e)[:100]}")
         finally:
             db.rollback()
             db.close()
