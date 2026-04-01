@@ -1,4 +1,5 @@
 import logging
+import time
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -7,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from database import get_db
 from database.models import RegionOfInterest, RegionStatus
+from services.event_bus import EventStatus, EventType, emit
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -38,6 +40,7 @@ def create_region(region: RegionCreate, db: Session = Depends(get_db)):
     if bb.east <= bb.west:
         raise HTTPException(status_code=400, detail="east must be greater than west")
 
+    start = time.time()
     try:
         db_region = RegionOfInterest(
             name=region.name,
@@ -51,7 +54,14 @@ def create_region(region: RegionCreate, db: Session = Depends(get_db)):
     except SQLAlchemyError as e:
         db.rollback()
         logger.error(f"Failed to create region: {e}")
+        emit(EventType.DB_OPERATION, "create_region", EventStatus.ERROR,
+             detail=str(e)[:200], region_name=region.name)
         raise HTTPException(status_code=500, detail="Failed to create region")
+
+    duration_ms = round((time.time() - start) * 1000, 1)
+    emit(EventType.DB_OPERATION, "create_region", EventStatus.SUCCESS,
+         detail=f"Region '{db_region.name}' created (id={db_region.id})",
+         duration_ms=duration_ms, region_id=db_region.id)
 
     return {"id": db_region.id, "name": db_region.name, "status": db_region.status.value}
 

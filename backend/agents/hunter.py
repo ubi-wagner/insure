@@ -22,6 +22,7 @@ from database.models import (
     RegionStatus,
 )
 from agents.geo_helper import get_bounding_box_center, get_county_from_coords, is_within_bounds
+from services.event_bus import EventStatus, EventType, emit
 
 
 logger = logging.getLogger(__name__)
@@ -42,7 +43,8 @@ def process_region(region: RegionOfInterest, db: Session) -> int:
         db.commit()
 
     logger.info(f"Processing region '{region.name}' - County: {county}")
-    logger.info(f"Bounding box: N={bbox['north']}, S={bbox['south']}, E={bbox['east']}, W={bbox['west']}")
+    emit(EventType.HUNTER, "process_region", EventStatus.PENDING,
+         detail=f"Region '{region.name}' county={county}", region_id=region.id)
 
     found_count = 0
 
@@ -50,14 +52,16 @@ def process_region(region: RegionOfInterest, db: Session) -> int:
         found_count = crawl_for_properties(region, county, db)
     except Exception as e:
         logger.error(f"Crawl error for region '{region.name}': {e}")
-        # Don't mark as COMPLETED on failure — leave as PENDING for retry
+        emit(EventType.HUNTER, "crawl", EventStatus.ERROR,
+             detail=f"Region '{region.name}': {str(e)[:200]}", region_id=region.id)
         return 0
 
     # Only mark region as completed on success
     region.status = RegionStatus.COMPLETED
     db.commit()
 
-    logger.info(f"Region '{region.name}' completed. Found {found_count} properties.")
+    emit(EventType.HUNTER, "process_region", EventStatus.SUCCESS,
+         detail=f"Region '{region.name}' done, {found_count} properties found", region_id=region.id)
     return found_count
 
 
@@ -168,8 +172,12 @@ def save_property(prop: dict, region: RegionOfInterest, db: Session) -> int:
     except SQLAlchemyError as e:
         db.rollback()
         logger.error(f"Failed to save property '{prop.get('name')}': {e}")
+        emit(EventType.DB_OPERATION, "save_property", EventStatus.ERROR,
+             detail=f"'{prop.get('name')}': {str(e)[:200]}")
         return 0
 
+    emit(EventType.DB_OPERATION, "save_property", EventStatus.SUCCESS,
+         detail=f"Saved '{entity.name}' (id={entity.id})", entity_id=entity.id)
     return 1
 
 
