@@ -110,15 +110,19 @@ def _query_arcgis_by_point(endpoint_url: str, lat: float, lon: float, sr: int = 
         "f": "json",
     }
     try:
-        with httpx.Client(timeout=15) as client:
+        with httpx.Client(timeout=10) as client:
             resp = client.get(endpoint_url, params=params)
             resp.raise_for_status()
+            # Guard against HTML error pages
+            content_type = resp.headers.get("content-type", "")
+            if "json" not in content_type and "text/plain" not in content_type:
+                return None
             data = resp.json()
             features = data.get("features", [])
             if features:
                 return features[0].get("attributes", {})
     except Exception as e:
-        logger.warning(f"ArcGIS query failed: {e}")
+        logger.debug(f"ArcGIS query failed for {lat},{lon}: {e}")
     return None
 
 
