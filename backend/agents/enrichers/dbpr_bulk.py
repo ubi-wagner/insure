@@ -218,7 +218,7 @@ def _match_entity_to_condo(entity: Entity, records: list[dict]) -> dict | None:
     return best_match
 
 
-@register_enricher("NEW", "dbpr_bulk")
+@register_enricher("dbpr_bulk")
 def enrich_dbpr_bulk(entity: Entity, db: Session) -> bool:
     """Match entity against DBPR bulk condo CSV data."""
     county = entity.county

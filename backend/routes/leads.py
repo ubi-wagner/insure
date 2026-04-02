@@ -150,22 +150,7 @@ def list_leads(
     results = []
 
     for entity in entities:
-        # Use pipeline_stage from DB; fall back to vote-based for legacy
-        entity_status = entity.pipeline_stage or "NEW"
-        if entity_status == "NEW":
-            latest_vote = (
-                db.query(LeadLedger)
-                .filter(
-                    LeadLedger.entity_id == entity.id,
-                    LeadLedger.action_type.in_([ActionType.USER_THUMB_UP, ActionType.USER_THUMB_DOWN]),
-                )
-                .order_by(LeadLedger.created_at.desc())
-                .first()
-            )
-            if latest_vote and latest_vote.action_type == ActionType.USER_THUMB_UP:
-                entity_status = "CANDIDATE"
-            elif latest_vote and latest_vote.action_type == ActionType.USER_THUMB_DOWN:
-                entity_status = "REJECTED"
+        entity_status = entity.pipeline_stage or "TARGET"
 
         # Status filter
         if status_filter and entity_status != status_filter:
@@ -173,9 +158,9 @@ def list_leads(
 
         characteristics = entity.characteristics or {}
 
-        # Compute scoring fields
+        # Use stored heat score, fall back to computation
         wind_ratio = _compute_wind_ratio(characteristics)
-        heat_score = _compute_heat_score(characteristics)
+        heat_score = entity.heat_score or "cold"
         premium_val = _parse_dollar(characteristics.get("premium"))
         tiv_val = _parse_dollar(characteristics.get("tiv"))
 
@@ -230,6 +215,7 @@ def list_leads(
                 "heat_score": heat_score,
                 "premium_parsed": premium_val,
                 "tiv_parsed": tiv_val,
+                "enrichment_status": entity.enrichment_status or "idle",
             }
         )
 
@@ -336,6 +322,7 @@ def get_lead(entity_id: int, db: Session = Depends(get_db)):
             for ch in children
         ],
         "enrichment_sources": entity.enrichment_sources or {},
+        "enrichment_status": entity.enrichment_status or "idle",
         "readiness": _compute_readiness(entity, db),
     }
 
@@ -483,7 +470,7 @@ class StageChangeRequest(BaseModel):
 @router.post("/api/leads/{entity_id}/stage")
 def change_stage(entity_id: int, req: StageChangeRequest, db: Session = Depends(get_db)):
     """Advance or change an entity's pipeline stage with readiness validation."""
-    valid_stages = ["NEW", "ENRICHED", "INVESTIGATING", "RESEARCHED", "TARGETED", "OPPORTUNITY", "CUSTOMER", "CHURNED", "ARCHIVED"]
+    valid_stages = ["TARGET", "LEAD", "OPPORTUNITY", "CUSTOMER", "ARCHIVED"]
     if req.stage not in valid_stages:
         raise HTTPException(status_code=400, detail=f"Invalid stage. Must be one of: {valid_stages}")
 
@@ -492,7 +479,7 @@ def change_stage(entity_id: int, req: StageChangeRequest, db: Session = Depends(
         raise HTTPException(status_code=404, detail="Entity not found")
 
     # Check readiness for forward progression (skip for demotions/archive)
-    forward_stages = ["INVESTIGATING", "TARGETED", "OPPORTUNITY", "CUSTOMER"]
+    forward_stages = ["OPPORTUNITY", "CUSTOMER"]
     if req.stage in forward_stages and not req.force:
         readiness = _compute_readiness(entity, db)
         stage_key = req.stage.lower()
@@ -526,24 +513,13 @@ def change_stage(entity_id: int, req: StageChangeRequest, db: Session = Depends(
     emit(EventType.DB_OPERATION, "stage_change", EventStatus.SUCCESS,
          detail=f"'{entity.name}': {old_stage} → {req.stage}", entity_id=entity_id)
 
-    # Trigger stage-appropriate enrichments + auto-advance when complete
-    try:
-        from agents.enrichers.pipeline import run_enrichment_for_stage
-        run_enrichment_for_stage(entity, req.stage, db)
-    except Exception as e:
-        logger.warning(f"Enrichment on stage change failed for entity {entity_id}: {e}")
-
-    # On INVESTIGATING: also run AI Kill & Cook for insurance intel + email generation
-    if req.stage == "INVESTIGATING":
+    # Run enrichments on LEAD stage (continuous enrichment)
+    if req.stage == "LEAD":
         try:
-            from services.ai_analyzer import trigger_deep_dive
-            emit(EventType.AI_ANALYZER, "deep_dive_start", EventStatus.PENDING,
-                 detail=f"Starting for '{entity.name}'", entity_id=entity_id)
-            trigger_deep_dive(entity_id, db)
+            from agents.enrichers.pipeline import run_lead_enrichment
+            run_lead_enrichment(entity, db)
         except Exception as e:
-            logger.error(f"Deep dive failed for entity {entity_id}: {e}")
-            emit(EventType.AI_ANALYZER, "deep_dive", EventStatus.ERROR,
-                 detail=str(e)[:200], entity_id=entity_id)
+            logger.warning(f"Enrichment failed for entity {entity_id}: {e}")
 
     return {"success": True, "pipeline_stage": entity.pipeline_stage}
 

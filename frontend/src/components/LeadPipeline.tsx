@@ -17,6 +17,7 @@ interface Lead {
   heat_score: string;
   premium_parsed: number | null;
   tiv_parsed: number | null;
+  enrichment_status?: string;
 }
 
 interface Region {
@@ -27,25 +28,19 @@ interface Region {
   status: string;
 }
 
-// Pipeline stages in order
+// 5-stage pipeline
 const PIPELINE_STAGES = [
-  // Auto tier — enrichers auto-advance NEW → ENRICHED
-  { key: "NEW", label: "New", color: "border-gray-600", bg: "bg-gray-800", badge: "bg-gray-700 text-gray-300", action: "", actionColor: "", prev: "", auto: true },
-  { key: "ENRICHED", label: "Enriched", color: "border-cyan-600", bg: "bg-cyan-950/30", badge: "bg-cyan-900 text-cyan-200", action: "Investigate", actionColor: "bg-purple-700 hover:bg-purple-600", prev: "", auto: false },
-
-  // Investigation tier — Sunbiz + AI auto-advance INVESTIGATING → RESEARCHED
-  { key: "INVESTIGATING", label: "Investigating", color: "border-purple-600", bg: "bg-purple-950/30", badge: "bg-purple-900 text-purple-200", action: "", actionColor: "", prev: "ENRICHED", auto: true },
-  { key: "RESEARCHED", label: "Researched", color: "border-indigo-600", bg: "bg-indigo-950/30", badge: "bg-indigo-900 text-indigo-200", action: "Target", actionColor: "bg-amber-700 hover:bg-amber-600", prev: "ENRICHED", auto: false },
-
-  // Manual tier — Jason decides
-  { key: "TARGETED", label: "Targeted", color: "border-amber-600", bg: "bg-amber-950/30", badge: "bg-amber-900 text-amber-200", action: "Opportunity", actionColor: "bg-blue-700 hover:bg-blue-600", prev: "RESEARCHED", auto: false },
-  { key: "OPPORTUNITY", label: "Opportunities", color: "border-blue-600", bg: "bg-blue-950/30", badge: "bg-blue-900 text-blue-200", action: "Engage", actionColor: "bg-green-700 hover:bg-green-600", prev: "TARGETED", auto: false },
-  { key: "CUSTOMER", label: "Customers", color: "border-green-600", bg: "bg-green-950/30", badge: "bg-green-800 text-green-200", action: "", actionColor: "", prev: "OPPORTUNITY", auto: false },
+  { key: "TARGET", label: "Targets", color: "border-gray-600", bg: "bg-gray-800", badge: "bg-gray-700 text-gray-300", action: "", prev: "" },
+  { key: "LEAD", label: "Leads", color: "border-cyan-600", bg: "bg-cyan-950/30", badge: "bg-cyan-900 text-cyan-200", action: "Promote", prev: "TARGET" },
+  { key: "OPPORTUNITY", label: "Opportunities", color: "border-blue-600", bg: "bg-blue-950/30", badge: "bg-blue-900 text-blue-200", action: "Engage", prev: "LEAD" },
+  { key: "CUSTOMER", label: "Customers", color: "border-green-600", bg: "bg-green-950/30", badge: "bg-green-800 text-green-200", action: "", prev: "OPPORTUNITY" },
+  { key: "ARCHIVED", label: "Archived", color: "border-gray-700", bg: "bg-gray-900", badge: "bg-gray-800 text-gray-500", action: "", prev: "" },
 ];
 
 const HEAT_COLORS: Record<string, string> = {
-  hot: "bg-red-600 text-white", warm: "bg-orange-600 text-white",
-  cool: "bg-blue-600 text-white", none: "bg-gray-700 text-gray-400",
+  hot: "bg-red-600 text-white",
+  warm: "bg-orange-600 text-white",
+  cold: "bg-gray-700 text-gray-400",
 };
 
 const TARGET_COUNTIES = [
@@ -70,7 +65,8 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
   const [county, setCounty] = useState("");
   const [region, setRegion] = useState("");
   const [regions, setRegions] = useState<Region[]>([]);
-  const [collapsedStages, setCollapsedStages] = useState<Set<string>>(new Set());
+  const [collapsedStages, setCollapsedStages] = useState<Set<string>>(new Set(["ARCHIVED"]));
+  const [activeStageFilter, setActiveStageFilter] = useState<string>("");
 
   useEffect(() => {
     fetchLeads();
@@ -95,9 +91,6 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
         const raw = await res.json();
         let data: Lead[] = Array.isArray(raw) ? raw : [];
 
-        // Filter out archived
-        data = data.filter((l) => !["ARCHIVED", "CHURNED", "REJECTED"].includes(l.status));
-
         // Filter by region bbox
         if (region) {
           const r = regions.find((r) => String(r.id) === region);
@@ -113,8 +106,8 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
         setLeads(data);
         onLeadsLoaded?.(data.map((l, i) => ({
           id: l.id, name: l.name, latitude: l.latitude,
-          longitude: l.longitude, heat_score: l.heat_score, status: l.status,
-          listIndex: i + 1,
+          longitude: l.longitude, heat_score: l.heat_score || "cold",
+          status: l.status, listIndex: i + 1,
         })));
       } else {
         setFetchError(`Failed (${res.status})`);
@@ -125,32 +118,19 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
     }
   }
 
-  async function handleAction(entityId: number, action: string) {
+  async function handleAction(entityId: number, targetStage: string) {
+    if (targetStage === "ENGAGE") {
+      onOpenDetails?.(entityId);
+      return;
+    }
     setActionId(entityId);
     try {
-      // All actions go through the stage change endpoint
-      // INVESTIGATE = advance to CANDIDATE
-      // ENGAGE opens detail page instead of changing stage
-      if (action === "ENGAGE") {
-        onOpenDetails?.(entityId);
-        setActionId(null);
-        return;
-      }
-
-      const stageMap: Record<string, string> = {
-        INVESTIGATE: "INVESTIGATING",
-        TARGET: "TARGETED",
-        ARCHIVE: "ARCHIVED",
-      };
-      const targetStage = stageMap[action] || action;
-
       const res = await fetch(`/api/proxy/leads/${entityId}/stage`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ stage: targetStage, force: action === "ARCHIVE" }),
+        body: JSON.stringify({ stage: targetStage, force: targetStage === "ARCHIVED" }),
       });
       if (!res.ok && res.status === 422) {
-        // Readiness check failed — force if user intended to advance
         await fetch(`/api/proxy/leads/${entityId}/stage`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -183,22 +163,18 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
   const grouped: Record<string, Lead[]> = {};
   for (const stage of PIPELINE_STAGES) grouped[stage.key] = [];
   for (const lead of leads) {
-    const key = lead.status || lead.pipeline_stage || "NEW";
+    const key = lead.status || lead.pipeline_stage || "TARGET";
     if (grouped[key]) grouped[key].push(lead);
-    else if (grouped["NEW"]) grouped["NEW"].push(lead);
+    else if (grouped["TARGET"]) grouped["TARGET"].push(lead);
   }
-
-  const totalActive = leads.length;
 
   return (
     <div className="flex flex-col h-full">
       {/* Search + filter bar */}
       <div className="space-y-2 mb-3">
         <input
-          type="text"
-          placeholder="Search properties..."
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
+          type="text" placeholder="Search properties..."
+          value={search} onChange={(e) => setSearch(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && fetchLeads()}
           className="w-full bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:border-blue-600 focus:outline-none"
         />
@@ -207,9 +183,7 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
             className="flex-1 bg-gray-900 border border-gray-800 rounded px-2 py-1.5 text-xs text-white">
             <option value="">All Regions</option>
             {regions.map((r) => (
-              <option key={r.id} value={String(r.id)}>
-                {r.name}{r.target_county ? ` · ${r.target_county}` : ""}
-              </option>
+              <option key={r.id} value={String(r.id)}>{r.name}{r.target_county ? ` · ${r.target_county}` : ""}</option>
             ))}
           </select>
           <select value={county} onChange={(e) => { setCounty(e.target.value); setTimeout(() => fetchLeads(), 0); }}
@@ -226,149 +200,148 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
         </div>
       )}
 
-      {/* Pipeline summary */}
+      {/* Pipeline summary — 5 stage chips */}
       <div className="flex gap-1 mb-3">
-        {PIPELINE_STAGES.map((stage) => {
+        {PIPELINE_STAGES.filter(s => s.key !== "ARCHIVED").map((stage) => {
           const count = grouped[stage.key]?.length || 0;
+          const isActive = activeStageFilter === stage.key;
           return (
-            <button key={stage.key} onClick={() => toggleStage(stage.key)}
-              className={`flex-1 text-center py-1 rounded text-[10px] font-medium border ${
-                collapsedStages.has(stage.key)
-                  ? "border-gray-800 bg-gray-900 text-gray-600"
-                  : `${stage.color} ${stage.bg} text-white`
+            <button key={stage.key}
+              onClick={() => {
+                setActiveStageFilter(isActive ? "" : stage.key);
+                toggleStage(stage.key);
+              }}
+              className={`flex-1 text-center py-1.5 rounded text-[10px] font-medium border transition-colors ${
+                isActive ? `${stage.color} ${stage.bg} text-white ring-1 ring-white/20` :
+                count > 0 ? `${stage.color} ${stage.bg} text-white` :
+                "border-gray-800 bg-gray-900 text-gray-600"
               }`}>
-              {count > 0 ? count : "–"}
+              {count > 0 ? count.toLocaleString() : "–"}
               <span className="block text-[9px] text-gray-500">{stage.label}</span>
             </button>
           );
         })}
       </div>
 
-      {/* Empty state */}
-      {totalActive === 0 && !fetchError && (
-        <div className="text-gray-600 text-center py-8 text-sm">
-          No active leads. Draw a region on the map to discover properties.
-        </div>
-      )}
-
       {/* Stage groups */}
       <div className="flex-1 overflow-y-auto space-y-1">
         {PIPELINE_STAGES.map((stage) => {
           const stageLeads = grouped[stage.key] || [];
-          if (stageLeads.length === 0) return null;
+          if (stageLeads.length === 0 && stage.key === "ARCHIVED") return null;
+          if (activeStageFilter && activeStageFilter !== stage.key) return null;
           const collapsed = collapsedStages.has(stage.key);
 
           return (
             <div key={stage.key}>
-              {/* Stage header */}
               <button onClick={() => toggleStage(stage.key)}
                 className={`w-full flex items-center gap-2 px-2 py-1.5 rounded text-xs border-l-2 ${stage.color} ${collapsed ? "bg-gray-900/50" : stage.bg}`}>
                 <span className={`w-5 h-5 rounded flex items-center justify-center text-[10px] font-bold ${stage.badge}`}>
                   {stageLeads.length}
                 </span>
                 <span className="font-medium text-gray-300">{stage.label}</span>
+                {stage.key === "TARGET" && <span className="text-gray-600 text-[10px] ml-1">awaiting Overpass</span>}
+                {stage.key === "LEAD" && <span className="text-gray-600 text-[10px] ml-1">enriching</span>}
                 <span className="text-gray-600 ml-auto">{collapsed ? "+" : "–"}</span>
               </button>
 
-              {/* Cards */}
-              {!collapsed && (
+              {!collapsed && stageLeads.length > 0 && (
                 <div className="space-y-1 py-1">
-                  {stageLeads.map((lead) => {
+                  {stageLeads.slice(0, 100).map((lead) => {
                     const isSelected = lead.id === selectedLeadId;
                     const chars = lead.characteristics || {};
+                    const heat = lead.heat_score || "cold";
                     return (
-                      <div
-                        key={lead.id}
+                      <div key={lead.id}
                         onMouseEnter={() => onLeadHover?.(lead.id)}
                         onMouseLeave={() => onLeadHover?.(null)}
                         className={`rounded-lg border overflow-hidden transition-colors cursor-pointer ${
                           isSelected ? "border-blue-500 bg-gray-900" : "border-gray-800/50 bg-gray-900/60 hover:border-gray-700"
                         }`}
-                        onClick={() => onOpenDetails?.(lead.id)}
-                      >
+                        onClick={() => onOpenDetails?.(lead.id)}>
                         <div className="px-3 py-2">
-                          {/* Row 1: name + heat */}
                           <div className="flex items-center justify-between mb-0.5">
                             <h3 className="font-medium text-sm text-white truncate mr-2">{lead.name}</h3>
-                            <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium shrink-0 ${HEAT_COLORS[lead.heat_score] || HEAT_COLORS.none}`}>
-                              {lead.heat_score}{lead.wind_ratio != null ? ` ${lead.wind_ratio.toFixed(1)}%` : ""}
-                            </span>
+                            {stage.key !== "TARGET" && (
+                              <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium shrink-0 ${HEAT_COLORS[heat] || HEAT_COLORS.cold}`}>
+                                {heat}
+                              </span>
+                            )}
                           </div>
-
-                          {/* Row 2: address + county */}
                           <p className="text-gray-500 text-[11px] truncate">{lead.address}</p>
-
-                          {/* Row 3: tags */}
                           <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
-                            {!!chars.stories && (
-                              <span className="text-gray-500 text-[10px]">{String(chars.stories)}F</span>
+                            {!!chars.dor_use_description && (
+                              <span className="text-[10px] px-1 rounded bg-gray-800 text-gray-400">{String(chars.dor_use_description)}</span>
                             )}
-                            {!!chars.construction_class && (
-                              <span className={`text-[10px] px-1 py-0 rounded ${
-                                String(chars.construction_class).includes("Fire Resistive") ? "bg-emerald-900/50 text-emerald-400" :
-                                String(chars.construction_class).includes("Non-Combustible") ? "bg-sky-900/50 text-sky-400" :
-                                "bg-gray-800 text-gray-500"
-                              }`}>{String(chars.construction_class).split(" ")[0]}</span>
+                            {!!chars.dor_construction_class && (
+                              <span className="text-[10px] px-1 rounded bg-gray-800 text-gray-500">{String(chars.dor_construction_class)}</span>
                             )}
-                            {!!chars.flood_zone && (
-                              <span className={`text-[10px] px-1 py-0 rounded ${
-                                String(chars.flood_risk) === "extreme" || String(chars.flood_risk) === "high"
-                                  ? "bg-red-900/50 text-red-400" : "bg-gray-800 text-gray-500"
-                              }`}>{String(chars.flood_zone)}</span>
+                            {!!chars.dor_num_units && (
+                              <span className="text-gray-600 text-[10px]">{String(chars.dor_num_units)} units</span>
                             )}
                             {lead.tiv_parsed != null && (
                               <span className="text-gray-500 text-[10px]">{fmt(lead.tiv_parsed)}</span>
                             )}
-                            {!!chars.carrier && (
-                              <span className="text-gray-600 text-[10px] truncate max-w-[80px]">{String(chars.carrier)}</span>
+                            {!!chars.flood_zone && (
+                              <span className={`text-[10px] px-1 rounded ${
+                                String(chars.flood_risk) === "extreme" || String(chars.flood_risk) === "high"
+                                  ? "bg-red-900/50 text-red-400" : "bg-gray-800 text-gray-500"
+                              }`}>{String(chars.flood_zone)}</span>
+                            )}
+                            {!!chars.on_citizens && (
+                              <span className="text-[10px] px-1 rounded bg-amber-900/50 text-amber-400">Citizens</span>
                             )}
                             <span className="text-gray-700 text-[10px]">{lead.county}</span>
                           </div>
 
-                          {/* Row 4: actions */}
+                          {/* Enrichment status for LEADs */}
+                          {stage.key === "LEAD" && lead.enrichment_status && (
+                            <div className="mt-1">
+                              <div className="flex items-center gap-1 text-[10px]">
+                                <span className={`w-1.5 h-1.5 rounded-full ${
+                                  lead.enrichment_status === "complete" ? "bg-green-500" :
+                                  lead.enrichment_status === "running" ? "bg-blue-500 animate-pulse" :
+                                  lead.enrichment_status === "error" ? "bg-red-500" : "bg-gray-600"
+                                }`} />
+                                <span className="text-gray-600">{lead.enrichment_status}</span>
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Actions */}
                           <div className="flex gap-1 mt-2" onClick={(e) => e.stopPropagation()}>
-                            {stage.action && !stage.auto && (
-                              <button
-                                onClick={() => handleAction(lead.id, stage.action === "Investigate" ? "INVESTIGATE" :
-                                  stage.action === "Target" ? "TARGET" :
-                                  stage.action === "Opportunity" ? "OPPORTUNITY" :
-                                  stage.action === "Engage" ? "ENGAGE" : ""
-                                )}
+                            {stage.key === "LEAD" && (
+                              <button onClick={() => handleAction(lead.id, "OPPORTUNITY")}
                                 disabled={actionId === lead.id}
-                                className={`flex-1 disabled:opacity-50 text-white text-xs py-2 md:py-1 rounded font-medium ${stage.actionColor}`}
-                              >
-                                {actionId === lead.id ? "..." : stage.action}
+                                className="flex-1 disabled:opacity-50 text-white text-xs py-2 md:py-1 rounded font-medium bg-blue-700 hover:bg-blue-600">
+                                {actionId === lead.id ? "..." : "Promote"}
                               </button>
                             )}
-                            {stage.auto && (
-                              <span className="flex-1 text-center text-gray-600 text-[10px] py-1 italic">
-                                Auto-processing...
-                              </span>
+                            {stage.key === "OPPORTUNITY" && (
+                              <button onClick={() => onOpenDetails?.(lead.id)}
+                                className="flex-1 text-white text-xs py-2 md:py-1 rounded font-medium bg-green-700 hover:bg-green-600">
+                                Engage
+                              </button>
                             )}
-                            {/* Demote — go back one stage */}
+
+                            {/* Demote */}
                             {stage.prev && (
-                              <button
-                                onClick={() => handleAction(lead.id, stage.prev)}
+                              <button onClick={() => handleAction(lead.id, stage.prev)}
                                 disabled={actionId === lead.id}
                                 className="bg-gray-800 hover:bg-gray-700 disabled:opacity-50 text-gray-500 text-xs py-2 md:py-1 px-2 rounded"
-                                title={`Back to ${stage.prev}`}>
-                                &larr;
-                              </button>
+                                title={`Back to ${stage.prev}`}>&larr;</button>
                             )}
 
                             {/* Map */}
                             {lead.latitude != null && (
-                              <button
-                                onClick={() => onFlyTo?.(lead.latitude, lead.longitude, lead.id)}
+                              <button onClick={() => onFlyTo?.(lead.latitude, lead.longitude, lead.id)}
                                 className="bg-gray-800 hover:bg-gray-700 text-gray-500 text-xs py-2 md:py-1 px-2 rounded" title="Map">
                                 Map
                               </button>
                             )}
 
                             {/* Archive */}
-                            {!stage.auto && stage.key !== "CUSTOMER" && (
-                              <button
-                                onClick={() => handleAction(lead.id, "ARCHIVE")}
+                            {stage.key !== "CUSTOMER" && stage.key !== "ARCHIVED" && (
+                              <button onClick={() => handleAction(lead.id, "ARCHIVED")}
                                 disabled={actionId === lead.id}
                                 className="bg-gray-800 hover:bg-gray-700 disabled:opacity-50 text-gray-600 text-xs py-2 md:py-1 px-2 rounded"
                                 title="Archive">&times;</button>
@@ -378,6 +351,11 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
                       </div>
                     );
                   })}
+                  {stageLeads.length > 100 && (
+                    <p className="text-gray-600 text-xs text-center py-2">
+                      Showing 100 of {stageLeads.length.toLocaleString()} — use filters to narrow
+                    </p>
+                  )}
                 </div>
               )}
             </div>

@@ -75,7 +75,7 @@ def _search_dbpr_cam(search_name: str) -> dict | None:
         return None
 
 
-@register_enricher("TARGETED", "dbpr_condo", requires=[])
+@register_enricher("dbpr_condo")
 def enrich_dbpr_condo(entity: Entity, db: Session) -> bool:
     """Search DBPR for condo association registration and CAM info."""
     chars = entity.characteristics or {}
