@@ -67,7 +67,10 @@ export default function OpsPage() {
   async function fetchServices() {
     try {
       const res = await fetch("/api/proxy/status");
-      if (res.ok) setServices(await res.json());
+      if (res.ok) {
+        const data = await res.json();
+        setServices(Array.isArray(data) ? data : data.services || []);
+      }
     } catch {}
   }
 
@@ -116,7 +119,10 @@ export default function OpsPage() {
   async function fetchEvents() {
     try {
       const res = await fetch("/api/proxy/events?limit=100");
-      if (res.ok) setEvents(await res.json());
+      if (res.ok) {
+        const data = await res.json();
+        setEvents(Array.isArray(data) ? data : []);
+      }
     } catch {}
   }
 
@@ -240,11 +246,11 @@ export default function OpsPage() {
                 </div>
 
                 {/* By county */}
-                {harvest.by_county.length > 0 && (
+                {(harvest.by_county || []).length > 0 && (
                   <div>
                     <h3 className="text-xs font-semibold text-gray-400 mb-2">Buildings by County</h3>
                     <div className="flex flex-wrap gap-2">
-                      {harvest.by_county.map((c) => (
+                      {(harvest.by_county || []).map((c) => (
                         <div key={c.county} className="bg-gray-900 border border-gray-800 rounded px-3 py-2 text-center">
                           <p className="text-white text-sm font-medium">{c.count.toLocaleString()}</p>
                           <p className="text-gray-500 text-[10px]">{c.county}</p>
@@ -267,7 +273,7 @@ export default function OpsPage() {
                         </tr>
                       </thead>
                       <tbody>
-                        {harvest.areas.map((a, i) => (
+                        {(harvest.areas || []).map((a, i) => (
                           <tr key={i} className="border-b border-gray-800/50">
                             <td className="px-3 py-1.5 text-white">{a.name}</td>
                             <td className="px-3 py-1.5 text-right text-gray-400">{a.count}</td>
@@ -324,7 +330,7 @@ export default function OpsPage() {
                 className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-white" />
             </div>
 
-            {queryResults && (
+            {queryResults && Array.isArray(queryResults.results) && (
               <div>
                 <p className="text-gray-500 text-xs mb-2">
                   Showing {queryResults.showing} of {queryResults.total} {queryResults.table} results
