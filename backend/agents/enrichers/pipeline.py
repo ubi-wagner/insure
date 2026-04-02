@@ -151,8 +151,9 @@ def _load_enrichers():
         "fema_flood",           # NEW: FEMA flood zone
         "fdot_parcels",         # NEW: FDOT/DOR statewide parcels
         "property_appraiser",   # NEW: County PA GIS lookup
+        "dbpr_bulk",            # NEW: DBPR bulk CSV (condo name, units, managing entity, financials)
         "sunbiz",               # INVESTIGATING: Sunbiz HOA/condo search
-        "dbpr_condo",           # TARGETED: DBPR condo registry + CAM
+        "dbpr_condo",           # TARGETED: DBPR condo registry + CAM license
     ]
     for module in modules:
         try:
