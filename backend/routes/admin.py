@@ -69,57 +69,64 @@ def list_counties():
 
 
 @router.post("/api/admin/seed-county/{county_no}")
-def seed_county_endpoint(county_no: str):
-    """Seed leads from NAL file for a specific county. Runs in background."""
-    from agents.seeder import DOR_COUNTIES, _find_nal_file
+def seed_county_endpoint(county_no: str, db: Session = Depends(get_db)):
+    """Seed leads from NAL file for a specific county."""
+    from agents.seeder import DOR_COUNTIES, _find_nal_file, seed_county
 
     if county_no not in DOR_COUNTIES:
         raise HTTPException(status_code=400, detail=f"Unknown county number: {county_no}")
 
-    if not _find_nal_file(county_no):
-        raise HTTPException(status_code=404, detail=f"NAL file not found for {DOR_COUNTIES[county_no]}. Upload to System Data/DOR/")
+    nal_file = _find_nal_file(county_no)
+    if not nal_file:
+        raise HTTPException(status_code=404, detail=f"NAL file not found for {DOR_COUNTIES[county_no]}. Searched filestore/System Data/DOR/ and data/. Upload via File Manager.")
 
-    from agents.seeder import seed_county_background
-    thread = threading.Thread(target=seed_county_background, args=(county_no,), daemon=True)
-    thread.start()
-
-    return {
-        "success": True,
-        "message": f"Seeding {DOR_COUNTIES[county_no]} in background",
-        "county": DOR_COUNTIES[county_no],
-    }
+    # Run synchronously so errors are visible
+    result = seed_county(county_no, db)
+    return result
 
 
 @router.post("/api/admin/seed-all")
-def seed_all_counties():
-    """Seed all counties that have NAL files. Runs in background."""
-    from agents.seeder import get_available_counties, seed_county_background, DOR_COUNTIES
+def seed_all_counties(db: Session = Depends(get_db)):
+    """Seed all counties that have NAL files."""
+    from agents.seeder import get_available_counties, seed_county, DOR_COUNTIES
 
     available = [c for c in get_available_counties() if c["ready"]]
     if not available:
-        raise HTTPException(status_code=404, detail="No NAL files found. Upload to System Data/DOR/")
+        # Debug: show what directories we searched
+        import os
+        base = os.path.dirname(os.path.dirname(__file__))
+        dor_path = os.path.join(base, "filestore", "System Data", "DOR")
+        data_path = os.path.join(base, "data")
+        dor_exists = os.path.exists(dor_path)
+        dor_files = os.listdir(dor_path) if dor_exists else []
+        data_files = os.listdir(data_path) if os.path.exists(data_path) else []
+        raise HTTPException(status_code=404, detail={
+            "error": "No NAL files found",
+            "dor_path": dor_path,
+            "dor_exists": dor_exists,
+            "dor_files": dor_files[:20],
+            "data_path": data_path,
+            "data_files": [f for f in data_files if "NAL" in f.upper()][:20],
+        })
 
-    def _seed_all():
-        import time
-        for c in available:
-            try:
-                emit(EventType.HUNTER, "seed_all", EventStatus.PENDING,
-                     detail=f"Seeding {c['county_name']}...")
-                seed_county_background(c["county_no"])
-                time.sleep(2)  # Brief pause between counties
-            except Exception as e:
-                logger.error(f"Seed failed for {c['county_name']}: {e}")
+    results = []
+    for c in available:
+        try:
+            emit(EventType.HUNTER, "seed_all", EventStatus.PENDING,
+                 detail=f"Seeding {c['county_name']}...")
+            result = seed_county(c["county_no"], db)
+            results.append(result)
+        except Exception as e:
+            logger.error(f"Seed failed for {c['county_name']}: {e}")
+            results.append({"county": c["county_name"], "error": str(e)})
 
-        emit(EventType.HUNTER, "seed_all", EventStatus.SUCCESS,
-             detail=f"Seeded {len(available)} counties")
-
-    thread = threading.Thread(target=_seed_all, daemon=True)
-    thread.start()
+    emit(EventType.HUNTER, "seed_all", EventStatus.SUCCESS,
+         detail=f"Seeded {len(available)} counties")
 
     return {
         "success": True,
-        "message": f"Seeding {len(available)} counties in background",
-        "counties": [c["county_name"] for c in available],
+        "counties_seeded": len(results),
+        "results": results,
     }
 
 
