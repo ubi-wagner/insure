@@ -113,7 +113,62 @@ def _try_associate(entity: Entity, db: Session) -> bool:
             if len(entity_name) > 5 and (entity_name in bldg_name or bldg_name in entity_name):
                 return _complete_association(entity, building, db, "name_contains")
 
+    # No Overpass match — try geocoding the address directly
+    if entity_addr and not entity.latitude:
+        coords = _geocode_address(entity.address, entity.county)
+        if coords:
+            return _complete_geocode_association(entity, coords, db)
+
     return False
+
+
+def _geocode_address(address: str, county: str | None = None) -> tuple[float, float] | None:
+    """Geocode an address using Nominatim. Returns (lat, lon) or None."""
+    import httpx
+    try:
+        search = address
+        if county:
+            search += f", {county} County, Florida"
+        else:
+            search += ", Florida"
+
+        with httpx.Client(timeout=10, headers={"User-Agent": "insure-lead-gen/1.0"}) as client:
+            resp = client.get("https://nominatim.openstreetmap.org/search", params={
+                "q": search, "format": "json", "limit": 1,
+            })
+            resp.raise_for_status()
+            data = resp.json()
+            if data:
+                return (float(data[0]["lat"]), float(data[0]["lon"]))
+    except Exception as e:
+        logger.debug(f"Geocode failed for '{address}': {e}")
+    return None
+
+
+def _complete_geocode_association(entity: Entity, coords: tuple[float, float], db: Session) -> bool:
+    """Associate a TARGET via geocoding (no Overpass building, but we have coordinates)."""
+    try:
+        entity.latitude = coords[0]
+        entity.longitude = coords[1]
+
+        chars = dict(entity.characteristics or {})
+        chars["geocode_source"] = "nominatim"
+        entity.characteristics = chars
+
+        # Advance to LEAD — we have coordinates now
+        entity.pipeline_stage = "LEAD"
+        entity.enrichment_status = "idle"
+
+        db.commit()
+
+        emit(EventType.HUNTER, "associate_geocode", EventStatus.SUCCESS,
+             detail=f"'{entity.name}' geocoded to {coords[0]:.4f},{coords[1]:.4f}",
+             entity_id=entity.id)
+        return True
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Geocode association failed for entity {entity.id}: {e}")
+        return False
 
 
 def _complete_association(entity: Entity, building: OsmBuilding, db: Session, match_type: str) -> bool:
@@ -161,19 +216,33 @@ def _complete_association(entity: Entity, building: OsmBuilding, db: Session, ma
 
 def run_association_cycle(db: Session) -> int:
     """Run one cycle of association attempts. Returns count of matches made."""
-    # Get unassociated TARGETs
     targets = db.query(Entity).filter(
         Entity.pipeline_stage == "TARGET",
         Entity.osm_building_id.is_(None),
+        Entity.latitude.is_(None),  # No coordinates yet
     ).limit(BATCH_SIZE).all()
 
     if not targets:
         return 0
 
+    # Check if we have any Overpass buildings cached
+    osm_count = db.query(OsmBuilding).count()
+
     matched = 0
     for entity in targets:
-        if _try_associate(entity, db):
-            matched += 1
+        # Try Overpass match if cache has data
+        if osm_count > 0:
+            if _try_associate(entity, db):
+                matched += 1
+                continue
+
+        # Geocode fallback — rate limited to 1 req/sec (Nominatim policy)
+        if entity.address:
+            coords = _geocode_address(entity.address, entity.county)
+            if coords:
+                if _complete_geocode_association(entity, coords, db):
+                    matched += 1
+            time.sleep(1.1)  # Nominatim rate limit
 
     return matched
 

@@ -60,6 +60,21 @@ interface PipelineProps {
 export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, selectedLeadId, onFlyTo, onOpenDetails }: PipelineProps) {
   const [leads, setLeads] = useState<Lead[]>([]);
   const [fetchError, setFetchError] = useState<string | null>(null);
+
+  // Scroll to selected card when map marker is clicked
+  useEffect(() => {
+    if (selectedLeadId) {
+      const el = document.getElementById(`lead-card-${selectedLeadId}`);
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+        // Also expand the stage group if collapsed
+        const stage = leads.find((l) => l.id === selectedLeadId)?.status;
+        if (stage && collapsedStages.has(stage)) {
+          setCollapsedStages((prev) => { const next = new Set(prev); next.delete(stage); return next; });
+        }
+      }
+    }
+  }, [selectedLeadId]);
   const [actionId, setActionId] = useState<number | null>(null);
   const [search, setSearch] = useState("");
   const [county, setCounty] = useState("");
@@ -251,7 +266,7 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
                     const chars = lead.characteristics || {};
                     const heat = lead.heat_score || "cold";
                     return (
-                      <div key={lead.id}
+                      <div key={lead.id} id={`lead-card-${lead.id}`}
                         onMouseEnter={() => onLeadHover?.(lead.id)}
                         onMouseLeave={() => onLeadHover?.(null)}
                         className={`rounded-lg border overflow-hidden transition-colors cursor-pointer ${
