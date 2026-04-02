@@ -85,6 +85,7 @@ export default function Dashboard() {
               <span className="text-blue-300 text-[11px]">{huntingStatus}</span>
             </div>
           )}
+          <Link href="/files" className="text-gray-500 hover:text-white text-xs">Files</Link>
           <Link href="/ops" className="text-gray-500 hover:text-white text-xs">Ops</Link>
         </div>
       </header>

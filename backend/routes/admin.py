@@ -3,7 +3,8 @@ import os
 import threading
 
 import sqlalchemy as sa
-from fastapi import APIRouter, Depends, Query, UploadFile, File
+from datetime import datetime
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from sqlalchemy.orm import Session
 
 from database import get_db, SessionLocal
@@ -492,3 +493,163 @@ def list_bucket_files():
     except Exception as e:
         logger.warning(f"Failed to list bucket files: {e}")
         return {"bucket": bucket_name, "files": [], "error": str(e)}
+
+
+# ─── File Manager (folder structure) ───
+
+FILE_STORE_ROOT = os.path.join(os.path.dirname(__file__), "..", "filestore")
+
+
+def _ensure_filestore():
+    """Create default folder structure if it doesn't exist."""
+    defaults = [
+        "System Data",
+        "System Data/DBPR",
+        "System Data/Overpass Cache",
+        "Associations",
+        "Associations/_templates",
+        "Proposals",
+        "Reports",
+        "Uploads",
+    ]
+    for folder in defaults:
+        path = os.path.join(FILE_STORE_ROOT, folder)
+        os.makedirs(path, exist_ok=True)
+
+
+_ensure_filestore()
+
+
+@router.get("/api/files")
+def list_files(path: str = Query("")):
+    """List files and folders at a given path."""
+    safe_path = os.path.normpath(os.path.join(FILE_STORE_ROOT, path))
+    if not safe_path.startswith(os.path.abspath(FILE_STORE_ROOT)):
+        raise HTTPException(status_code=400, detail="Invalid path")
+
+    if not os.path.exists(safe_path):
+        return {"path": path, "items": []}
+
+    items = []
+    try:
+        for entry in sorted(os.listdir(safe_path)):
+            full = os.path.join(safe_path, entry)
+            rel = os.path.relpath(full, FILE_STORE_ROOT)
+            if os.path.isdir(full):
+                # Count children
+                child_count = len(os.listdir(full)) if os.path.isdir(full) else 0
+                items.append({
+                    "name": entry,
+                    "path": rel,
+                    "type": "folder",
+                    "children": child_count,
+                })
+            else:
+                stat = os.stat(full)
+                items.append({
+                    "name": entry,
+                    "path": rel,
+                    "type": "file",
+                    "size": stat.st_size,
+                    "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                })
+    except Exception as e:
+        logger.warning(f"Failed to list files at {safe_path}: {e}")
+
+    return {"path": path, "items": items}
+
+
+@router.post("/api/files/folder")
+def create_folder(name: str = Query(...), path: str = Query("")):
+    """Create a new folder."""
+    safe_path = os.path.normpath(os.path.join(FILE_STORE_ROOT, path, name))
+    if not safe_path.startswith(os.path.abspath(FILE_STORE_ROOT)):
+        raise HTTPException(status_code=400, detail="Invalid path")
+    os.makedirs(safe_path, exist_ok=True)
+    return {"success": True, "path": os.path.relpath(safe_path, FILE_STORE_ROOT)}
+
+
+@router.post("/api/files/upload")
+async def upload_file(file: UploadFile = File(...), path: str = Query("")):
+    """Upload a file to a specific folder."""
+    safe_dir = os.path.normpath(os.path.join(FILE_STORE_ROOT, path))
+    if not safe_dir.startswith(os.path.abspath(FILE_STORE_ROOT)):
+        raise HTTPException(status_code=400, detail="Invalid path")
+    os.makedirs(safe_dir, exist_ok=True)
+
+    filename = file.filename or "unnamed"
+    filepath = os.path.join(safe_dir, filename)
+    content = await file.read()
+    with open(filepath, "wb") as f:
+        f.write(content)
+
+    # Also upload to S3 if configured
+    s3_client, bucket_name = _get_s3_client()
+    if s3_client:
+        try:
+            s3_key = f"files/{path}/{filename}" if path else f"files/{filename}"
+            s3_client.put_object(Bucket=bucket_name, Key=s3_key, Body=content)
+        except Exception as e:
+            logger.warning(f"S3 upload failed: {e}")
+
+    rel = os.path.relpath(filepath, FILE_STORE_ROOT)
+    return {
+        "success": True,
+        "name": filename,
+        "path": rel,
+        "size": len(content),
+    }
+
+
+@router.get("/api/files/download")
+def download_file(path: str = Query(...)):
+    """Download a file."""
+    from fastapi.responses import FileResponse
+    safe_path = os.path.normpath(os.path.join(FILE_STORE_ROOT, path))
+    if not safe_path.startswith(os.path.abspath(FILE_STORE_ROOT)):
+        raise HTTPException(status_code=400, detail="Invalid path")
+    if not os.path.isfile(safe_path):
+        raise HTTPException(status_code=404, detail="File not found")
+    return FileResponse(safe_path, filename=os.path.basename(safe_path))
+
+
+@router.delete("/api/files")
+def delete_file(path: str = Query(...)):
+    """Delete a file or empty folder."""
+    import shutil
+    safe_path = os.path.normpath(os.path.join(FILE_STORE_ROOT, path))
+    if not safe_path.startswith(os.path.abspath(FILE_STORE_ROOT)):
+        raise HTTPException(status_code=400, detail="Invalid path")
+    if not os.path.exists(safe_path):
+        raise HTTPException(status_code=404, detail="Not found")
+
+    if os.path.isdir(safe_path):
+        shutil.rmtree(safe_path)
+    else:
+        os.remove(safe_path)
+
+    # Also delete from S3
+    s3_client, bucket_name = _get_s3_client()
+    if s3_client:
+        try:
+            s3_key = f"files/{path}"
+            s3_client.delete_object(Bucket=bucket_name, Key=s3_key)
+        except Exception:
+            pass
+
+    return {"success": True}
+
+
+@router.post("/api/files/rename")
+def rename_file(path: str = Query(...), new_name: str = Query(...)):
+    """Rename a file or folder."""
+    safe_path = os.path.normpath(os.path.join(FILE_STORE_ROOT, path))
+    if not safe_path.startswith(os.path.abspath(FILE_STORE_ROOT)):
+        raise HTTPException(status_code=400, detail="Invalid path")
+    if not os.path.exists(safe_path):
+        raise HTTPException(status_code=404, detail="Not found")
+
+    parent = os.path.dirname(safe_path)
+    new_path = os.path.join(parent, new_name)
+    os.rename(safe_path, new_path)
+    return {"success": True, "path": os.path.relpath(new_path, FILE_STORE_ROOT)}
