@@ -199,6 +199,7 @@ def _load_enrichers():
         "cam_license",          # CAM license cross-reference
         "sunbiz",               # Sunbiz association search (scrapes officers)
         "dor_nal",              # DOR NAL cross-reference (supplemental)
+        "citizens_insurance",   # Citizens insurance likelihood + swap opportunity
     ]
     for module in modules:
         try:
