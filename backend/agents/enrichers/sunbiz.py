@@ -74,6 +74,12 @@ def _search_sunbiz(search_name: str) -> list[dict]:
                         "detail_url": f"{SUNBIZ_BASE}{url_path}",
                     })
             return results
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 403:
+            logger.debug(f"Sunbiz 403 (blocked from cloud IP) for '{search_name}'")
+        else:
+            logger.warning(f"Sunbiz search failed for '{search_name}': {e}")
+        return []
     except Exception as e:
         logger.warning(f"Sunbiz search failed for '{search_name}': {e}")
         return []
@@ -153,13 +159,62 @@ def _get_corporation_detail(detail_url: str) -> dict:
         return {}
 
 
+def _is_association_name(name: str) -> bool:
+    """Check if name looks like a condo/HOA association vs an individual person."""
+    name_upper = name.upper()
+    # Association indicators
+    assoc_keywords = [
+        "CONDO", "CONDOMINIUM", "HOA", "HOMEOWNER", "ASSOCIATION", "ASSOC",
+        "VILLAS", "TOWERS", "ESTATES", "VILLAGE", "CLUB", "MANOR",
+        "TERRACE", "PLAZA", "GARDENS", "LANDING", "POINTE", "POINT",
+        "SHORES", "BEACH", "BAY", "HARBOUR", "HARBOR", "LAKE", "ISLE",
+        "RETREAT", "PRESERVE", "COMMONS", "CROSSING", "RIDGE", "PALM",
+        "SUNSET", "SUNRISE", "OCEAN", "GULF", "PARK", "PLACE",
+        "RESIDENCES", "APARTMENTS", "COOPERATIVE", "CO-OP",
+        "INC", "LLC", "CORP", "LTD", "TRUST", "MANAGEMENT",
+    ]
+    if any(kw in name_upper for kw in assoc_keywords):
+        return True
+
+    # Person names: typically "LASTNAME FIRSTNAME" or "LASTNAME, FIRSTNAME"
+    # Short names (1-3 words, no keywords) are likely people
+    words = [w for w in name_upper.split() if len(w) > 1]
+    if len(words) <= 3 and not any(kw in name_upper for kw in assoc_keywords):
+        return False
+
+    return len(words) > 3
+
+
 @register_enricher("sunbiz")
 def enrich_sunbiz(entity: Entity, db: Session) -> bool:
     """Search Florida Sunbiz for condo/HOA association information."""
     if not entity.name:
         return False
 
-    search_name = _build_search_name(entity.name)
+    # Determine what to search: prefer DBPR condo name, fall back to entity name
+    chars = entity.characteristics or {}
+    search_source = None
+
+    # Best: DBPR already matched a condo name
+    dbpr_name = chars.get("dbpr_condo_name")
+    if dbpr_name:
+        search_source = dbpr_name
+
+    # Next: entity name if it looks like an association
+    if not search_source and _is_association_name(entity.name):
+        search_source = entity.name
+
+    # Next: owner name if it looks like an association
+    if not search_source:
+        owner = chars.get("dor_owner", "")
+        if owner and _is_association_name(owner):
+            search_source = owner
+
+    # Skip if we only have a person's name — not searchable on Sunbiz
+    if not search_source:
+        return False
+
+    search_name = _build_search_name(search_source)
     search_url = f"{SUNBIZ_SEARCH_URL}?searchNameOrder={quote_plus(search_name)}&searchTypeOrder=STARTS"
 
     # Try to search — may get 403 from cloud servers
