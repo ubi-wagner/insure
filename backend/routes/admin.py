@@ -31,15 +31,9 @@ def reset_database(db: Session = Depends(get_db)):
     Keeps: service_registry, broker_profiles.
     """
     try:
-        db.execute(sa.text("DELETE FROM engagements"))
-        db.execute(sa.text("DELETE FROM policies"))
-        db.execute(sa.text("DELETE FROM entity_assets"))
-        db.execute(sa.text("DELETE FROM contacts"))
-        db.execute(sa.text("DELETE FROM lead_ledger"))
-        db.execute(sa.text("DELETE FROM entities"))
-        db.execute(sa.text("DELETE FROM osm_buildings"))
-        db.execute(sa.text("DELETE FROM osm_harvest_areas"))
-        db.execute(sa.text("DELETE FROM regions_of_interest"))
+        # Order matters — children before parents, disable FK checks
+        db.execute(sa.text("SET CONSTRAINTS ALL DEFERRED"))
+        db.execute(sa.text("TRUNCATE engagements, policies, entity_assets, contacts, lead_ledger, osm_buildings, osm_harvest_areas, regions_of_interest, entities CASCADE"))
         db.commit()
         logger.info("Database reset complete")
         emit(EventType.SYSTEM, "reset", EventStatus.SUCCESS, detail="All entity data cleared")
