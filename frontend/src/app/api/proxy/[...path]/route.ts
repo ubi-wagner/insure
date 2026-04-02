@@ -49,10 +49,22 @@ async function proxyRequest(request: NextRequest, params: Promise<{ path: string
       });
     }
 
+    // Handle file downloads — pass through binary with all headers
+    const contentDisposition = response.headers.get("content-disposition");
+    const contentType = response.headers.get("content-type") || "application/json";
+    if (contentDisposition || !contentType.includes("json")) {
+      const blob = await response.arrayBuffer();
+      const headers: Record<string, string> = { "Content-Type": contentType };
+      if (contentDisposition) headers["Content-Disposition"] = contentDisposition;
+      const contentLength = response.headers.get("content-length");
+      if (contentLength) headers["Content-Length"] = contentLength;
+      return new NextResponse(blob, { status: response.status, headers });
+    }
+
     const data = await response.text();
     return new NextResponse(data, {
       status: response.status,
-      headers: { "Content-Type": response.headers.get("Content-Type") || "application/json" },
+      headers: { "Content-Type": contentType },
     });
   } catch (error) {
     return NextResponse.json(

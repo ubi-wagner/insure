@@ -155,6 +155,7 @@ def _load_enrichers():
         "dbpr_payments",        # NEW: DBPR payment history (delinquency, financial stress)
         "sunbiz",               # INVESTIGATING: Sunbiz HOA/condo search
         "dbpr_condo",           # TARGETED: DBPR condo registry + CAM license
+        "cam_license",          # TARGETED: CAM license cross-reference
     ]
     for module in modules:
         try:
