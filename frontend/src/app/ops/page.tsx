@@ -75,22 +75,42 @@ export default function OpsPage() {
     } catch {}
   }
 
+  const [seedResult, setSeedResult] = useState<string | null>(null);
+
   async function seedCounty(countyNo: string) {
     setSeeding(countyNo);
+    setSeedResult(null);
     try {
-      await fetch(`/api/proxy/admin/seed-county/${countyNo}`, { method: "POST" });
-      setTimeout(fetchCounties, 5000);
-    } catch (err) { console.error("Seed failed:", err); }
+      const res = await fetch(`/api/proxy/admin/seed-county/${countyNo}`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        setSeedResult(`Error: ${data.error || res.statusText}`);
+      } else {
+        setSeedResult(`${data.county}: ${data.created} leads from ${data.filtered} filtered (${data.total_parcels} parcels scanned)`);
+      }
+      fetchCounties();
+    } catch (err) {
+      setSeedResult(`Network error: ${err}`);
+    }
     setSeeding(null);
   }
 
   async function seedAll() {
     setSeeding("all");
+    setSeedResult(null);
     try {
-      await fetch("/api/proxy/admin/seed-all", { method: "POST" });
-      const poll = setInterval(fetchCounties, 15000);
-      setTimeout(() => clearInterval(poll), 600000);
-    } catch (err) { console.error("Seed all failed:", err); }
+      const res = await fetch("/api/proxy/admin/seed-all", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        setSeedResult(`Error: ${data.error || res.statusText}`);
+      } else {
+        const total = data.results?.reduce((s: number, r: { created?: number }) => s + (r.created || 0), 0) || 0;
+        setSeedResult(`Seeded ${total} total leads across ${data.results?.length || 0} counties`);
+      }
+      fetchCounties();
+    } catch (err) {
+      setSeedResult(`Network error: ${err}`);
+    }
     setSeeding(null);
   }
 
@@ -253,7 +273,7 @@ export default function OpsPage() {
                   <a href="/files" className="text-blue-400 hover:underline">File Manager</a>
                 </p>
               </div>
-              <div className="flex gap-2">
+              <div className="flex gap-2 items-center">
                 <button onClick={seedAll} disabled={seeding !== null}
                   className="bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white text-xs px-4 py-2 rounded font-medium">
                   {seeding === "all" ? "Seeding..." : "Seed All Counties"}
@@ -264,6 +284,11 @@ export default function OpsPage() {
                 </button>
               </div>
             </div>
+            {seedResult && (
+              <div className={`text-xs px-4 py-2 rounded mb-3 ${seedResult.startsWith("Error") || seedResult.startsWith("Network") ? "bg-red-900/50 text-red-300 border border-red-800" : "bg-green-900/50 text-green-300 border border-green-800"}`}>
+                {seedResult}
+              </div>
+            )}
 
             {counties && (
               <div className="bg-gray-900 border border-gray-800 rounded-lg overflow-hidden">
