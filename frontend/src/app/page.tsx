@@ -105,6 +105,9 @@ export default function Dashboard() {
               ))}
             </div>
           )}
+          <Link href="/ops" className="text-gray-400 hover:text-white text-sm">
+            Ops
+          </Link>
           <Link href="/events" className="text-gray-400 hover:text-white text-sm">
             Events
           </Link>
