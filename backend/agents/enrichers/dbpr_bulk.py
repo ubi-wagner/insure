@@ -19,6 +19,7 @@ This enricher matches entities against the cached DBPR data by name/address.
 import csv
 import io
 import logging
+import os
 import re
 from datetime import datetime, timezone
 
@@ -31,12 +32,60 @@ from database.models import Entity
 
 logger = logging.getLogger(__name__)
 
-# DBPR CSV download URLs by region
-DBPR_CSV_URLS = {
-    "central_west": "https://www2.myfloridalicense.com/sto/file_download/extracts/Condo_CW.csv",
-    "dade_monroe": "https://www2.myfloridalicense.com/sto/file_download/extracts/Condo_MD.csv",
-    "central_east": "https://www2.myfloridalicense.com/sto/file_download/extracts/condo_CE.csv",
-    "southeast": "https://www2.myfloridalicense.com/sto/file_download/extracts/Condo_SE.csv",
+# DBPR CSV files — try local path first (uploaded), then remote URL
+DBPR_CSV_FILES = {
+    "central_west": {
+        "local": "data/Condo_CW.csv",
+        "remote": "https://www2.myfloridalicense.com/sto/file_download/extracts/Condo_CW.csv",
+    },
+    "dade_monroe": {
+        "local": "data/Condo_MD.csv",
+        "remote": "https://www2.myfloridalicense.com/sto/file_download/extracts/Condo_MD.csv",
+    },
+    "central_east": {
+        "local": "data/condo_CE.csv",
+        "remote": "https://www2.myfloridalicense.com/sto/file_download/extracts/condo_CE.csv",
+    },
+    "north_florida": {
+        "local": "data/Condo_NF.csv",
+        "remote": "https://www2.myfloridalicense.com/sto/file_download/extracts/Condo_NF.csv",
+    },
+    "condo_conversions": {
+        "local": "data/condo_conv.csv",
+        "remote": "https://www2.myfloridalicense.com/sto/file_download/extracts/condo_conv.csv",
+    },
+    "cooperatives": {
+        "local": "data/coopmailing.csv",
+        "remote": "https://www2.myfloridalicense.com/sto/file_download/extracts/coopmailing.csv",
+    },
+    "cam_licenses": {
+        "local": "data/cams.csv",
+        "remote": "https://www2.myfloridalicense.com/sto/file_download/extracts/cams.csv",
+    },
+    "payments_a": {
+        "local": "data/paymenthist_8002A.csv",
+        "remote": "https://www2.myfloridalicense.com/sto/file_download/extracts/paymenthist_8002A.csv",
+    },
+    "payments_d": {
+        "local": "data/paymenthist_8002D.csv",
+        "remote": "https://www2.myfloridalicense.com/sto/file_download/extracts/paymenthist_8002D.csv",
+    },
+    "payments_j": {
+        "local": "data/paymenthist_8002J.csv",
+        "remote": "https://www2.myfloridalicense.com/sto/file_download/extracts/paymenthist_8002J.csv",
+    },
+    "payments_p": {
+        "local": "data/paymenthist_8002P.csv",
+        "remote": "https://www2.myfloridalicense.com/sto/file_download/extracts/paymenthist_8002P.csv",
+    },
+    "payments_s": {
+        "local": "data/paymenthist_8002S.csv",
+        "remote": "https://www2.myfloridalicense.com/sto/file_download/extracts/paymenthist_8002S.csv",
+    },
+    "timeshare": {
+        "local": "data/tsmailing.csv",
+        "remote": "https://www2.myfloridalicense.com/sto/file_download/extracts/tsmailing.csv",
+    },
 }
 
 # Map our target counties to CSV regions
@@ -55,25 +104,46 @@ _csv_cache_time: dict[str, float] = {}
 CSV_CACHE_TTL = 3600 * 6  # 6 hours
 
 
-def _download_and_parse_csv(region: str) -> list[dict]:
-    """Download a DBPR CSV file and parse it into a list of dicts."""
-    url = DBPR_CSV_URLS.get(region)
-    if not url:
+def _load_csv(region: str) -> list[dict]:
+    """Load a DBPR CSV — tries local file first, then remote download."""
+    config = DBPR_CSV_FILES.get(region)
+    if not config:
+        return []
+
+    # Try local file first (uploaded by user)
+    local_path = os.path.join(os.path.dirname(__file__), "..", "..", config["local"])
+    # Also check repo root
+    repo_root_path = os.path.join(os.path.dirname(__file__), "..", "..", "..", config["local"])
+    # Also check for file at repo root without data/ prefix
+    bare_name = os.path.basename(config["local"])
+    bare_root_path = os.path.join(os.path.dirname(__file__), "..", "..", "..", bare_name)
+
+    for path in [local_path, repo_root_path, bare_root_path]:
+        resolved = os.path.abspath(path)
+        if os.path.exists(resolved):
+            try:
+                with open(resolved, "r", encoding="utf-8", errors="replace") as f:
+                    reader = csv.DictReader(f)
+                    rows = list(reader)
+                logger.info(f"DBPR CSV {region}: loaded {len(rows)} records from {resolved}")
+                return rows
+            except Exception as e:
+                logger.warning(f"Failed to read local CSV {resolved}: {e}")
+
+    # Fall back to remote download
+    remote_url = config.get("remote")
+    if not remote_url:
         return []
 
     try:
         with httpx.Client(timeout=60, headers={
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
         }) as client:
-            resp = client.get(url)
+            resp = client.get(remote_url)
             resp.raise_for_status()
-            text = resp.text
-
-            reader = csv.DictReader(io.StringIO(text))
-            rows = []
-            for row in reader:
-                rows.append(row)
-            logger.info(f"DBPR CSV {region}: loaded {len(rows)} records")
+            reader = csv.DictReader(io.StringIO(resp.text))
+            rows = list(reader)
+            logger.info(f"DBPR CSV {region}: downloaded {len(rows)} records from {remote_url}")
             return rows
     except Exception as e:
         logger.warning(f"DBPR CSV download failed for {region}: {e}")
@@ -86,7 +156,7 @@ def _get_csv_data(region: str) -> list[dict]:
     if region in _csv_cache and (now - _csv_cache_time.get(region, 0)) < CSV_CACHE_TTL:
         return _csv_cache[region]
 
-    data = _download_and_parse_csv(region)
+    data = _load_csv(region)
     if data:
         _csv_cache[region] = data
         _csv_cache_time[region] = now
@@ -110,8 +180,8 @@ def _match_entity_to_condo(entity: Entity, records: list[dict]) -> dict | None:
     best_score = 0
 
     for record in records:
-        condo_name = _normalize(record.get("Condo Name", "") or record.get("CONDO_NAME", "") or "")
-        condo_addr = _normalize(record.get("Address", "") or record.get("ADDRESS", "") or "")
+        condo_name = _normalize(record.get("Condo Name", "") or "")
+        condo_addr = _normalize(record.get("Street City State Zip", "") or "")
 
         if not condo_name:
             continue
@@ -166,6 +236,14 @@ def enrich_dbpr_bulk(entity: Entity, db: Session) -> bool:
         return False
 
     # Extract fields — CSV headers vary between files, try common variations
+    # Exact headers from real Condo_CW.csv:
+    # "Project Number","File Number","Condo Name","County",
+    # "Street City State Zip","Units","Recorded Date",
+    # "Primary Status","Secondary Status",
+    # "Managing Entity Number","Managing Entity Name",
+    # "Managing Entity Route","Managing Entity Street",
+    # "Managing Entity City","Managing Entity State","Managing Entity Zip"
+
     def get(record: dict, *keys: str) -> str:
         for k in keys:
             val = record.get(k)
@@ -175,72 +253,59 @@ def enrich_dbpr_bulk(entity: Entity, db: Session) -> bool:
 
     updates: dict = {}
 
-    condo_name = get(match, "Condo Name", "CONDO_NAME", "PROJECT_NAME")
+    condo_name = get(match, "Condo Name")
     if condo_name:
         updates["dbpr_condo_name"] = condo_name
 
-    project_num = get(match, "Project Number", "PROJECT_NUMBER", "PROJ_NUM")
+    project_num = get(match, "Project Number")
     if project_num:
         updates["dbpr_project_number"] = project_num
 
-    file_num = get(match, "File Number", "FILE_NUMBER")
+    file_num = get(match, "File Number")
     if file_num:
         updates["dbpr_file_number"] = file_num
 
-    units = get(match, "Units", "UNITS", "NO_UNITS", "NUMBER_OF_UNITS")
+    condo_addr = get(match, "Street City State Zip")
+    if condo_addr:
+        updates["dbpr_address"] = condo_addr
+
+    units = get(match, "Units")
     if units and units.isdigit():
         updates["dbpr_official_units"] = int(units)
-        updates["units_estimate"] = int(units)  # Override OSM estimate with official count
+        updates["units_estimate"] = int(units)  # Override OSM estimate
 
-    status = get(match, "Primary Status", "PRIMARY_STATUS", "STATUS")
+    recorded = get(match, "Recorded Date")
+    if recorded:
+        updates["dbpr_recorded_date"] = recorded
+
+    status = get(match, "Primary Status")
     if status:
         updates["dbpr_status"] = status
 
-    mgmt_name = get(match, "Managing Entity Name", "MANAGING_ENTITY_NAME", "ME_NAME")
+    secondary = get(match, "Secondary Status")
+    if secondary:
+        updates["dbpr_secondary_status"] = secondary
+
+    mgmt_name = get(match, "Managing Entity Name")
     if mgmt_name:
         updates["dbpr_managing_entity"] = mgmt_name
         updates["property_manager"] = mgmt_name
 
-    mgmt_num = get(match, "Managing Entity Number", "MANAGING_ENTITY_NUMBER", "ME_NUMBER")
+    mgmt_num = get(match, "Managing Entity Number")
     if mgmt_num:
         updates["dbpr_managing_entity_number"] = mgmt_num
 
-    # Managing entity address
+    # Managing entity address from individual fields
     mgmt_addr_parts = [
-        get(match, "ME Route", "ME_ROUTE", "Managing Entity Route"),
-        get(match, "ME Street", "ME_STREET", "Managing Entity Street"),
-        get(match, "ME City", "ME_CITY", "Managing Entity City"),
-        get(match, "ME State", "ME_STATE", "Managing Entity State"),
-        get(match, "ME Zip", "ME_ZIP", "Managing Entity Zip"),
+        get(match, "Managing Entity Route"),
+        get(match, "Managing Entity Street"),
+        get(match, "Managing Entity City"),
+        get(match, "Managing Entity State"),
+        get(match, "Managing Entity Zip"),
     ]
     mgmt_addr = ", ".join(p for p in mgmt_addr_parts if p)
     if mgmt_addr:
         updates["dbpr_managing_entity_address"] = mgmt_addr
-
-    # Financial data
-    revenue = get(match, "Total Revenue (Operating Fund)", "TOTAL_REV_OP", "Operating Revenue")
-    if revenue:
-        updates["dbpr_operating_revenue"] = revenue
-
-    expenses = get(match, "Total Expenses (Operating Fund)", "TOTAL_EXP_OP", "Operating Expenses")
-    if expenses:
-        updates["dbpr_operating_expenses"] = expenses
-
-    reserve_rev = get(match, "Total Revenue (Replacement Fund)", "TOTAL_REV_REPL", "Replacement Revenue")
-    if reserve_rev:
-        updates["dbpr_reserve_revenue"] = reserve_rev
-
-    fund_balance = get(match, "Fund Balance (Operating Fund)", "FUND_BAL_OP", "Operating Fund Balance")
-    if fund_balance:
-        updates["dbpr_operating_fund_balance"] = fund_balance
-
-    reserve_balance = get(match, "Fund Balance (Replacement Fund)", "FUND_BAL_REPL", "Replacement Fund Balance")
-    if reserve_balance:
-        updates["dbpr_reserve_fund_balance"] = reserve_balance
-
-    fiscal_yr = get(match, "Fiscal Year End", "FISCAL_YR_END")
-    if fiscal_yr:
-        updates["dbpr_fiscal_year_end"] = fiscal_yr
 
     if not updates:
         return False
