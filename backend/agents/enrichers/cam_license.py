@@ -153,7 +153,7 @@ def _find_cam(name: str, cams: dict[str, dict]) -> dict | None:
     return None
 
 
-@register_enricher("TARGETED", "cam_license")
+@register_enricher("cam_license")
 def enrich_cam_license(entity: Entity, db: Session) -> bool:
     """Cross-reference property manager against CAM license records."""
     chars = entity.characteristics or {}

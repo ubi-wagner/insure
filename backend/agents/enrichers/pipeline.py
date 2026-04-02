@@ -1,28 +1,20 @@
 """
-Enrichment Pipeline Orchestrator
+Enrichment Pipeline — 5-Stage Architecture
 
-Pipeline stages and auto-advancement:
+Stages:
+  TARGET → LEAD → OPPORTUNITY → CUSTOMER → ARCHIVED
 
-  NEW (from Overpass)
-    → auto-enrich: FEMA flood + FDOT parcels + county PA
-    → when complete: auto-advance to ENRICHED
+Auto-advance:
+  TARGET → LEAD: Only when Overpass association is confirmed
+  (osm_building_id is set on the Entity)
 
-  ENRICHED (data populated, waiting for Jason)
-    → Jason clicks "Investigate"
+  Everything else is manual (user clicks Promote/Convert).
 
-  INVESTIGATING (Jason triggered)
-    → auto-enrich: Sunbiz (officers, registered agent) + AI Kill & Cook
-    → when complete: auto-advance to RESEARCHED
-
-  RESEARCHED (investigation complete, waiting for Jason)
-    → Jason clicks "Target"
-
-  TARGETED (Jason triggered)
-    → auto-enrich: DBPR condo + CAM lookup
-    → stays TARGETED (Jason reviews and decides)
-    → Jason clicks "Opportunity" to create full CRM profile
-
-  OPPORTUNITY → CUSTOMER (manual gates)
+Enrichers:
+  All enrichers run on LEAD stage continuously.
+  Each enricher populates real data and documents.
+  Each contributes to heat scoring (cold/warm/hot).
+  No enricher changes pipeline stage.
 """
 
 import logging
@@ -34,28 +26,14 @@ from services.event_bus import EventStatus, EventType, emit
 
 logger = logging.getLogger(__name__)
 
-# Registry of enrichers by trigger stage
-STAGE_ENRICHERS: dict[str, list] = {}
-
-# Auto-advance rules: when all required sources complete, move to next stage
-AUTO_ADVANCE = {
-    "NEW": {
-        "required_sources": ["fema_flood", "fdot_parcels"],  # PA is optional (many fail)
-        "next_stage": "ENRICHED",
-    },
-    "INVESTIGATING": {
-        "required_sources": ["sunbiz"],  # AI Kill & Cook tracked separately
-        "next_stage": "RESEARCHED",
-    },
-}
+# All enrichers registered here — they all run on LEAD stage
+ENRICHERS: list[dict] = []
 
 
-def register_enricher(stage: str, source_id: str, requires: list[str] | None = None):
-    """Decorator to register an enricher for a pipeline stage."""
+def register_enricher(source_id: str, requires: list[str] | None = None):
+    """Decorator to register an enricher. All enrichers run on LEAD stage."""
     def decorator(func):
-        if stage not in STAGE_ENRICHERS:
-            STAGE_ENRICHERS[stage] = []
-        STAGE_ENRICHERS[stage].append({
+        ENRICHERS.append({
             "source_id": source_id,
             "function": func,
             "requires": requires or [],
@@ -64,46 +42,29 @@ def register_enricher(stage: str, source_id: str, requires: list[str] | None = N
     return decorator
 
 
-def _check_auto_advance(entity: Entity, stage: str, db: Session):
-    """Check if enrichment completion should auto-advance the entity's stage."""
-    rule = AUTO_ADVANCE.get(stage)
-    if not rule:
-        return
+def run_lead_enrichment(entity: Entity, db: Session) -> list[str]:
+    """Run all applicable enrichers on a LEAD.
 
-    # Only advance if entity is still in the triggering stage
-    if entity.pipeline_stage != stage:
-        return
-
-    sources = entity.enrichment_sources or {}
-    required = rule["required_sources"]
-    if all(s in sources for s in required):
-        next_stage = rule["next_stage"]
-        entity.pipeline_stage = next_stage
-        db.commit()
-        emit(EventType.DB_OPERATION, "auto_advance", EventStatus.SUCCESS,
-             detail=f"'{entity.name}': {stage} → {next_stage} (enrichment complete)",
-             entity_id=entity.id)
-        logger.info(f"Auto-advanced entity {entity.id} from {stage} to {next_stage}")
-
-
-def run_enrichment_for_stage(entity: Entity, stage: str, db: Session) -> list[str]:
-    """Run all enrichers for a stage, then check auto-advance.
-
-    Returns list of source_ids that ran successfully.
+    Skips enrichers that have already run. Returns list of source_ids that ran.
     """
-    enrichers = STAGE_ENRICHERS.get(stage, [])
-    if not enrichers:
+    if entity.pipeline_stage not in ("LEAD", "OPPORTUNITY", "CUSTOMER"):
         return []
 
     completed = []
 
-    for enricher_info in enrichers:
+    # Mark as running
+    entity.enrichment_status = "running"
+    db.commit()
+
+    for enricher_info in ENRICHERS:
         source_id = enricher_info["source_id"]
         existing_sources = entity.enrichment_sources or {}
 
+        # Skip if already enriched from this source
         if source_id in existing_sources:
             continue
 
+        # Check prerequisites
         missing = [r for r in enricher_info["requires"] if r not in existing_sources]
         if missing:
             continue
@@ -123,40 +84,121 @@ def run_enrichment_for_stage(entity: Entity, stage: str, db: Session) -> list[st
             emit(EventType.HUNTER, f"enrich_{source_id}", EventStatus.ERROR,
                  detail=str(e)[:200], entity_id=entity.id)
 
-    # Check if we should auto-advance
-    if completed:
-        _check_auto_advance(entity, stage, db)
+    # Update enrichment status
+    sources = entity.enrichment_sources or {}
+    total_enrichers = len(ENRICHERS)
+    completed_enrichers = sum(1 for e in ENRICHERS if e["source_id"] in sources)
+
+    if completed_enrichers >= total_enrichers:
+        entity.enrichment_status = "complete"
+    elif completed:
+        entity.enrichment_status = "idle"  # Made progress, will continue later
+    else:
+        entity.enrichment_status = "idle"
+
+    # Compute and store heat score
+    entity.heat_score = compute_heat_score(entity)
+    db.commit()
 
     return completed
 
 
-def run_on_new_lead(entity: Entity, db: Session) -> list[str]:
-    """Run NEW-stage enrichments (FEMA, FDOT, PA). Auto-advances to ENRICHED."""
-    return run_enrichment_for_stage(entity, "NEW", db)
+def compute_heat_score(entity: Entity) -> str:
+    """Compute heat score: cold, warm, or hot.
+
+    Based on data completeness + risk indicators, not arbitrary thresholds.
+    """
+    chars = entity.characteristics or {}
+    sources = entity.enrichment_sources or {}
+    score = 0
+
+    # Data completeness
+    if chars.get("dor_owner"):
+        score += 5
+    if chars.get("dor_market_value"):
+        score += 5
+    if chars.get("dor_construction_class"):
+        score += 3
+    if chars.get("dor_num_units"):
+        score += 3
+
+    # Flood risk
+    flood_risk = chars.get("flood_risk", "")
+    if flood_risk in ("extreme", "high"):
+        score += 15
+    elif flood_risk == "moderate_high":
+        score += 8
+
+    # Association data
+    if chars.get("dbpr_managing_entity"):
+        score += 5
+    if chars.get("dbpr_condo_name"):
+        score += 3
+    if chars.get("payment_is_delinquent"):
+        score += 10  # Financially stressed = opportunity
+
+    # Contact availability
+    contacts = entity.contacts if hasattr(entity, 'contacts') else []
+    if any(c.email for c in contacts):
+        score += 10
+    elif len(contacts) > 0:
+        score += 5
+
+    # Insurance intel
+    if chars.get("carrier"):
+        score += 10
+    if chars.get("on_citizens"):
+        score += 15  # Citizens = hot by definition
+    if chars.get("premium"):
+        score += 5
+    if chars.get("decision_maker"):
+        score += 5
+
+    # User-uploaded documents
+    if chars.get("has_user_intel"):
+        score += 15
+
+    # Sunbiz data
+    if "sunbiz" in sources:
+        score += 5
+
+    # Classify
+    if score >= 30:
+        return "hot"
+    elif score >= 15:
+        return "warm"
+    return "cold"
 
 
-def run_on_investigate(entity: Entity, db: Session) -> list[str]:
-    """Run INVESTIGATING-stage enrichments (Sunbiz). Auto-advances to RESEARCHED."""
-    return run_enrichment_for_stage(entity, "INVESTIGATING", db)
+def check_target_to_lead(entity: Entity, db: Session) -> bool:
+    """Check if a TARGET should auto-advance to LEAD.
 
+    Only condition: Overpass association confirmed (osm_building_id is set).
+    """
+    if entity.pipeline_stage != "TARGET":
+        return False
 
-def run_on_target(entity: Entity, db: Session) -> list[str]:
-    """Run TARGETED-stage enrichments (DBPR)."""
-    return run_enrichment_for_stage(entity, "TARGETED", db)
+    if entity.osm_building_id is not None:
+        entity.pipeline_stage = "LEAD"
+        entity.enrichment_status = "idle"
+        db.commit()
+        emit(EventType.DB_OPERATION, "auto_advance", EventStatus.SUCCESS,
+             detail=f"'{entity.name}': TARGET → LEAD (Overpass associated)",
+             entity_id=entity.id)
+        return True
+
+    return False
 
 
 # Import enrichers to trigger their @register_enricher decorators
 def _load_enrichers():
     modules = [
-        "fema_flood",           # NEW: FEMA flood zone
-        "fdot_parcels",         # NEW: FDOT/DOR statewide parcels
-        "dor_nal",              # NEW: FL DOR NAL tax roll (authoritative parcel data)
-        "property_appraiser",   # NEW: County PA GIS lookup
-        "dbpr_bulk",            # NEW: DBPR bulk CSV (condo name, units, managing entity, financials)
-        "dbpr_payments",        # NEW: DBPR payment history (delinquency, financial stress)
-        "sunbiz",               # INVESTIGATING: Sunbiz HOA/condo search
-        "dbpr_condo",           # TARGETED: DBPR condo registry + CAM license
-        "cam_license",          # TARGETED: CAM license cross-reference
+        "fema_flood",           # FEMA flood zone (real API)
+        "dbpr_bulk",            # DBPR condo CSV (managing entity, project number)
+        "dbpr_payments",        # DBPR payment history (delinquency)
+        "cam_license",          # CAM license cross-reference
+        "sunbiz",               # Sunbiz association search (scrapes officers)
+        "dor_nal",              # DOR NAL cross-reference (supplemental)
     ]
     for module in modules:
         try:

@@ -87,7 +87,7 @@ def _get_payments() -> dict[str, list[dict]]:
     return _payment_cache
 
 
-@register_enricher("NEW", "dbpr_payments")
+@register_enricher("dbpr_payments", requires=["dbpr_bulk"])
 def enrich_payment_history(entity: Entity, db: Session) -> bool:
     """Cross-reference payment history to find delinquency and financial stress."""
     chars = entity.characteristics or {}

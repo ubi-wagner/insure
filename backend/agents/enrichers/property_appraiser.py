@@ -175,7 +175,7 @@ def _normalize_parcel_data(raw: dict) -> dict:
     return normalized
 
 
-@register_enricher("NEW", "property_appraiser")
+@register_enricher("property_appraiser")
 def enrich_property_appraiser(entity: Entity, db: Session) -> bool:
     """Look up parcel data from county property appraiser GIS."""
     county = entity.county

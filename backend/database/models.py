@@ -28,21 +28,11 @@ class RegionStatus(str, enum.Enum):
 
 
 class PipelineStage(str, enum.Enum):
-    # Automatic tier (enrichers auto-advance)
-    NEW = "NEW"                     # Just discovered from Overpass
-    ENRICHED = "ENRICHED"           # FEMA + FDOT + PA data populated automatically
-
-    # Investigation tier (Jason triggers, enrichers auto-complete)
-    INVESTIGATING = "INVESTIGATING" # Jason clicked Investigate → Sunbiz + AI running
-    RESEARCHED = "RESEARCHED"       # Investigation complete — contacts + emails ready
-
-    # Manual tier (Jason decides)
-    TARGETED = "TARGETED"           # Jason picked this for deeper profiling → DBPR runs
-    OPPORTUNITY = "OPPORTUNITY"     # Full CRM profile + portal created
-    CUSTOMER = "CUSTOMER"           # Converted deal
-
-    CHURNED = "CHURNED"
-    ARCHIVED = "ARCHIVED"
+    TARGET = "TARGET"           # Raw NAL parcel, waiting for Overpass association
+    LEAD = "LEAD"               # Associated, continuously enriching, scored cold/warm/hot
+    OPPORTUNITY = "OPPORTUNITY"  # User-promoted for CRM engagement
+    CUSTOMER = "CUSTOMER"        # Converted deal
+    ARCHIVED = "ARCHIVED"        # Dismissed
 
 
 class ActionType(str, enum.Enum):
@@ -131,11 +121,16 @@ class Entity(Base):
     longitude = Column(Float, nullable=True)
     characteristics = Column(JSONB, nullable=True)
     enrichment_sources = Column(JSONB, nullable=True)  # {source_id: {source, timestamp, fields, url}}
-    pipeline_stage = Column(String, default="NEW", nullable=False)
+    pipeline_stage = Column(String, default="TARGET", nullable=False)
+    heat_score = Column(String, nullable=True)  # cold, warm, hot
+    folder_path = Column(String, nullable=True)  # Per-lead document folder in bucket
+    osm_building_id = Column(Integer, ForeignKey("osm_buildings.id"), nullable=True)
+    enrichment_status = Column(String, default="idle", nullable=False)  # idle, running, complete, error
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
 
     # Relationships
     parent = relationship("Entity", remote_side="Entity.id", backref="children")
+    osm_building = relationship("OsmBuilding", foreign_keys=[osm_building_id])
     ledger_events = relationship("LeadLedger", back_populates="entity")
     assets = relationship("EntityAsset", back_populates="entity")
     contacts = relationship("Contact", back_populates="entity")

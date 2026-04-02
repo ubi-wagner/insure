@@ -209,7 +209,7 @@ def _safe_float(val) -> float | None:
         return None
 
 
-@register_enricher("NEW", "dor_nal")
+@register_enricher("dor_nal")
 def enrich_dor_nal(entity: Entity, db: Session) -> bool:
     """Match entity against FL DOR NAL tax roll data."""
     county = entity.county

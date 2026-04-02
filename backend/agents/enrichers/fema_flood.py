@@ -66,7 +66,7 @@ def _query_nfhl(lat: float, lon: float) -> dict | None:
     return None
 
 
-@register_enricher("NEW", "fema_flood")
+@register_enricher("fema_flood")
 def enrich_fema_flood(entity: Entity, db: Session) -> bool:
     """Look up FEMA flood zone designation for the property."""
     if not entity.latitude or not entity.longitude:

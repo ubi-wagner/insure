@@ -74,7 +74,7 @@ COUNTY_NUMBERS = {
 }
 
 
-@register_enricher("NEW", "fdot_parcels")
+@register_enricher("fdot_parcels")
 def enrich_fdot_parcels(entity: Entity, db: Session) -> bool:
     """Look up statewide parcel data from FDOT/DOR via ArcGIS."""
     if not entity.latitude or not entity.longitude:

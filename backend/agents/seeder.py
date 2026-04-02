@@ -264,7 +264,7 @@ def seed_county(county_no: str, db: Session) -> dict:
                     county=county_name,
                     characteristics=characteristics,
                     enrichment_sources=enrichment_sources,
-                    pipeline_stage="NEW",
+                    pipeline_stage="TARGET",
                 )
                 db.add(entity)
 
