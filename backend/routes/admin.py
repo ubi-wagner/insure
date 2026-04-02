@@ -22,6 +22,85 @@ def run_seed(db: Session = Depends(get_db)):
     return {"success": True, "message": "Seed complete"}
 
 
+@router.get("/api/admin/counties")
+def list_counties():
+    """List available counties and their NAL/SDF file status."""
+    from agents.seeder import get_available_counties
+    counties = get_available_counties()
+
+    # Also count existing leads per county
+    from database.models import Entity
+    db = SessionLocal()
+    try:
+        for c in counties:
+            c["lead_count"] = db.query(Entity).filter(
+                Entity.county == c["county_name"]
+            ).count()
+    finally:
+        db.close()
+
+    return {
+        "counties": counties,
+        "nal_download_url": "https://floridarevenue.com/property/Pages/DataPortal_RequestAssessmentRollGISData.aspx",
+        "instructions": "Download NAL and SDF files, upload to System Data/DOR/ via File Manager",
+    }
+
+
+@router.post("/api/admin/seed-county/{county_no}")
+def seed_county_endpoint(county_no: str):
+    """Seed leads from NAL file for a specific county. Runs in background."""
+    from agents.seeder import DOR_COUNTIES, _find_nal_file
+
+    if county_no not in DOR_COUNTIES:
+        raise HTTPException(status_code=400, detail=f"Unknown county number: {county_no}")
+
+    if not _find_nal_file(county_no):
+        raise HTTPException(status_code=404, detail=f"NAL file not found for {DOR_COUNTIES[county_no]}. Upload to System Data/DOR/")
+
+    from agents.seeder import seed_county_background
+    thread = threading.Thread(target=seed_county_background, args=(county_no,), daemon=True)
+    thread.start()
+
+    return {
+        "success": True,
+        "message": f"Seeding {DOR_COUNTIES[county_no]} in background",
+        "county": DOR_COUNTIES[county_no],
+    }
+
+
+@router.post("/api/admin/seed-all")
+def seed_all_counties():
+    """Seed all counties that have NAL files. Runs in background."""
+    from agents.seeder import get_available_counties, seed_county_background, DOR_COUNTIES
+
+    available = [c for c in get_available_counties() if c["ready"]]
+    if not available:
+        raise HTTPException(status_code=404, detail="No NAL files found. Upload to System Data/DOR/")
+
+    def _seed_all():
+        import time
+        for c in available:
+            try:
+                emit(EventType.HUNTER, "seed_all", EventStatus.PENDING,
+                     detail=f"Seeding {c['county_name']}...")
+                seed_county_background(c["county_no"])
+                time.sleep(2)  # Brief pause between counties
+            except Exception as e:
+                logger.error(f"Seed failed for {c['county_name']}: {e}")
+
+        emit(EventType.HUNTER, "seed_all", EventStatus.SUCCESS,
+             detail=f"Seeded {len(available)} counties")
+
+    thread = threading.Thread(target=_seed_all, daemon=True)
+    thread.start()
+
+    return {
+        "success": True,
+        "message": f"Seeding {len(available)} counties in background",
+        "counties": [c["county_name"] for c in available],
+    }
+
+
 # Full county harvest areas — covers entire county footprints
 # Split into grid tiles (~0.15° ≈ 10 miles) to keep Overpass queries manageable
 # Counties ordered south → north along both coasts
