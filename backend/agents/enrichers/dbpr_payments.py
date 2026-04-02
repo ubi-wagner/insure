@@ -44,14 +44,21 @@ CACHE_TTL = 3600 * 6
 def _load_all_payments() -> dict[str, list[dict]]:
     """Load all payment history CSVs, indexed by project number."""
     by_project: dict[str, list[dict]] = {}
-    data_dir = os.path.join(os.path.dirname(__file__), "..", "..", "data")
+    base = os.path.dirname(__file__)
+    search_dirs = [
+        os.path.join(base, "..", "..", "data"),
+        os.path.join(base, "..", "..", "filestore", "System Data", "DBPR"),
+        os.path.join(base, "..", "..", ".."),
+    ]
 
     for filename in PAYMENT_FILES:
-        filepath = os.path.abspath(os.path.join(data_dir, filename))
-        if not os.path.exists(filepath):
-            # Also check repo root
-            filepath = os.path.abspath(os.path.join(data_dir, "..", "..", filename))
-        if not os.path.exists(filepath):
+        filepath = None
+        for d in search_dirs:
+            candidate = os.path.abspath(os.path.join(d, filename))
+            if os.path.exists(candidate):
+                filepath = candidate
+                break
+        if not filepath:
             continue
 
         try:
