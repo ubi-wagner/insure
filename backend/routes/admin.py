@@ -501,7 +501,9 @@ FILE_STORE_ROOT = os.path.join(os.path.dirname(__file__), "..", "filestore")
 
 
 def _ensure_filestore():
-    """Create default folder structure if it doesn't exist."""
+    """Create default folder structure and sync CSV data files."""
+    import shutil
+
     defaults = [
         "System Data",
         "System Data/DBPR",
@@ -515,6 +517,20 @@ def _ensure_filestore():
     for folder in defaults:
         path = os.path.join(FILE_STORE_ROOT, folder)
         os.makedirs(path, exist_ok=True)
+
+    # Copy CSV data files to filestore so they're visible in the file manager
+    data_dir = os.path.join(os.path.dirname(__file__), "..", "data")
+    dbpr_dir = os.path.join(FILE_STORE_ROOT, "System Data", "DBPR")
+    if os.path.exists(data_dir):
+        for filename in os.listdir(data_dir):
+            if filename.endswith(".csv"):
+                src = os.path.join(data_dir, filename)
+                dst = os.path.join(dbpr_dir, filename)
+                if not os.path.exists(dst):
+                    try:
+                        shutil.copy2(src, dst)
+                    except Exception:
+                        pass  # Non-critical — file manager convenience only
 
 
 _ensure_filestore()

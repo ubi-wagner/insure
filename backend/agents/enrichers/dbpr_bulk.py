@@ -110,15 +110,17 @@ def _load_csv(region: str) -> list[dict]:
     if not config:
         return []
 
-    # Try local file first (uploaded by user)
-    local_path = os.path.join(os.path.dirname(__file__), "..", "..", config["local"])
-    # Also check repo root
-    repo_root_path = os.path.join(os.path.dirname(__file__), "..", "..", "..", config["local"])
-    # Also check for file at repo root without data/ prefix
+    # Search multiple locations for the CSV file
     bare_name = os.path.basename(config["local"])
-    bare_root_path = os.path.join(os.path.dirname(__file__), "..", "..", "..", bare_name)
+    base = os.path.dirname(__file__)
+    search_paths = [
+        os.path.join(base, "..", "..", config["local"]),                          # backend/data/
+        os.path.join(base, "..", "..", "filestore", "System Data", "DBPR", bare_name),  # filestore/System Data/DBPR/
+        os.path.join(base, "..", "..", "..", config["local"]),                     # repo root/data/
+        os.path.join(base, "..", "..", "..", bare_name),                           # repo root/
+    ]
 
-    for path in [local_path, repo_root_path, bare_root_path]:
+    for path in search_paths:
         resolved = os.path.abspath(path)
         if os.path.exists(resolved):
             try:
