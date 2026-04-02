@@ -324,21 +324,21 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
                                   stage.key === "TARGET" ? "OPPORTUNITY" : ""
                                 ) || "")}
                                 disabled={actionId === lead.id}
-                                className={`flex-1 disabled:opacity-50 text-white text-[11px] py-1 rounded font-medium ${stage.actionColor}`}
+                                className={`flex-1 disabled:opacity-50 text-white text-xs py-2 md:py-1 rounded font-medium ${stage.actionColor}`}
                               >
                                 {actionId === lead.id ? "..." : stage.action}
                               </button>
                             )}
                             {stage.key === "OPPORTUNITY" && (
                               <button onClick={() => onOpenDetails?.(lead.id)}
-                                className="flex-1 bg-green-700 hover:bg-green-600 text-white text-[11px] py-1 rounded font-medium">
+                                className="flex-1 bg-green-700 hover:bg-green-600 text-white text-xs py-2 md:py-1 rounded font-medium">
                                 Engage
                               </button>
                             )}
                             {lead.latitude != null && (
                               <button
                                 onClick={() => onFlyTo?.(lead.latitude, lead.longitude, lead.id)}
-                                className="bg-gray-800 hover:bg-gray-700 text-gray-500 text-[11px] py-1 px-2 rounded" title="Map">
+                                className="bg-gray-800 hover:bg-gray-700 text-gray-500 text-xs py-2 md:py-1 px-2 rounded" title="Map">
                                 Map
                               </button>
                             )}
@@ -346,7 +346,7 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
                               <button
                                 onClick={() => handleAction(lead.id, "ARCHIVE")}
                                 disabled={actionId === lead.id}
-                                className="bg-gray-800 hover:bg-gray-700 disabled:opacity-50 text-gray-600 text-[11px] py-1 px-1.5 rounded"
+                                className="bg-gray-800 hover:bg-gray-700 disabled:opacity-50 text-gray-600 text-xs py-2 md:py-1 px-2 rounded"
                                 title="Archive">&times;</button>
                             )}
                           </div>

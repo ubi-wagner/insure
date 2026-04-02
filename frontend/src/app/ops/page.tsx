@@ -165,7 +165,7 @@ export default function OpsPage() {
         </div>
       </div>
 
-      <div className="px-6 py-6 max-w-7xl">
+      <div className="px-3 md:px-6 py-4 md:py-6 max-w-7xl">
 
         {/* ─── Services ─── */}
         {tab === "services" && (
@@ -224,7 +224,7 @@ export default function OpsPage() {
             {harvest && (
               <>
                 {/* Stats row */}
-                <div className="grid grid-cols-3 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                   <div className="bg-gray-900 border border-gray-800 rounded-lg p-4 text-center">
                     <p className="text-3xl font-bold text-white">{harvest.total_buildings_cached.toLocaleString()}</p>
                     <p className="text-gray-500 text-xs mt-1">Buildings Cached</p>
@@ -288,7 +288,7 @@ export default function OpsPage() {
           <div className="space-y-4">
             <h2 className="text-sm font-semibold text-gray-300 mb-3">Data Explorer</h2>
             <div className="bg-gray-900 border border-gray-800 rounded-lg p-4 space-y-3">
-              <div className="grid grid-cols-4 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
                 <select value={queryTable} onChange={(e) => setQueryTable(e.target.value)}
                   className="bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-white">
                   <option value="entities">Leads / Entities</option>

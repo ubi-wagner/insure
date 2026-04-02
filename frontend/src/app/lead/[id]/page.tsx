@@ -81,7 +81,7 @@ function fmt(val: number | null | undefined): string {
   return "$" + val.toLocaleString("en-US", { maximumFractionDigits: 0 });
 }
 
-type TabName = "overview" | "policies" | "documents" | "emails" | "engagements" | "contacts" | "sources";
+type TabName = "overview" | "engage" | "policies" | "documents" | "emails" | "engagements" | "contacts" | "sources";
 
 export default function LeadDetailPage() {
   const params = useParams();
@@ -187,8 +187,10 @@ export default function LeadDetailPage() {
 
   const chars = lead.characteristics || {};
   const stages = ["NEW", "CANDIDATE", "TARGET", "OPPORTUNITY", "CUSTOMER", "CHURNED", "ARCHIVED"];
+  const isEngageReady = ["OPPORTUNITY", "CUSTOMER"].includes(lead.pipeline_stage);
   const tabs: { key: TabName; label: string; count?: number }[] = [
     { key: "overview", label: "Overview" },
+    ...(isEngageReady || lead.engagements.length > 0 ? [{ key: "engage" as TabName, label: "Engage" }] : []),
     { key: "policies", label: "Policies", count: lead.policies.length },
     { key: "documents", label: "Documents", count: lead.assets.length },
     { key: "emails", label: "Emails", count: lead.emails ? Object.keys(lead.emails).length : 0 },
@@ -200,26 +202,26 @@ export default function LeadDetailPage() {
   return (
     <div className="min-h-screen bg-gray-950 text-white">
       {/* Header */}
-      <header className="bg-gray-900 border-b border-gray-800 px-6 py-3">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <Link href="/" className="text-gray-400 hover:text-white text-sm">&larr; Dashboard</Link>
-            <span className="text-gray-700">|</span>
-            <h1 className="text-lg font-bold">{lead.name}</h1>
-            <span className={`text-xs px-2 py-0.5 rounded-full text-white ${HEAT_STYLES[lead.heat_score] || HEAT_STYLES.none}`}>
-              {lead.heat_score}{lead.wind_ratio !== null && ` ${lead.wind_ratio.toFixed(2)}%`}
-            </span>
-            <span className={`text-xs px-2 py-0.5 rounded-full text-white ${STAGE_COLORS[lead.pipeline_stage] || STAGE_COLORS.NEW}`}>
-              {lead.pipeline_stage}
-            </span>
+      <header className="bg-gray-900 border-b border-gray-800 px-3 md:px-6 py-3">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 flex-wrap min-w-0">
+            <Link href="/" className="text-gray-400 hover:text-white text-sm shrink-0">&larr;</Link>
+            <h1 className="text-base md:text-lg font-bold truncate">{lead.name}</h1>
+            <div className="flex gap-1 shrink-0">
+              <span className={`text-[10px] md:text-xs px-2 py-0.5 rounded-full text-white ${HEAT_STYLES[lead.heat_score] || HEAT_STYLES.none}`}>
+                {lead.heat_score}
+              </span>
+              <span className={`text-[10px] md:text-xs px-2 py-0.5 rounded-full text-white ${STAGE_COLORS[lead.pipeline_stage] || STAGE_COLORS.NEW}`}>
+                {lead.pipeline_stage}
+              </span>
+            </div>
           </div>
-          <div className="text-gray-500 text-sm">Lead #{lead.id}</div>
         </div>
       </header>
 
       {/* Metrics bar + stage selector */}
-      <div className="bg-gray-900/50 border-b border-gray-800 px-6 py-3">
-        <div className="flex gap-6 text-sm items-center flex-wrap">
+      <div className="bg-gray-900/50 border-b border-gray-800 px-3 md:px-6 py-2 md:py-3">
+        <div className="flex gap-3 md:gap-6 text-xs md:text-sm items-center flex-wrap">
           <div><span className="text-gray-500">Address: </span><span>{lead.address}</span></div>
           <div><span className="text-gray-500">County: </span><span>{lead.county}</span></div>
           <div><span className="text-gray-500">TIV: </span><span className="font-semibold">{fmt(lead.tiv_parsed)}</span></div>
@@ -274,13 +276,13 @@ export default function LeadDetailPage() {
             lead.pipeline_stage === "TARGET" ? "opportunity" : null;
           if (!nextStageKey || !lead.readiness[nextStageKey]) return null;
           const r = lead.readiness[nextStageKey];
-          const checks = Object.values(r.checks);
-          const done = checks.filter(c => c.done).length;
+          const checks = Object.values(r.checks) as { done: boolean; label: string }[];
+          const done = checks.filter((c) => c.done).length;
           return (
-            <div className="mt-2 flex items-center gap-3 text-xs">
-              <span className="text-gray-500">Next ({nextStageKey.toUpperCase()}):</span>
-              <div className="flex gap-1.5">
-                {checks.map((check) => (
+            <div className="mt-2 flex items-center gap-2 text-xs flex-wrap">
+              <span className="text-gray-500 shrink-0">Next ({nextStageKey.toUpperCase()}):</span>
+              <div className="flex gap-1 flex-wrap">
+                {checks.map((check: { done: boolean; label: string }) => (
                   <span key={check.label} className={`px-1.5 py-0.5 rounded ${
                     check.done ? "bg-green-900/50 text-green-400" : "bg-gray-800 text-gray-600"
                   }`} title={check.label}>
@@ -297,8 +299,8 @@ export default function LeadDetailPage() {
       </div>
 
       {/* Tabs */}
-      <div className="border-b border-gray-800 px-6">
-        <div className="flex gap-1 -mb-px">
+      <div className="border-b border-gray-800 px-3 md:px-6 overflow-x-auto">
+        <div className="flex gap-1 -mb-px min-w-max">
           {tabs.map((tab) => (
             <button key={tab.key} onClick={() => setActiveTab(tab.key)}
               className={`px-4 py-2.5 text-sm font-medium border-b-2 ${
@@ -313,7 +315,7 @@ export default function LeadDetailPage() {
       </div>
 
       {/* Tab content */}
-      <div className="px-6 py-6 max-w-6xl">
+      <div className="px-3 md:px-6 py-4 md:py-6 max-w-6xl">
 
         {activeTab === "overview" && (
           <div className="space-y-6">
@@ -682,6 +684,99 @@ export default function LeadDetailPage() {
           </div>
         )}
 
+        {activeTab === "engage" && (
+          <div className="space-y-6">
+            {/* Step 1: Select contact */}
+            <div>
+              <h2 className="text-sm font-semibold text-gray-300 mb-3">1. Select Contact</h2>
+              {lead.contacts.length === 0 ? (
+                <p className="text-gray-600 text-sm">No contacts yet. Add a contact on the Contacts tab first.</p>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  {lead.contacts.map((c) => (
+                    <div key={c.id} className="bg-gray-900 border border-gray-800 rounded-lg p-3">
+                      <div className="flex items-center gap-2">
+                        <p className="text-white font-medium text-sm">{c.name}</p>
+                        {!!c.is_primary && <span className="bg-green-900 text-green-300 text-[10px] px-1.5 py-0.5 rounded">PRIMARY</span>}
+                      </div>
+                      <p className="text-gray-500 text-xs">{c.title}</p>
+                      {c.email && <p className="text-blue-400 text-xs">{c.email}</p>}
+                      {c.phone && <p className="text-gray-400 text-xs">{c.phone}</p>}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Step 2: Pick email style & send */}
+            <div>
+              <h2 className="text-sm font-semibold text-gray-300 mb-3">2. Choose Outreach Email</h2>
+              {!lead.emails || Object.keys(lead.emails).length === 0 ? (
+                <p className="text-gray-600 text-sm">No emails generated. Mark as Candidate to trigger AI email generation.</p>
+              ) : (
+                <div className="space-y-3">
+                  {Object.entries(lead.emails).map(([style, email]) => {
+                    const emailObj = typeof email === "object" && email !== null ? email as {subject?: string; body?: string} : null;
+                    if (!emailObj) return null;
+                    return (
+                      <div key={style} className="bg-gray-900 border border-gray-800 rounded-lg p-4">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="bg-purple-900 text-purple-300 text-xs px-2 py-0.5 rounded font-medium uppercase">{style}</span>
+                          <button
+                            onClick={() => handleSendOutreach(style, emailObj.subject || "", emailObj.body || "")}
+                            disabled={sendingStyle === style || lead.contacts.length === 0}
+                            className="bg-green-700 hover:bg-green-600 disabled:opacity-50 text-white text-xs px-4 py-2 rounded font-medium"
+                          >
+                            {sendingStyle === style ? "Sending..." : "Queue Outreach"}
+                          </button>
+                        </div>
+                        <p className="text-white text-sm font-medium mb-1">{emailObj.subject}</p>
+                        <div className="bg-gray-800 rounded p-3 text-xs text-gray-300 whitespace-pre-wrap max-h-40 overflow-y-auto">
+                          {emailObj.body}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Step 3: Convert to customer */}
+            {lead.pipeline_stage === "OPPORTUNITY" && (
+              <div>
+                <h2 className="text-sm font-semibold text-gray-300 mb-3">3. Convert to Customer</h2>
+                <p className="text-gray-500 text-xs mb-3">When the deal closes, mark this as a customer to move it out of the pipeline.</p>
+                <button
+                  onClick={() => handleStageChange("CUSTOMER")}
+                  disabled={stageChanging}
+                  className="bg-green-700 hover:bg-green-600 disabled:opacity-50 text-white text-sm px-6 py-2.5 rounded font-medium">
+                  {stageChanging ? "Converting..." : "Mark as Customer"}
+                </button>
+              </div>
+            )}
+
+            {/* Engagement history */}
+            {lead.engagements.length > 0 && (
+              <div>
+                <h2 className="text-sm font-semibold text-gray-300 mb-3">Outreach History</h2>
+                <div className="space-y-2">
+                  {lead.engagements.map((eng) => (
+                    <div key={eng.id} className="bg-gray-900 border border-gray-800 rounded-lg p-3">
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="bg-blue-900 text-blue-300 text-[10px] px-1.5 py-0.5 rounded">{eng.type}</span>
+                        <span className="bg-gray-800 text-gray-400 text-[10px] px-1.5 py-0.5 rounded">{eng.status}</span>
+                        {eng.style && <span className="text-gray-600 text-[10px]">{eng.style}</span>}
+                        <span className="text-gray-700 text-[10px] ml-auto">{new Date(eng.created_at).toLocaleDateString()}</span>
+                      </div>
+                      {eng.subject && <p className="text-white text-xs">{eng.subject}</p>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
         {activeTab === "engagements" && (
           <div className="space-y-4">
             <h2 className="text-sm font-semibold text-gray-300 mb-3">Engagement History</h2>
@@ -790,7 +885,8 @@ export default function LeadDetailPage() {
               <p className="text-gray-600 text-sm">No enrichment sources recorded yet.</p>
             ) : (
               <div className="space-y-3">
-                {Object.entries(lead.enrichment_sources).map(([sourceId, info]) => {
+                {Object.entries(lead.enrichment_sources).map(([sourceId, infoRaw]) => {
+                  const info = infoRaw as { timestamp?: string; fields_updated: string[]; url?: string | null };
                   const sourceColors: Record<string, string> = {
                     overpass: "border-blue-800 bg-blue-950/30",
                     fema_flood: "border-cyan-800 bg-cyan-950/30",
