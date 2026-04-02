@@ -537,6 +537,46 @@ export default function LeadDetailPage() {
               </div>
             )}
 
+            {/* CAM License */}
+            {!!(chars.cam_license_number || chars.cam_license_warning) && (
+              <div>
+                <h2 className="text-sm font-semibold text-gray-300 mb-3">CAM License</h2>
+                <div className={`bg-gray-900 border rounded-lg p-4 ${
+                  chars.cam_license_active === false ? "border-red-800" :
+                  chars.cam_license_found === false ? "border-amber-800" :
+                  "border-gray-800"
+                }`}>
+                  <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+                    {!!chars.cam_license_name && (
+                      <div>
+                        <p className="text-gray-500 text-xs">Licensed CAM</p>
+                        <p className="text-white text-sm font-medium mt-1">{String(chars.cam_license_name)}</p>
+                      </div>
+                    )}
+                    {!!chars.cam_license_number && (
+                      <div>
+                        <p className="text-gray-500 text-xs">License #</p>
+                        <p className="text-white text-sm font-medium mt-1">{String(chars.cam_license_number)}</p>
+                      </div>
+                    )}
+                    {!!chars.cam_license_expiration && (
+                      <div>
+                        <p className="text-gray-500 text-xs">Expires</p>
+                        <p className={`text-sm font-medium mt-1 ${chars.cam_license_active ? "text-green-400" : "text-red-400"}`}>
+                          {String(chars.cam_license_expiration)} {chars.cam_license_active ? "(active)" : "(EXPIRED)"}
+                        </p>
+                      </div>
+                    )}
+                    {!!chars.cam_license_warning && (
+                      <div className="col-span-full">
+                        <p className="text-amber-400 text-sm">{String(chars.cam_license_warning)}</p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+
             {/* Sunbiz / Association */}
             {!!(chars.sunbiz_corp_name || chars.sunbiz_search_url) && (
               <div>
@@ -600,6 +640,8 @@ export default function LeadDetailPage() {
                       "dbpr_reserve_revenue", "dbpr_operating_fund_balance", "dbpr_reserve_fund_balance",
                       "dbpr_fiscal_year_end", "dbpr_search_url", "dbpr_cam_name", "dbpr_cam_license",
                       "dbpr_cam_status", "dbpr_cam_address", "dbpr_management_company",
+                      "cam_license_number", "cam_license_name", "cam_license_address",
+                      "cam_license_expiration", "cam_license_active", "cam_license_found", "cam_license_warning",
                       "has_user_intel", "user_doc_types", "_field_sources"].includes(k))
                     .map(([key, val]) => (
                     <div key={key} className="bg-gray-900 border border-gray-800 rounded-lg p-3">
@@ -989,6 +1031,8 @@ export default function LeadDetailPage() {
                     property_appraiser: "County Property Appraiser",
                     dbpr_bulk: "DBPR Condo Registry (Bulk CSV)",
                     dbpr_condo: "DBPR CAM License Lookup",
+                    cam_license: "CAM License Cross-Reference",
+                    dbpr_payments: "DBPR Payment History",
                     sunbiz: "Florida Sunbiz (Div. of Corporations)",
                     user_upload: "User Upload",
                     ai_analyzer: "AI Analyzer (Claude)",
