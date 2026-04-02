@@ -1,8 +1,9 @@
 import logging
+import os
 import threading
 
 import sqlalchemy as sa
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, UploadFile, File
 from sqlalchemy.orm import Session
 
 from database import get_db, SessionLocal
@@ -388,3 +389,106 @@ def query_data(
             "created_at": e.created_at.isoformat(),
         } for e in rows]
         return {"table": "entities", "total": total, "showing": len(results), "results": results}
+
+
+# ─── S3 Bucket Storage ───
+
+def _get_s3_client():
+    """Get S3 client for Railway bucket."""
+    import boto3
+    endpoint = os.getenv("BUCKET_ENDPOINT") or os.getenv("RAILWAY_BUCKET_ENDPOINT")
+    access_key = os.getenv("BUCKET_ACCESS_KEY_ID") or os.getenv("RAILWAY_BUCKET_ACCESS_KEY_ID")
+    secret_key = os.getenv("BUCKET_SECRET_ACCESS_KEY") or os.getenv("RAILWAY_BUCKET_SECRET_ACCESS_KEY")
+
+    if not all([endpoint, access_key, secret_key]):
+        return None, None
+
+    bucket_name = os.getenv("BUCKET_NAME") or os.getenv("RAILWAY_BUCKET_NAME") or "default"
+
+    client = boto3.client(
+        "s3",
+        endpoint_url=endpoint,
+        aws_access_key_id=access_key,
+        aws_secret_access_key=secret_key,
+        region_name="auto",
+    )
+    return client, bucket_name
+
+
+@router.post("/api/admin/upload-data")
+async def upload_data_file(file: UploadFile = File(...)):
+    """Upload a large data file (CSV, etc.) to the S3 bucket.
+
+    Also saves a local copy to backend/data/ for enricher access.
+    """
+    content = await file.read()
+    filename = file.filename or "unknown.csv"
+
+    # Save local copy for enrichers
+    data_dir = os.path.join(os.path.dirname(__file__), "..", "data")
+    os.makedirs(data_dir, exist_ok=True)
+    local_path = os.path.join(data_dir, filename)
+    with open(local_path, "wb") as f:
+        f.write(content)
+    logger.info(f"Saved {filename} locally ({len(content):,} bytes)")
+
+    # Upload to S3 bucket if configured
+    s3_url = None
+    s3_client, bucket_name = _get_s3_client()
+    if s3_client:
+        try:
+            s3_key = f"data/{filename}"
+            s3_client.put_object(
+                Bucket=bucket_name,
+                Key=s3_key,
+                Body=content,
+                ContentType="text/csv",
+            )
+            s3_url = f"s3://{bucket_name}/{s3_key}"
+            logger.info(f"Uploaded {filename} to bucket ({len(content):,} bytes)")
+        except Exception as e:
+            logger.warning(f"S3 upload failed for {filename}: {e}")
+
+    return {
+        "success": True,
+        "filename": filename,
+        "size_bytes": len(content),
+        "local_path": local_path,
+        "s3_url": s3_url,
+    }
+
+
+@router.get("/api/admin/bucket/files")
+def list_bucket_files():
+    """List files in the S3 bucket."""
+    s3_client, bucket_name = _get_s3_client()
+    if not s3_client:
+        # Fall back to listing local data dir
+        data_dir = os.path.join(os.path.dirname(__file__), "..", "data")
+        if os.path.exists(data_dir):
+            files = []
+            for f in sorted(os.listdir(data_dir)):
+                path = os.path.join(data_dir, f)
+                if os.path.isfile(path):
+                    files.append({
+                        "name": f,
+                        "size_bytes": os.path.getsize(path),
+                        "source": "local",
+                    })
+            return {"bucket": "local", "files": files}
+        return {"bucket": "none", "files": []}
+
+    try:
+        response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix="data/")
+        files = []
+        for obj in response.get("Contents", []):
+            files.append({
+                "name": obj["Key"].replace("data/", ""),
+                "size_bytes": obj["Size"],
+                "last_modified": obj["LastModified"].isoformat(),
+                "source": "s3",
+            })
+        return {"bucket": bucket_name, "files": files}
+    except Exception as e:
+        logger.warning(f"Failed to list bucket files: {e}")
+        return {"bucket": bucket_name, "files": [], "error": str(e)}
