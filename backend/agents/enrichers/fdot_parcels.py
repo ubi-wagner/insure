@@ -65,11 +65,12 @@ def _query_fdot_parcel(lat: float, lon: float) -> dict | None:
 
 
 # FL county number to name mapping (for the 11 target counties)
+# DOR county numbers (alphabetical starting at 11, NOT FIPS codes)
 COUNTY_NUMBERS = {
-    "52": "Pasco", "53": "Pinellas", "29": "Hillsborough",
-    "41": "Manatee", "58": "Sarasota", "08": "Charlotte",
-    "36": "Lee", "11": "Collier", "50": "Palm Beach",
-    "13": "Miami-Dade", "06": "Broward",
+    "16": "Broward", "18": "Charlotte", "21": "Collier",
+    "23": "Miami-Dade", "39": "Hillsborough", "46": "Lee",
+    "51": "Manatee", "60": "Palm Beach", "61": "Pasco",
+    "62": "Pinellas", "68": "Sarasota",
 }
 
 

@@ -39,12 +39,13 @@ from database.models import Entity
 
 logger = logging.getLogger(__name__)
 
-# County number to name mapping
+# DOR county number to name mapping (alphabetical, starting at 11)
+# NOT the same as FIPS codes!
 COUNTY_NUMBERS = {
-    "52": "Pasco", "53": "Pinellas", "29": "Hillsborough",
-    "41": "Manatee", "58": "Sarasota", "08": "Charlotte",
-    "36": "Lee", "11": "Collier", "50": "Palm Beach",
-    "13": "Miami-Dade", "06": "Broward",
+    "16": "Broward", "18": "Charlotte", "21": "Collier",
+    "23": "Miami-Dade", "39": "Hillsborough", "46": "Lee",
+    "51": "Manatee", "60": "Palm Beach", "61": "Pasco",
+    "62": "Pinellas", "68": "Sarasota",
 }
 
 COUNTY_NAME_TO_NUMBER = {v: k for k, v in COUNTY_NUMBERS.items()}
