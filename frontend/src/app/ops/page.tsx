@@ -80,6 +80,8 @@ export default function OpsPage() {
   } | null>(null);
   const [seeding, setSeeding] = useState<string | null>(null);
   const [seedResult, setSeedResult] = useState<string | null>(null);
+  const [resetting, setResetting] = useState(false);
+  const [confirmReset, setConfirmReset] = useState(false);
   const [services, setServices] = useState<ServiceStatus[]>([]);
   const [enrichStatus, setEnrichStatus] = useState<EnrichStatus | null>(null);
   const [enriching, setEnriching] = useState(false);
@@ -173,6 +175,26 @@ export default function OpsPage() {
       setSeedResult(`Network error: ${err}`);
     }
     setSeeding(null);
+  }
+
+  async function resetDatabase() {
+    setResetting(true);
+    setSeedResult(null);
+    try {
+      const res = await fetch("/api/proxy/admin/reset", { method: "POST" });
+      const data = await res.json();
+      if (res.ok) {
+        setSeedResult(`Database reset complete. ${data.message || "Ready for seeding."}`);
+      } else {
+        setSeedResult(`Error: ${data.detail || data.error || res.statusText}`);
+      }
+      fetchCounties();
+      fetchEnrichStatus();
+    } catch (err) {
+      setSeedResult(`Network error: ${err}`);
+    }
+    setResetting(false);
+    setConfirmReset(false);
   }
 
   async function triggerEnrich() {
@@ -480,10 +502,28 @@ export default function OpsPage() {
                 </p>
               </div>
               <div className="flex gap-2 items-center">
-                <button onClick={seedAll} disabled={seeding !== null}
+                <button onClick={seedAll} disabled={seeding !== null || resetting}
                   className="bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white text-xs px-4 py-2 rounded font-medium">
                   {seeding === "all" ? "Seeding..." : "Seed All"}
                 </button>
+                {!confirmReset ? (
+                  <button onClick={() => setConfirmReset(true)} disabled={resetting || seeding !== null}
+                    className="bg-red-900/60 hover:bg-red-800 disabled:opacity-50 text-red-300 text-xs px-3 py-2 rounded border border-red-800">
+                    Reset DB
+                  </button>
+                ) : (
+                  <div className="flex items-center gap-1.5 bg-red-950 border border-red-700 rounded px-3 py-1.5">
+                    <span className="text-red-300 text-xs">Wipe all leads?</span>
+                    <button onClick={resetDatabase} disabled={resetting}
+                      className="bg-red-600 hover:bg-red-500 disabled:opacity-50 text-white text-[11px] px-2.5 py-1 rounded font-medium">
+                      {resetting ? "Resetting..." : "Yes, wipe"}
+                    </button>
+                    <button onClick={() => setConfirmReset(false)}
+                      className="text-gray-400 hover:text-white text-[11px] px-2 py-1">
+                      Cancel
+                    </button>
+                  </div>
+                )}
                 <button onClick={fetchCounties}
                   className="bg-gray-800 hover:bg-gray-700 text-gray-400 text-xs px-3 py-2 rounded">
                   Refresh
