@@ -285,7 +285,7 @@ class OsmBuilding(Base):
     harvested_at = Column(DateTime, server_default=func.now(), nullable=False)
     updated_at = Column(DateTime, server_default=func.now(), nullable=False)
 
-    promoted_entity = relationship("Entity")
+    promoted_entity = relationship("Entity", foreign_keys=[promoted_entity_id])
 
 
 class OsmHarvestArea(Base):
