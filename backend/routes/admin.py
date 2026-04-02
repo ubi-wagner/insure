@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from database import get_db, SessionLocal
 from database.models import Entity
+from services.event_bus import EventStatus, EventType, emit
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -260,8 +261,6 @@ def trigger_bulk_harvest():
 def _run_bulk_enrich():
     """Background job: enrich all leads that are missing enrichment data."""
     import time as _time
-    from agents.enrichers.pipeline import run_enrichment_for_stage
-    from services.event_bus import EventStatus, EventType, emit
 
     _logger = logging.getLogger(__name__)
     db = SessionLocal()
@@ -269,9 +268,9 @@ def _run_bulk_enrich():
     skipped = 0
     failed = 0
     try:
-        # Get all leads missing enrichment sources
+        # Get all LEAD-stage entities for enrichment
         entities = db.query(Entity).filter(
-            Entity.pipeline_stage.in_(["NEW", "ENRICHED", "INVESTIGATING", "RESEARCHED", "TARGETED", "OPPORTUNITY"]),
+            Entity.pipeline_stage == "LEAD",
         ).order_by(Entity.id).all()
 
         total = len(entities)
@@ -280,22 +279,9 @@ def _run_bulk_enrich():
         _logger.info(f"Bulk enrichment: {total} leads to process")
 
         for i, entity in enumerate(entities):
-            sources = entity.enrichment_sources or {}
-
-            # Skip if already fully enriched for current stage
-            stage = entity.pipeline_stage or "NEW"
-            if stage in ("ENRICHED", "RESEARCHED") and all(s in sources for s in ["fema_flood", "fdot_parcels"]):
-                skipped += 1
-                continue
-
             try:
-                # Run enrichments for the entity's current stage
-                run_enrichment_for_stage(entity, stage, db)
-
-                # Also backfill NEW enrichments if they haven't run yet
-                if stage not in ("NEW",) and not any(s in sources for s in ["fema_flood", "fdot_parcels"]):
-                    run_enrichment_for_stage(entity, "NEW", db)
-
+                from agents.enrichers.pipeline import run_lead_enrichment
+                run_lead_enrichment(entity, db)
                 enriched += 1
 
                 if enriched % 25 == 0:
@@ -338,7 +324,7 @@ def get_enrich_status(db: Session = Depends(get_db)):
     from database.models import OsmBuilding
 
     total_leads = db.query(Entity).filter(
-        Entity.pipeline_stage.in_(["NEW", "ENRICHED", "INVESTIGATING", "RESEARCHED", "TARGETED", "OPPORTUNITY", "CUSTOMER"])
+        Entity.pipeline_stage.in_(["TARGET", "LEAD", "OPPORTUNITY", "CUSTOMER"])
     ).count()
 
     # Count leads with each enrichment source
@@ -357,21 +343,39 @@ def get_enrich_status(db: Session = Depends(get_db)):
     has_overpass = db.execute(sa.text(
         "SELECT COUNT(*) FROM entities WHERE enrichment_sources ? 'overpass'"
     )).scalar() or 0
+    has_dbpr = db.execute(sa.text(
+        "SELECT COUNT(*) FROM entities WHERE enrichment_sources ? 'dbpr_bulk'"
+    )).scalar() or 0
+    has_citizens = db.execute(sa.text(
+        "SELECT COUNT(*) FROM entities WHERE enrichment_sources ? 'citizens_insurance'"
+    )).scalar() or 0
+    has_dor_nal = db.execute(sa.text(
+        "SELECT COUNT(*) FROM entities WHERE enrichment_sources ? 'dor_nal'"
+    )).scalar() or 0
 
     # Count leads with no enrichment at all
     no_enrichment = db.execute(sa.text(
         "SELECT COUNT(*) FROM entities WHERE enrichment_sources IS NULL OR enrichment_sources = '{}'"
     )).scalar() or 0
 
+    # Pipeline stage counts
+    stage_counts = {}
+    for stage in ["TARGET", "LEAD", "OPPORTUNITY", "CUSTOMER", "ARCHIVED"]:
+        stage_counts[stage] = db.query(Entity).filter(Entity.pipeline_stage == stage).count()
+
     return {
         "total_leads": total_leads,
         "no_enrichment": no_enrichment,
+        "stage_counts": stage_counts,
         "coverage": {
+            "dor_nal": has_dor_nal,
             "overpass": has_overpass,
             "fema_flood": has_fema,
             "fdot_parcels": has_fdot,
             "property_appraiser": has_pa,
             "sunbiz": has_sunbiz,
+            "dbpr_bulk": has_dbpr,
+            "citizens_insurance": has_citizens,
         },
     }
 

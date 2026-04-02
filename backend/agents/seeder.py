@@ -106,6 +106,31 @@ def _safe_int(val) -> int | None:
         return None
 
 
+def _normalize_columns(fieldnames: list[str]) -> dict[str, str]:
+    """Build a mapping from normalized column names to actual column names.
+
+    Handles BOM, whitespace, case differences, and underscore/space variants.
+    Returns dict like {"DOR_UC": "actual_column_name_in_file"}.
+    """
+    mapping = {}
+    for name in fieldnames:
+        # Strip BOM, whitespace, and null bytes
+        clean = name.strip().strip("\ufeff\x00").strip()
+        # Normalize: uppercase, replace spaces with underscores
+        normalized = clean.upper().replace(" ", "_")
+        mapping[normalized] = name
+    return mapping
+
+
+def _get_col(row: dict, col_map: dict[str, str], *names: str) -> str:
+    """Get a column value trying multiple normalized names."""
+    for name in names:
+        actual = col_map.get(name.upper().replace(" ", "_"))
+        if actual and row.get(actual):
+            return row[actual]
+    return ""
+
+
 def seed_county(county_no: str, db: Session) -> dict:
     """Seed leads from a NAL file for one county.
 
@@ -142,15 +167,36 @@ def seed_county(county_no: str, db: Session) -> dict:
     created = 0
     skipped_dupe = 0
 
+    # Debug: sample first row to check column names
+    sample_row = None
+    columns = []
+    col_map = {}
+
     try:
-        with open(nal_path, "r", encoding="utf-8", errors="replace") as f:
-            reader = csv.DictReader(f, delimiter="\t")
+        # Detect delimiter: read first line and check
+        with open(nal_path, "r", encoding="utf-8-sig", errors="replace") as probe:
+            first_line = probe.readline()
+        delimiter = "\t" if "\t" in first_line else ","
+
+        with open(nal_path, "r", encoding="utf-8-sig", errors="replace") as f:
+            reader = csv.DictReader(f, delimiter=delimiter)
+            columns = reader.fieldnames or []
+            col_map = _normalize_columns(columns)
             for row in reader:
                 total += 1
+                if sample_row is None:
+                    sample_row = {k: v for k, v in list(row.items())[:10]}
 
-                # Filter by DOR use code
-                dor_uc = (row.get("DOR_UC") or "").strip().zfill(3)
-                num_units = _safe_int(row.get("NO_RES_UNTS"))
+                # Filter by DOR use code using normalized column lookup
+                dor_uc = _get_col(row, col_map, "DOR_UC").strip()
+
+                # Normalize: could be "4", "04", "004", "4.0"
+                try:
+                    dor_uc = str(int(float(dor_uc))).zfill(3) if dor_uc else ""
+                except (ValueError, TypeError):
+                    dor_uc = dor_uc.zfill(3) if dor_uc else ""
+
+                num_units = _safe_int(_get_col(row, col_map, "NO_RES_UNTS", "NO_RES_UNITS"))
 
                 if dor_uc not in TARGET_USE_CODES:
                     # Include other codes if they have enough units
@@ -160,9 +206,9 @@ def seed_county(county_no: str, db: Session) -> dict:
                 filtered += 1
 
                 # Get physical address
-                phy_addr = (row.get("PHY_ADDR1") or "").strip()
-                parcel_id = (row.get("PARCEL_ID") or "").strip()
-                owner = (row.get("OWN_NAME") or "").strip()
+                phy_addr = _get_col(row, col_map, "PHY_ADDR1").strip()
+                parcel_id = _get_col(row, col_map, "PARCEL_ID").strip()
+                owner = _get_col(row, col_map, "OWN_NAME").strip()
 
                 if not phy_addr and not owner:
                     continue
@@ -177,8 +223,10 @@ def seed_county(county_no: str, db: Session) -> dict:
                         continue
 
                 # Build characteristics from NAL data
-                jv = _safe_int(row.get("JV"))
+                jv = _safe_int(_get_col(row, col_map, "JV"))
                 tiv_estimate = round(jv * 1.3, -3) if jv and jv > 0 else None
+                const_class = _get_col(row, col_map, "CONST_CLASS").strip() or None
+                act_yr_blt = _safe_int(_get_col(row, col_map, "ACT_YR_BLT"))
 
                 characteristics = {
                     "dor_parcel_id": parcel_id,
@@ -186,39 +234,39 @@ def seed_county(county_no: str, db: Session) -> dict:
                     "dor_use_code": dor_uc,
                     "dor_use_description": TARGET_USE_CODES.get(dor_uc, f"Code {dor_uc}"),
                     "dor_market_value": jv if jv and jv > 0 else None,
-                    "dor_land_value": _safe_int(row.get("LND_VAL")),
-                    "dor_construction_class": (row.get("CONST_CLASS") or "").strip() or None,
-                    "year_built": str(_safe_int(row.get("ACT_YR_BLT"))) if _safe_int(row.get("ACT_YR_BLT")) else None,
-                    "dor_year_built": _safe_int(row.get("ACT_YR_BLT")),
-                    "dor_effective_year_built": _safe_int(row.get("EFF_YR_BLT")),
-                    "dor_living_sqft": _safe_int(row.get("TOT_LVG_AREA")),
-                    "dor_num_buildings": _safe_int(row.get("NO_BULDNG")),
+                    "dor_land_value": _safe_int(_get_col(row, col_map, "LND_VAL")),
+                    "dor_construction_class": const_class,
+                    "year_built": str(act_yr_blt) if act_yr_blt else None,
+                    "dor_year_built": act_yr_blt,
+                    "dor_effective_year_built": _safe_int(_get_col(row, col_map, "EFF_YR_BLT")),
+                    "dor_living_sqft": _safe_int(_get_col(row, col_map, "TOT_LVG_AREA")),
+                    "dor_num_buildings": _safe_int(_get_col(row, col_map, "NO_BULDNG")),
                     "dor_num_units": num_units,
                     "units_estimate": num_units,
-                    "dor_land_sqft": _safe_int(row.get("LND_SQFOOT")),
-                    "dor_special_features_value": _safe_int(row.get("SPEC_FEAT_VAL")),
+                    "dor_land_sqft": _safe_int(_get_col(row, col_map, "LND_SQFOOT")),
+                    "dor_special_features_value": _safe_int(_get_col(row, col_map, "SPEC_FEAT_VAL")),
                     "tiv_estimate": tiv_estimate,
                     "tiv": f"${tiv_estimate:,.0f}" if tiv_estimate else None,
-                    "construction_class": (row.get("CONST_CLASS") or "").strip() or None,
-                    "imp_qual": (row.get("IMP_QUAL") or "").strip() or None,
+                    "construction_class": const_class,
+                    "imp_qual": _get_col(row, col_map, "IMP_QUAL").strip() or None,
                 }
 
                 # Owner address
                 owner_parts = [
-                    (row.get("OWN_ADDR1") or "").strip(),
-                    (row.get("OWN_ADDR2") or "").strip(),
-                    (row.get("OWN_CITY") or "").strip(),
-                    (row.get("OWN_STATE") or "").strip(),
-                    (row.get("OWN_ZIPCD") or "").strip(),
+                    _get_col(row, col_map, "OWN_ADDR1").strip(),
+                    _get_col(row, col_map, "OWN_ADDR2").strip(),
+                    _get_col(row, col_map, "OWN_CITY").strip(),
+                    _get_col(row, col_map, "OWN_STATE").strip(),
+                    _get_col(row, col_map, "OWN_ZIPCD").strip(),
                 ]
                 owner_addr = ", ".join(p for p in owner_parts if p)
                 if owner_addr:
                     characteristics["dor_owner_address"] = owner_addr
 
                 # Sale history from NAL
-                sale_prc = _safe_int(row.get("SALE_PRC1"))
-                sale_yr = _safe_int(row.get("SALE_YR1"))
-                sale_mo = _safe_int(row.get("SALE_MO1"))
+                sale_prc = _safe_int(_get_col(row, col_map, "SALE_PRC1"))
+                sale_yr = _safe_int(_get_col(row, col_map, "SALE_YR1"))
+                sale_mo = _safe_int(_get_col(row, col_map, "SALE_MO1"))
                 if sale_prc and sale_prc > 0:
                     characteristics["dor_last_sale_price"] = sale_prc
                 if sale_yr:
@@ -227,7 +275,7 @@ def seed_county(county_no: str, db: Session) -> dict:
                         characteristics["dor_last_sale_date"] = f"{sale_mo}/{sale_yr}"
 
                 # SDF enrichment (latest sale)
-                state_parcel = (row.get("CENSUS_BK") or "").strip()  # Sometimes STATE_PARCEL_ID maps here
+                state_parcel = _get_col(row, col_map, "CENSUS_BK").strip()
                 # Try parcel-based SDF lookup
                 for sdf_key in [parcel_id, state_parcel]:
                     if sdf_key and sdf_key in sdf_data:
@@ -308,6 +356,10 @@ def seed_county(county_no: str, db: Session) -> dict:
         "skipped_dupe": skipped_dupe,
         "nal_file": os.path.basename(nal_path),
         "sdf_records": len(sdf_data),
+        "debug_columns": columns[:20] if columns else [],
+        "debug_col_map": {k: v for k, v in list(col_map.items())[:20]} if col_map else {},
+        "debug_sample": sample_row,
+        "debug_has_dor_uc": "DOR_UC" in col_map,
     }
 
     emit(EventType.HUNTER, "seed_county", EventStatus.SUCCESS,
