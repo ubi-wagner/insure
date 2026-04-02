@@ -152,6 +152,7 @@ def _load_enrichers():
         "fdot_parcels",         # NEW: FDOT/DOR statewide parcels
         "property_appraiser",   # NEW: County PA GIS lookup
         "dbpr_bulk",            # NEW: DBPR bulk CSV (condo name, units, managing entity, financials)
+        "dbpr_payments",        # NEW: DBPR payment history (delinquency, financial stress)
         "sunbiz",               # INVESTIGATING: Sunbiz HOA/condo search
         "dbpr_condo",           # TARGETED: DBPR condo registry + CAM license
     ]
