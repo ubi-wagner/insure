@@ -28,7 +28,7 @@ from database.models import Entity
 
 logger = logging.getLogger(__name__)
 
-NFHL_URL = "https://hazards.fema.gov/gis/nfhl/rest/services/public/NFHL/MapServer/28/query"
+NFHL_URL = "https://hazards.fema.gov/arcgis/rest/services/public/NFHL/MapServer/28/query"
 
 # Risk classification for insurance scoring
 FLOOD_RISK_LEVELS = {
