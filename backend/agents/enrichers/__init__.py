@@ -40,8 +40,8 @@ def record_enrichment(
     """
     now = datetime.now(timezone.utc).isoformat()
 
-    # Update enrichment_sources on entity
-    sources = entity.enrichment_sources or {}
+    # MUST shallow-copy — SQLAlchemy won't detect in-place JSONB mutations
+    sources = dict(entity.enrichment_sources or {})
     sources[source_id] = {
         "source": source_id,
         "timestamp": now,
@@ -65,7 +65,7 @@ def record_enrichment(
     except Exception as e:
         logger.error(f"Failed to record enrichment {source_id} for entity {entity.id}: {e}")
         db.rollback()
-        return
+        raise  # Let caller know it failed
 
     emit(EventType.HUNTER, f"enrich_{source_id}", EventStatus.SUCCESS,
          detail=f"{source_id}: {len(fields_updated)} fields for '{entity.name}'",
@@ -74,10 +74,11 @@ def record_enrichment(
 
 def update_characteristics(entity: Entity, updates: dict, source_id: str):
     """Merge new data into entity characteristics, tagging each field with its source."""
-    chars = entity.characteristics or {}
+    # MUST shallow-copy — SQLAlchemy won't detect in-place JSONB mutations
+    chars = dict(entity.characteristics or {})
 
     # Store source attribution per field
-    field_sources = chars.get("_field_sources", {})
+    field_sources = dict(chars.get("_field_sources") or {})
     for key in updates:
         if updates[key] is not None:
             field_sources[key] = source_id

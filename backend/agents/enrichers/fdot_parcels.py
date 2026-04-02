@@ -43,7 +43,7 @@ def _query_fdot_parcel(lat: float, lon: float) -> dict | None:
         "inSR": 4326,
         "spatialRel": "esriSpatialRelIntersects",
         "outFields": (
-            "PARCELNO,AESSION,OWN_NAME,OWN_ADDR1,OWN_ADDR2,OWN_CITY,OWN_STATE,OWN_ZIPCD,"
+            "PARCELNO,OWN_NAME,OWN_ADDR1,OWN_ADDR2,OWN_CITY,OWN_STATE,OWN_ZIPCD,"
             "PHY_ADDR1,PHY_ADDR2,PHY_CITY,PHY_ZIPCD,DOR_UC,JV,AV_LAND,AV_BLDG,AV_SD,"
             "TV_SD,YR_BLT,EFF_YR_BLT,TOT_LVG_AR,LND_SQFOOT,NO_BULDNG,NO_RES_UNT,"
             "SALEDT1,SALEVAL1,CO_NO,GRP_NAME"
