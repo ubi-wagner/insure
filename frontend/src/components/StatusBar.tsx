@@ -91,7 +91,7 @@ export default function StatusBar() {
       <span className="text-gray-700">|</span>
 
       {/* Per-service */}
-      {status.services.map((svc) => (
+      {(status.services || []).map((svc) => (
         <div key={svc.name} className="flex items-center gap-1.5" title={`${svc.detail}\nLast heartbeat: ${svc.age_seconds}s ago`}>
           <span className={`w-1.5 h-1.5 rounded-full ${STATUS_COLORS[svc.status] || STATUS_COLORS.unknown}`} />
           <span className="text-gray-400 capitalize">{svc.name}</span>

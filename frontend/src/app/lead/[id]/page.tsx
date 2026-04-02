@@ -246,7 +246,7 @@ export default function LeadDetailPage() {
         {lead.children.length > 0 && (
           <div className="mt-2 flex gap-2 items-center">
             <span className="text-gray-500 text-xs">Sub-entities:</span>
-            {lead.children.map((ch) => (
+            {(lead.children || []).map((ch) => (
               <Link key={ch.id} href={`/lead/${ch.id}`}
                 className="bg-gray-800 text-gray-300 hover:text-white text-xs px-2 py-1 rounded">
                 {ch.name}
@@ -925,7 +925,7 @@ export default function LeadDetailPage() {
                         </span>
                       </div>
                       <div className="flex flex-wrap gap-1 mb-2">
-                        {info.fields_updated.map((field: string) => (
+                        {(info.fields_updated || []).map((field: string) => (
                           <span key={field} className="bg-gray-800 text-gray-500 text-[10px] px-1.5 py-0.5 rounded">
                             {field}
                           </span>

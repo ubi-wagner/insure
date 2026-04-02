@@ -56,7 +56,7 @@ export default function EventStreamPage() {
   useEffect(() => {
     fetch(`/api/proxy/events?limit=200`, { credentials: "include" })
       .then((res) => res.ok ? res.json() : [])
-      .then((data: EventItem[]) => setEvents(data))
+      .then((data) => setEvents(Array.isArray(data) ? data : []))
       .catch(() => {});
   }, []);
 
