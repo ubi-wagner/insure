@@ -59,7 +59,7 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.error(f"Service registration failed: {e}")
 
-    # Start hunter agent
+    # Start hunter agent (Overpass harvesting)
     try:
         from agents.hunter import run_hunter_loop
         thread = threading.Thread(target=run_hunter_loop, daemon=True)
@@ -69,6 +69,24 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Failed to start hunter agent: {e}")
         emit(EventType.HUNTER, "agent_start", EventStatus.ERROR, detail=str(e)[:300])
+
+    # Start Overpass association worker (TARGET → LEAD)
+    try:
+        from agents.associator import start_association_worker
+        start_association_worker()
+        logger.info("Association worker started")
+        emit(EventType.HUNTER, "associator_start", EventStatus.SUCCESS)
+    except Exception as e:
+        logger.error(f"Failed to start association worker: {e}")
+
+    # Start continuous enrichment worker (LEAD enrichment)
+    try:
+        from agents.enrichment_worker import start_enrichment_worker
+        start_enrichment_worker()
+        logger.info("Enrichment worker started")
+        emit(EventType.HUNTER, "enrichment_start", EventStatus.SUCCESS)
+    except Exception as e:
+        logger.error(f"Failed to start enrichment worker: {e}")
 
     # Start heartbeat thread for api/database/ai_analyzer services
     def _heartbeat_loop():
