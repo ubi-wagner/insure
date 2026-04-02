@@ -207,8 +207,19 @@ def seed_county(county_no: str, db: Session) -> dict:
 
                 # Get physical address
                 phy_addr = _get_col(row, col_map, "PHY_ADDR1").strip()
+                phy_city = _get_col(row, col_map, "PHY_CITY").strip()
+                phy_zip = _get_col(row, col_map, "PHY_ZIPCD").strip()
                 parcel_id = _get_col(row, col_map, "PARCEL_ID").strip()
                 owner = _get_col(row, col_map, "OWN_NAME").strip()
+
+                # Build full address for geocoding
+                full_addr = phy_addr
+                if phy_city:
+                    full_addr += f", {phy_city}"
+                if phy_zip:
+                    full_addr += f", FL {phy_zip}"
+                elif phy_city:
+                    full_addr += ", FL"
 
                 if not phy_addr and not owner:
                     continue
@@ -249,6 +260,8 @@ def seed_county(county_no: str, db: Session) -> dict:
                     "tiv": f"${tiv_estimate:,.0f}" if tiv_estimate else None,
                     "construction_class": const_class,
                     "imp_qual": _get_col(row, col_map, "IMP_QUAL").strip() or None,
+                    "phy_city": phy_city or None,
+                    "phy_zip": phy_zip or None,
                 }
 
                 # Owner address
@@ -308,7 +321,7 @@ def seed_county(county_no: str, db: Session) -> dict:
 
                 entity = Entity(
                     name=name,
-                    address=phy_addr,
+                    address=full_addr if full_addr != phy_addr else phy_addr,
                     county=county_name,
                     characteristics=characteristics,
                     enrichment_sources=enrichment_sources,
