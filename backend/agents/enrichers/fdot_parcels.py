@@ -52,7 +52,7 @@ def _query_fdot_parcel(lat: float, lon: float) -> dict | None:
         "f": "json",
     }
     try:
-        with httpx.Client(timeout=20) as client:
+        with httpx.Client(timeout=20, headers={"User-Agent": "insure-lead-gen/1.0"}) as client:
             resp = client.get(FDOT_URL, params=params)
             resp.raise_for_status()
             data = resp.json()

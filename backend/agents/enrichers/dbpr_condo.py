@@ -1,20 +1,13 @@
 """
 DBPR Division of Condominiums, Timeshares & Mobile Homes Enricher
 
-Searches the Florida DBPR condo registry to find:
+Searches the DBPR condo portal and CAM license system for:
 - Managing entity (property management company)
+- Licensed Community Association Manager (CAM) name
 - Condo association registration status
-- Number of units (official count)
-- Building reporting data (post-Surfside structural inspections)
+- Number of units (official count from DBPR)
 
-Portal: https://condos.myfloridalicense.com
-CAM License search: https://www.myfloridalicense.com/wl11.asp
-
-Also generates lookup URLs for the DBPR CAM license search to find
-the licensed Community Association Manager for the property.
-
-This enricher runs on TARGET stage — after Sunbiz has found the
-association name, we can search DBPR for the managing entity.
+Portal: https://www.myfloridalicense.com
 """
 
 import logging
@@ -30,106 +23,106 @@ from database.models import Entity
 
 logger = logging.getLogger(__name__)
 
-DBPR_CONDO_SEARCH = "https://www.myfloridalicense.com/wl11.asp"
-DBPR_CONDO_PORTAL = "https://condos.myfloridalicense.com"
-CAM_LICENSE_SEARCH = "https://www.myfloridalicense.com/wl11.asp?mode=0&SID=&session=&page=LicenseDetail"
+HTTP_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+}
+
+# DBPR license search
+DBPR_LICENSE_URL = "https://www.myfloridalicense.com/wl11.asp"
 
 
-def _search_dbpr_condo(search_name: str) -> list[dict]:
-    """Search DBPR condo registry by association name.
-
-    Returns list of matching registered condos.
-    Note: DBPR may block automated requests; this is best-effort.
-    """
+def _search_dbpr_cam(search_name: str) -> dict | None:
+    """Search DBPR for a Community Association Manager or firm by name."""
     try:
-        with httpx.Client(timeout=15, follow_redirects=True) as client:
-            # Search the condo portal
-            resp = client.get(f"{DBPR_CONDO_PORTAL}/SearchCondos", params={
+        with httpx.Client(timeout=15, follow_redirects=True, headers=HTTP_HEADERS) as client:
+            # Search for CAM firm by business name
+            resp = client.post(DBPR_LICENSE_URL, data={
+                "SID": "",
+                "bession": "",  # yes this is DBPR's actual param name
+                "page": "ProfessionalSearch",
+                "searchType": "Business",
+                "LicenseType": "6100",  # CAM license type
                 "searchText": search_name,
-                "searchType": "Name",
-            }, headers={
-                "User-Agent": "Mozilla/5.0 (compatible; InsureLeadGen/1.0)",
+                "submit": "Search",
             })
             resp.raise_for_status()
             text = resp.text
 
-            results = []
-            # Look for condo association entries with managing entity info
-            # Pattern varies but typically shows name, managing entity, unit count
-            name_pattern = r'<td[^>]*>([^<]*(?:CONDO|CONDOMINIUM|ASSOCIATION)[^<]*)</td>'
-            names = re.findall(name_pattern, text, re.IGNORECASE)
+            result = {}
 
-            # Look for managing entity references
-            mgmt_pattern = r'(?:Managing|Management)\s*(?:Entity|Company)[^<]*<[^>]*>([^<]+)'
-            mgmt_matches = re.findall(mgmt_pattern, text, re.IGNORECASE)
+            # Look for license details in the response
+            # DBPR returns HTML tables with license info
+            name_match = re.search(r'(?:Business|Licensee)\s*Name[^<]*<[^>]*>([^<]+)', text, re.IGNORECASE)
+            if name_match:
+                result["cam_name"] = name_match.group(1).strip()
 
-            # Look for unit counts
-            unit_pattern = r'(\d+)\s*(?:units?|residential)'
-            unit_matches = re.findall(unit_pattern, text, re.IGNORECASE)
+            license_match = re.search(r'License\s*(?:Number|#|No)[^<]*<[^>]*>([^<]+)', text, re.IGNORECASE)
+            if license_match:
+                result["cam_license"] = license_match.group(1).strip()
 
-            if names:
-                result = {"name": names[0].strip()}
-                if mgmt_matches:
-                    result["managing_entity"] = mgmt_matches[0].strip()
-                if unit_matches:
-                    result["units"] = int(unit_matches[0])
-                results.append(result)
+            status_match = re.search(r'(?:License\s*)?Status[^<]*<[^>]*>([^<]+)', text, re.IGNORECASE)
+            if status_match:
+                result["cam_status"] = status_match.group(1).strip()
 
-            return results
+            address_match = re.search(r'(?:Business\s*)?Address[^<]*<[^>]*>([^<]+)', text, re.IGNORECASE)
+            if address_match:
+                result["cam_address"] = address_match.group(1).strip()
+
+            return result if result else None
     except Exception as e:
-        logger.warning(f"DBPR condo search failed for '{search_name}': {e}")
-        return []
+        logger.warning(f"DBPR CAM search failed for '{search_name}': {e}")
+        return None
 
 
 @register_enricher("TARGET", "dbpr_condo", requires=[])
 def enrich_dbpr_condo(entity: Entity, db: Session) -> bool:
-    """Search DBPR for condo association registration and management info."""
+    """Search DBPR for condo association registration and CAM info."""
     chars = entity.characteristics or {}
 
-    # Use the sunbiz corp name if available, otherwise entity name
+    # Use the property manager name if we have it from Sunbiz
+    property_manager = str(chars.get("property_manager") or chars.get("sunbiz_registered_agent") or "")
     search_name = str(chars.get("sunbiz_corp_name") or entity.name or "")
     if not search_name:
         return False
 
-    # Clean the name for search
     clean_name = re.sub(r'\b(inc\.?|llc|corp\.?)\b', '', search_name, flags=re.IGNORECASE).strip()
 
     # Generate lookup URLs
-    condo_search_url = f"{DBPR_CONDO_PORTAL}/SearchCondos?searchText={quote_plus(clean_name)}&searchType=Name"
-    cam_search_url = f"{DBPR_CONDO_SEARCH}?mode=0&SID=&session=&page=LicenseSearch"
+    condo_search_url = f"{DBPR_LICENSE_URL}?mode=0&SID=&page=ProfessionalSearch&searchType=Business&searchText={quote_plus(clean_name)}"
 
     updates: dict = {
-        "dbpr_condo_search_url": condo_search_url,
-        "dbpr_cam_search_url": cam_search_url,
+        "dbpr_search_url": condo_search_url,
     }
 
-    # If we have the property manager from sunbiz, generate a CAM lookup URL
-    property_manager = chars.get("property_manager") or chars.get("sunbiz_registered_agent")
-    if property_manager:
-        cam_lookup = f"{DBPR_CONDO_SEARCH}?mode=0&SID=&session=&page=LicenseSearch&searchType=Business&searchText={quote_plus(str(property_manager))}"
-        updates["dbpr_cam_lookup_url"] = cam_lookup
-        updates["dbpr_management_company"] = str(property_manager)
+    # Search for the property manager as a CAM licensee
+    if property_manager and len(property_manager) > 3:
+        cam_result = _search_dbpr_cam(property_manager)
+        if cam_result:
+            if cam_result.get("cam_name"):
+                updates["dbpr_cam_name"] = cam_result["cam_name"]
+            if cam_result.get("cam_license"):
+                updates["dbpr_cam_license"] = cam_result["cam_license"]
+            if cam_result.get("cam_status"):
+                updates["dbpr_cam_status"] = cam_result["cam_status"]
+            if cam_result.get("cam_address"):
+                updates["dbpr_cam_address"] = cam_result["cam_address"]
+            updates["dbpr_management_company"] = property_manager
 
-    # Attempt DBPR search
-    results = _search_dbpr_condo(clean_name)
-    if results:
-        best = results[0]
-        if best.get("managing_entity"):
-            updates["dbpr_managing_entity"] = best["managing_entity"]
-            # If different from sunbiz registered agent, this is the actual management co
-            if not property_manager:
-                updates["property_manager"] = best["managing_entity"]
-        if best.get("units"):
-            updates["dbpr_official_units"] = best["units"]
-            # Official unit count is more authoritative
-            updates["units_estimate"] = best["units"]
+    # Also try searching for the association itself
+    assoc_result = _search_dbpr_cam(clean_name)
+    if assoc_result:
+        if assoc_result.get("cam_name") and not updates.get("dbpr_cam_name"):
+            updates["dbpr_cam_name"] = assoc_result["cam_name"]
 
     update_characteristics(entity, updates, "dbpr_condo")
 
-    fields = [k for k, v in updates.items() if v is not None]
+    fields = [k for k, v in updates.items() if v is not None and k != "dbpr_search_url"]
     detail_parts = [f"DBPR: {len(fields)} fields"]
-    if updates.get("dbpr_managing_entity"):
-        detail_parts.append(f"mgmt={updates['dbpr_managing_entity']}")
+    if updates.get("dbpr_cam_name"):
+        detail_parts.append(f"CAM={updates['dbpr_cam_name']}")
+    if updates.get("dbpr_management_company"):
+        detail_parts.append(f"mgmt={updates['dbpr_management_company']}")
 
     record_enrichment(
         entity, db,

@@ -54,7 +54,7 @@ def _query_nfhl(lat: float, lon: float) -> dict | None:
         "f": "json",
     }
     try:
-        with httpx.Client(timeout=15) as client:
+        with httpx.Client(timeout=15, headers={"User-Agent": "insure-lead-gen/1.0"}) as client:
             resp = client.get(NFHL_URL, params=params)
             resp.raise_for_status()
             data = resp.json()
