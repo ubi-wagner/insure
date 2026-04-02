@@ -142,15 +142,35 @@ def seed_county(county_no: str, db: Session) -> dict:
     created = 0
     skipped_dupe = 0
 
+    # Debug: sample first row to check column names
+    sample_row = None
+    columns = []
+
     try:
         with open(nal_path, "r", encoding="utf-8", errors="replace") as f:
             reader = csv.DictReader(f, delimiter="\t")
+            columns = reader.fieldnames or []
             for row in reader:
                 total += 1
+                if sample_row is None:
+                    sample_row = {k: v for k, v in list(row.items())[:10]}
 
-                # Filter by DOR use code
-                dor_uc = (row.get("DOR_UC") or "").strip().zfill(3)
-                num_units = _safe_int(row.get("NO_RES_UNTS"))
+                # Filter by DOR use code — try multiple column name variations
+                dor_uc = (
+                    row.get("DOR_UC") or row.get("DOR UC") or
+                    row.get("dor_uc") or row.get("DOR_UC ") or ""
+                ).strip()
+
+                # Normalize: could be "4", "04", "004", "4.0"
+                try:
+                    dor_uc = str(int(float(dor_uc))).zfill(3) if dor_uc else ""
+                except (ValueError, TypeError):
+                    dor_uc = dor_uc.zfill(3) if dor_uc else ""
+
+                num_units = _safe_int(
+                    row.get("NO_RES_UNTS") or row.get("NO_RES_UNITS") or
+                    row.get("NO_RES UNTS") or row.get("no_res_unts")
+                )
 
                 if dor_uc not in TARGET_USE_CODES:
                     # Include other codes if they have enough units
@@ -308,6 +328,8 @@ def seed_county(county_no: str, db: Session) -> dict:
         "skipped_dupe": skipped_dupe,
         "nal_file": os.path.basename(nal_path),
         "sdf_records": len(sdf_data),
+        "debug_columns": columns[:20] if columns else [],
+        "debug_sample": sample_row,
     }
 
     emit(EventType.HUNTER, "seed_county", EventStatus.SUCCESS,
