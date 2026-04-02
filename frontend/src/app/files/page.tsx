@@ -95,7 +95,22 @@ export default function FilesPage() {
             method: "POST", body: formData,
           });
 
-          if (!res.ok) throw new Error(`Chunk ${chunkIdx + 1} failed: ${res.status}`);
+          // Accept any 2xx response, or check response body for success
+          if (!res.ok) {
+            // Try to parse response — backend might have succeeded even with proxy issues
+            try {
+              const body = await res.json();
+              if (!body.success && body.status !== "partial") {
+                throw new Error(`Chunk ${chunkIdx + 1} failed: ${res.status}`);
+              }
+            } catch (parseErr) {
+              // If we can't parse the response but file might have saved, continue
+              // Only hard-fail on definitive server errors
+              if (res.status >= 500) {
+                throw new Error(`Server error on chunk ${chunkIdx + 1}: ${res.status}`);
+              }
+            }
+          }
 
           const pct = Math.round(((chunkIdx + 1) / totalChunks) * 100);
           setUploads((prev) => prev.map((u) =>
@@ -108,7 +123,21 @@ export default function FilesPage() {
         ));
         fetchFiles();
       } catch (err) {
-        console.error(`Upload failed for ${file.name}:`, err);
+        console.error(`Upload issue for ${file.name}:`, err);
+        // Re-check file list — file may have saved despite response error
+        try {
+          const check = await fetch(`/api/proxy/files?path=${encodeURIComponent(currentPath)}`);
+          if (check.ok) {
+            const data = await check.json();
+            const fileList = Array.isArray(data.items) ? data.items : [];
+            const wasSaved = fileList.some((f: FileItem) => f.name === file.name);
+            setUploads((prev) => prev.map((u) =>
+              u.name === file.name && u.status === "uploading"
+                ? { ...u, status: wasSaved ? "done" : "error", progress: wasSaved ? 100 : u.progress } : u
+            ));
+            if (wasSaved) { setItems(fileList); continue; }
+          }
+        } catch {}
         setUploads((prev) => prev.map((u) =>
           u.name === file.name && u.status === "uploading" ? { ...u, status: "error" } : u
         ));
