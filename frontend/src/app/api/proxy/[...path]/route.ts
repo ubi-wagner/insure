@@ -5,17 +5,12 @@ import { NextRequest, NextResponse } from "next/server";
  *
  * Eliminates CORS entirely — browser talks to same origin,
  * Next.js server calls the backend over Railway's internal network.
- * API_URL is a runtime server-side env var, not a build-time one.
  */
 
 const API_URL = process.env.API_URL || "http://localhost:8000";
 
-// Disable Next.js body parsing — we stream the raw body through
-export const config = {
-  api: {
-    bodyParser: false,
-  },
-};
+// App Router: increase max duration for large file uploads
+export const maxDuration = 300; // 5 minutes
 
 async function proxyRequest(request: NextRequest, params: Promise<{ path: string[] }>) {
   const { path } = await params;
@@ -39,13 +34,11 @@ async function proxyRequest(request: NextRequest, params: Promise<{ path: string
     headers,
   };
 
-  // Forward body for POST/PUT/PATCH — stream binary for multipart, text for JSON
+  // Forward body for POST/PUT/PATCH
   if (["POST", "PUT", "PATCH"].includes(request.method)) {
     if (contentType?.includes("multipart/form-data")) {
-      // Stream the raw body through for file uploads (supports large files)
-      fetchOptions.body = request.body;
-      // @ts-expect-error - duplex is needed for streaming request bodies
-      fetchOptions.duplex = "half";
+      // Read full body for file uploads — arrayBuffer is reliable across all runtimes
+      fetchOptions.body = Buffer.from(await request.arrayBuffer());
     } else {
       fetchOptions.body = await request.text();
     }

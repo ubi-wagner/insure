@@ -67,42 +67,52 @@ export default function FilesPage() {
       }
 
       // Add to upload queue
-      const uploadIdx = uploads.length;
       setUploads((prev) => [...prev, {
         name: file.name, progress: 0, status: "uploading", size: file.size,
       }]);
 
-      // Use XMLHttpRequest for progress tracking
-      const xhr = new XMLHttpRequest();
-      const formData = new FormData();
-      formData.append("file", file);
+      // Chunked upload: 8MB chunks to avoid proxy/memory limits
+      const CHUNK_SIZE = 8 * 1024 * 1024;
+      const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
 
-      xhr.upload.onprogress = (e) => {
-        if (e.lengthComputable) {
-          const pct = Math.round((e.loaded / e.total) * 100);
-          setUploads((prev) => prev.map((u, i) =>
+      try {
+        for (let chunkIdx = 0; chunkIdx < totalChunks; chunkIdx++) {
+          const start = chunkIdx * CHUNK_SIZE;
+          const end = Math.min(start + CHUNK_SIZE, file.size);
+          const chunk = file.slice(start, end);
+
+          const formData = new FormData();
+          formData.append("file", chunk, file.name);
+
+          const params = new URLSearchParams({
+            path: currentPath,
+            chunk_index: String(chunkIdx),
+            total_chunks: String(totalChunks),
+            original_size: String(file.size),
+          });
+
+          const res = await fetch(`/api/proxy/files/upload?${params}`, {
+            method: "POST", body: formData,
+          });
+
+          if (!res.ok) throw new Error(`Chunk ${chunkIdx + 1} failed: ${res.status}`);
+
+          const pct = Math.round(((chunkIdx + 1) / totalChunks) * 100);
+          setUploads((prev) => prev.map((u) =>
             u.name === file.name && u.status === "uploading" ? { ...u, progress: pct } : u
           ));
         }
-      };
 
-      xhr.onload = () => {
-        const ok = xhr.status >= 200 && xhr.status < 300;
         setUploads((prev) => prev.map((u) =>
-          u.name === file.name && u.status === "uploading"
-            ? { ...u, progress: 100, status: ok ? "done" : "error" } : u
+          u.name === file.name && u.status === "uploading" ? { ...u, progress: 100, status: "done" } : u
         ));
-        if (ok) fetchFiles();
-      };
-
-      xhr.onerror = () => {
+        fetchFiles();
+      } catch (err) {
+        console.error(`Upload failed for ${file.name}:`, err);
         setUploads((prev) => prev.map((u) =>
           u.name === file.name && u.status === "uploading" ? { ...u, status: "error" } : u
         ));
-      };
-
-      xhr.open("POST", `/api/proxy/files/upload?path=${encodeURIComponent(currentPath)}`);
-      xhr.send(formData);
+      }
     }
   }
 

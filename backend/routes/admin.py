@@ -587,8 +587,14 @@ def create_folder(name: str = Query(...), path: str = Query("")):
 
 
 @router.post("/api/files/upload")
-async def upload_file(file: UploadFile = File(...), path: str = Query("")):
-    """Upload a file to a specific folder. Streams to disk for large files."""
+async def upload_file(
+    file: UploadFile = File(...),
+    path: str = Query(""),
+    chunk_index: int = Query(0),
+    total_chunks: int = Query(1),
+    original_size: int = Query(0),
+):
+    """Upload a file to a specific folder. Supports chunked uploads for large files."""
     safe_dir = os.path.normpath(os.path.join(FILE_STORE_ROOT, path))
     if not safe_dir.startswith(os.path.abspath(FILE_STORE_ROOT)):
         raise HTTPException(status_code=400, detail="Invalid path")
@@ -597,19 +603,37 @@ async def upload_file(file: UploadFile = File(...), path: str = Query("")):
     filename = file.filename or "unnamed"
     filepath = os.path.join(safe_dir, filename)
 
-    # Stream to disk in 1MB chunks (handles files of any size)
-    total_size = 0
-    with open(filepath, "wb") as f:
-        while True:
-            chunk = await file.read(1024 * 1024)  # 1MB chunks
-            if not chunk:
-                break
-            f.write(chunk)
-            total_size += len(chunk)
+    if total_chunks > 1:
+        # Chunked upload: append to temp file, finalize on last chunk
+        tmp_path = filepath + ".uploading"
+        mode = "ab" if chunk_index > 0 else "wb"
+        chunk_data = await file.read()
+        with open(tmp_path, mode) as f:
+            f.write(chunk_data)
 
-    logger.info(f"Uploaded {filename} ({total_size:,} bytes) to {safe_dir}")
+        if chunk_index < total_chunks - 1:
+            # More chunks coming
+            return {"success": True, "chunk": chunk_index, "of": total_chunks, "status": "partial"}
 
-    # S3 upload for persistence (stream from saved file, not memory)
+        # Last chunk — rename to final path
+        if os.path.exists(filepath):
+            os.remove(filepath)
+        os.rename(tmp_path, filepath)
+        total_size = os.path.getsize(filepath)
+        logger.info(f"Chunked upload complete: {filename} ({total_size:,} bytes, {total_chunks} chunks)")
+    else:
+        # Single-chunk upload
+        total_size = 0
+        with open(filepath, "wb") as f:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                f.write(chunk)
+                total_size += len(chunk)
+        logger.info(f"Uploaded {filename} ({total_size:,} bytes)")
+
+    # S3 upload for persistence
     s3_client, bucket_name = _get_s3_client()
     if s3_client:
         try:
