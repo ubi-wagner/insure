@@ -29,11 +29,11 @@ interface Region {
 
 // Pipeline stages in order
 const PIPELINE_STAGES = [
-  { key: "NEW", label: "New", color: "border-gray-600", bg: "bg-gray-800", badge: "bg-gray-700 text-gray-300", action: "Investigate", actionColor: "bg-purple-700 hover:bg-purple-600" },
-  { key: "CANDIDATE", label: "Investigating", color: "border-purple-600", bg: "bg-purple-950/30", badge: "bg-purple-900 text-purple-200", action: "Target", actionColor: "bg-amber-700 hover:bg-amber-600" },
-  { key: "TARGET", label: "Targeted", color: "border-amber-600", bg: "bg-amber-950/30", badge: "bg-amber-900 text-amber-200", action: "Opportunity", actionColor: "bg-blue-700 hover:bg-blue-600" },
-  { key: "OPPORTUNITY", label: "Opportunities", color: "border-blue-600", bg: "bg-blue-950/30", badge: "bg-blue-900 text-blue-200", action: "Engage", actionColor: "bg-green-700 hover:bg-green-600" },
-  { key: "CUSTOMER", label: "Customers", color: "border-green-600", bg: "bg-green-950/30", badge: "bg-green-800 text-green-200", action: "", actionColor: "" },
+  { key: "NEW", label: "New", color: "border-gray-600", bg: "bg-gray-800", badge: "bg-gray-700 text-gray-300", action: "Investigate", actionColor: "bg-purple-700 hover:bg-purple-600", prev: "" },
+  { key: "CANDIDATE", label: "Investigating", color: "border-purple-600", bg: "bg-purple-950/30", badge: "bg-purple-900 text-purple-200", action: "Target", actionColor: "bg-amber-700 hover:bg-amber-600", prev: "NEW" },
+  { key: "TARGET", label: "Targeted", color: "border-amber-600", bg: "bg-amber-950/30", badge: "bg-amber-900 text-amber-200", action: "Opportunity", actionColor: "bg-blue-700 hover:bg-blue-600", prev: "CANDIDATE" },
+  { key: "OPPORTUNITY", label: "Opportunities", color: "border-blue-600", bg: "bg-blue-950/30", badge: "bg-blue-900 text-blue-200", action: "Engage", actionColor: "bg-green-700 hover:bg-green-600", prev: "TARGET" },
+  { key: "CUSTOMER", label: "Customers", color: "border-green-600", bg: "bg-green-950/30", badge: "bg-green-800 text-green-200", action: "", actionColor: "", prev: "OPPORTUNITY" },
 ];
 
 const HEAT_COLORS: Record<string, string> = {
@@ -120,32 +120,26 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
   async function handleAction(entityId: number, action: string) {
     setActionId(entityId);
     try {
-      if (action === "INVESTIGATE") {
-        await fetch(`/api/proxy/leads/${entityId}/vote`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action_type: "USER_THUMB_UP" }),
-        });
-      } else if (action === "ARCHIVE") {
+      // All actions go through the stage change endpoint
+      // INVESTIGATE = advance to CANDIDATE
+      const stageMap: Record<string, string> = {
+        INVESTIGATE: "CANDIDATE",
+        ARCHIVE: "ARCHIVED",
+      };
+      const targetStage = stageMap[action] || action;
+
+      const res = await fetch(`/api/proxy/leads/${entityId}/stage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ stage: targetStage, force: action === "ARCHIVE" }),
+      });
+      if (!res.ok && res.status === 422) {
+        // Readiness check failed — force if user intended to advance
         await fetch(`/api/proxy/leads/${entityId}/stage`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ stage: "ARCHIVED", force: true }),
+          body: JSON.stringify({ stage: targetStage, force: true }),
         });
-      } else {
-        // Stage advancement
-        const res = await fetch(`/api/proxy/leads/${entityId}/stage`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ stage: action, force: false }),
-        });
-        if (!res.ok && res.status === 422) {
-          await fetch(`/api/proxy/leads/${entityId}/stage`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ stage: action, force: true }),
-          });
-        }
       }
       await fetchLeads();
     } catch (err) {
@@ -335,6 +329,19 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
                                 Engage
                               </button>
                             )}
+
+                            {/* Demote — go back one stage */}
+                            {stage.prev && (
+                              <button
+                                onClick={() => handleAction(lead.id, stage.prev)}
+                                disabled={actionId === lead.id}
+                                className="bg-gray-800 hover:bg-gray-700 disabled:opacity-50 text-gray-500 text-xs py-2 md:py-1 px-2 rounded"
+                                title={`Back to ${stage.prev}`}>
+                                &larr;
+                              </button>
+                            )}
+
+                            {/* Map */}
                             {lead.latitude != null && (
                               <button
                                 onClick={() => onFlyTo?.(lead.latitude, lead.longitude, lead.id)}
@@ -342,7 +349,9 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
                                 Map
                               </button>
                             )}
-                            {["NEW", "CANDIDATE", "TARGET"].includes(stage.key) && (
+
+                            {/* Archive */}
+                            {stage.key !== "CUSTOMER" && (
                               <button
                                 onClick={() => handleAction(lead.id, "ARCHIVE")}
                                 disabled={actionId === lead.id}
