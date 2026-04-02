@@ -161,7 +161,7 @@ def _run_bulk_enrich():
     try:
         # Get all leads missing enrichment sources
         entities = db.query(Entity).filter(
-            Entity.pipeline_stage.in_(["NEW", "CANDIDATE", "TARGET", "OPPORTUNITY"]),
+            Entity.pipeline_stage.in_(["NEW", "ENRICHED", "INVESTIGATING", "RESEARCHED", "TARGETED", "OPPORTUNITY"]),
         ).order_by(Entity.id).all()
 
         total = len(entities)
@@ -174,10 +174,7 @@ def _run_bulk_enrich():
 
             # Skip if already fully enriched for current stage
             stage = entity.pipeline_stage or "NEW"
-            if stage == "NEW" and all(s in sources for s in ["fema_flood", "fdot_parcels"]):
-                skipped += 1
-                continue
-            if stage == "CANDIDATE" and "sunbiz" in sources:
+            if stage in ("ENRICHED", "RESEARCHED") and all(s in sources for s in ["fema_flood", "fdot_parcels"]):
                 skipped += 1
                 continue
 
@@ -185,8 +182,8 @@ def _run_bulk_enrich():
                 # Run enrichments for the entity's current stage
                 run_enrichment_for_stage(entity, stage, db)
 
-                # Also run NEW enrichments if they haven't run yet
-                if stage != "NEW" and not any(s in sources for s in ["fema_flood", "fdot_parcels"]):
+                # Also backfill NEW enrichments if they haven't run yet
+                if stage not in ("NEW",) and not any(s in sources for s in ["fema_flood", "fdot_parcels"]):
                     run_enrichment_for_stage(entity, "NEW", db)
 
                 enriched += 1
@@ -231,7 +228,7 @@ def get_enrich_status(db: Session = Depends(get_db)):
     from database.models import OsmBuilding
 
     total_leads = db.query(Entity).filter(
-        Entity.pipeline_stage.in_(["NEW", "CANDIDATE", "TARGET", "OPPORTUNITY", "CUSTOMER"])
+        Entity.pipeline_stage.in_(["NEW", "ENRICHED", "INVESTIGATING", "RESEARCHED", "TARGETED", "OPPORTUNITY", "CUSTOMER"])
     ).count()
 
     # Count leads with each enrichment source

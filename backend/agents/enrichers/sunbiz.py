@@ -153,7 +153,7 @@ def _get_corporation_detail(detail_url: str) -> dict:
         return {}
 
 
-@register_enricher("CANDIDATE", "sunbiz", requires=[])
+@register_enricher("INVESTIGATING", "sunbiz", requires=[])
 def enrich_sunbiz(entity: Entity, db: Session) -> bool:
     """Search Florida Sunbiz for condo/HOA association information."""
     if not entity.name:

@@ -72,8 +72,9 @@ const HEAT_STYLES: Record<string, string> = {
 };
 
 const STAGE_COLORS: Record<string, string> = {
-  NEW: "bg-gray-700", CANDIDATE: "bg-purple-900", TARGET: "bg-amber-900",
-  OPPORTUNITY: "bg-blue-900", CUSTOMER: "bg-green-800", CHURNED: "bg-gray-800", ARCHIVED: "bg-red-900",
+  NEW: "bg-gray-700", ENRICHED: "bg-cyan-900", INVESTIGATING: "bg-purple-900",
+  RESEARCHED: "bg-indigo-900", TARGETED: "bg-amber-900",
+  OPPORTUNITY: "bg-blue-900", CUSTOMER: "bg-green-800", ARCHIVED: "bg-red-900",
 };
 
 function fmt(val: number | null | undefined): string {
@@ -186,8 +187,8 @@ export default function LeadDetailPage() {
   }
 
   const chars = lead.characteristics || {};
-  const stages = ["NEW", "CANDIDATE", "TARGET", "OPPORTUNITY", "CUSTOMER", "CHURNED", "ARCHIVED"];
-  const isEngageReady = ["OPPORTUNITY", "CUSTOMER"].includes(lead.pipeline_stage);
+  const stages = ["NEW", "ENRICHED", "INVESTIGATING", "RESEARCHED", "TARGETED", "OPPORTUNITY", "CUSTOMER", "ARCHIVED"];
+  const isEngageReady = ["TARGETED", "OPPORTUNITY", "CUSTOMER"].includes(lead.pipeline_stage);
   const tabs: { key: TabName; label: string; count?: number }[] = [
     { key: "overview", label: "Overview" },
     ...(isEngageReady || lead.engagements.length > 0 ? [{ key: "engage" as TabName, label: "Engage" }] : []),
@@ -271,9 +272,9 @@ export default function LeadDetailPage() {
         )}
         {/* Next stage readiness checklist */}
         {lead.readiness && (() => {
-          const nextStageKey = lead.pipeline_stage === "NEW" ? "candidate" :
-            lead.pipeline_stage === "CANDIDATE" ? "target" :
-            lead.pipeline_stage === "TARGET" ? "opportunity" : null;
+          const nextStageKey = lead.pipeline_stage === "ENRICHED" ? "investigating" :
+            lead.pipeline_stage === "RESEARCHED" ? "targeted" :
+            lead.pipeline_stage === "TARGETED" ? "opportunity" : null;
           if (!nextStageKey || !lead.readiness[nextStageKey]) return null;
           const r = lead.readiness[nextStageKey];
           const checks = Object.values(r.checks) as { done: boolean; label: string }[];

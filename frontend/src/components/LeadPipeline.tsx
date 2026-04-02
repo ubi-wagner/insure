@@ -29,11 +29,18 @@ interface Region {
 
 // Pipeline stages in order
 const PIPELINE_STAGES = [
-  { key: "NEW", label: "New", color: "border-gray-600", bg: "bg-gray-800", badge: "bg-gray-700 text-gray-300", action: "Investigate", actionColor: "bg-purple-700 hover:bg-purple-600", prev: "" },
-  { key: "CANDIDATE", label: "Investigating", color: "border-purple-600", bg: "bg-purple-950/30", badge: "bg-purple-900 text-purple-200", action: "Target", actionColor: "bg-amber-700 hover:bg-amber-600", prev: "NEW" },
-  { key: "TARGET", label: "Targeted", color: "border-amber-600", bg: "bg-amber-950/30", badge: "bg-amber-900 text-amber-200", action: "Opportunity", actionColor: "bg-blue-700 hover:bg-blue-600", prev: "CANDIDATE" },
-  { key: "OPPORTUNITY", label: "Opportunities", color: "border-blue-600", bg: "bg-blue-950/30", badge: "bg-blue-900 text-blue-200", action: "Engage", actionColor: "bg-green-700 hover:bg-green-600", prev: "TARGET" },
-  { key: "CUSTOMER", label: "Customers", color: "border-green-600", bg: "bg-green-950/30", badge: "bg-green-800 text-green-200", action: "", actionColor: "", prev: "OPPORTUNITY" },
+  // Auto tier — enrichers auto-advance NEW → ENRICHED
+  { key: "NEW", label: "New", color: "border-gray-600", bg: "bg-gray-800", badge: "bg-gray-700 text-gray-300", action: "", actionColor: "", prev: "", auto: true },
+  { key: "ENRICHED", label: "Enriched", color: "border-cyan-600", bg: "bg-cyan-950/30", badge: "bg-cyan-900 text-cyan-200", action: "Investigate", actionColor: "bg-purple-700 hover:bg-purple-600", prev: "", auto: false },
+
+  // Investigation tier — Sunbiz + AI auto-advance INVESTIGATING → RESEARCHED
+  { key: "INVESTIGATING", label: "Investigating", color: "border-purple-600", bg: "bg-purple-950/30", badge: "bg-purple-900 text-purple-200", action: "", actionColor: "", prev: "ENRICHED", auto: true },
+  { key: "RESEARCHED", label: "Researched", color: "border-indigo-600", bg: "bg-indigo-950/30", badge: "bg-indigo-900 text-indigo-200", action: "Target", actionColor: "bg-amber-700 hover:bg-amber-600", prev: "ENRICHED", auto: false },
+
+  // Manual tier — Jason decides
+  { key: "TARGETED", label: "Targeted", color: "border-amber-600", bg: "bg-amber-950/30", badge: "bg-amber-900 text-amber-200", action: "Opportunity", actionColor: "bg-blue-700 hover:bg-blue-600", prev: "RESEARCHED", auto: false },
+  { key: "OPPORTUNITY", label: "Opportunities", color: "border-blue-600", bg: "bg-blue-950/30", badge: "bg-blue-900 text-blue-200", action: "Engage", actionColor: "bg-green-700 hover:bg-green-600", prev: "TARGETED", auto: false },
+  { key: "CUSTOMER", label: "Customers", color: "border-green-600", bg: "bg-green-950/30", badge: "bg-green-800 text-green-200", action: "", actionColor: "", prev: "OPPORTUNITY", auto: false },
 ];
 
 const HEAT_COLORS: Record<string, string> = {
@@ -123,8 +130,16 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
     try {
       // All actions go through the stage change endpoint
       // INVESTIGATE = advance to CANDIDATE
+      // ENGAGE opens detail page instead of changing stage
+      if (action === "ENGAGE") {
+        onOpenDetails?.(entityId);
+        setActionId(null);
+        return;
+      }
+
       const stageMap: Record<string, string> = {
-        INVESTIGATE: "CANDIDATE",
+        INVESTIGATE: "INVESTIGATING",
+        TARGET: "TARGETED",
         ARCHIVE: "ARCHIVED",
       };
       const targetStage = stageMap[action] || action;
@@ -312,25 +327,24 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
 
                           {/* Row 4: actions */}
                           <div className="flex gap-1 mt-2" onClick={(e) => e.stopPropagation()}>
-                            {stage.action && (
+                            {stage.action && !stage.auto && (
                               <button
-                                onClick={() => handleAction(lead.id, stage.key === "NEW" ? "INVESTIGATE" : (
-                                  stage.key === "CANDIDATE" ? "TARGET" :
-                                  stage.key === "TARGET" ? "OPPORTUNITY" : ""
-                                ) || "")}
+                                onClick={() => handleAction(lead.id, stage.action === "Investigate" ? "INVESTIGATE" :
+                                  stage.action === "Target" ? "TARGET" :
+                                  stage.action === "Opportunity" ? "OPPORTUNITY" :
+                                  stage.action === "Engage" ? "ENGAGE" : ""
+                                )}
                                 disabled={actionId === lead.id}
                                 className={`flex-1 disabled:opacity-50 text-white text-xs py-2 md:py-1 rounded font-medium ${stage.actionColor}`}
                               >
                                 {actionId === lead.id ? "..." : stage.action}
                               </button>
                             )}
-                            {stage.key === "OPPORTUNITY" && (
-                              <button onClick={() => onOpenDetails?.(lead.id)}
-                                className="flex-1 bg-green-700 hover:bg-green-600 text-white text-xs py-2 md:py-1 rounded font-medium">
-                                Engage
-                              </button>
+                            {stage.auto && (
+                              <span className="flex-1 text-center text-gray-600 text-[10px] py-1 italic">
+                                Auto-processing...
+                              </span>
                             )}
-
                             {/* Demote — go back one stage */}
                             {stage.prev && (
                               <button
@@ -352,7 +366,7 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
                             )}
 
                             {/* Archive */}
-                            {stage.key !== "CUSTOMER" && (
+                            {!stage.auto && stage.key !== "CUSTOMER" && (
                               <button
                                 onClick={() => handleAction(lead.id, "ARCHIVE")}
                                 disabled={actionId === lead.id}
