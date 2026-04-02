@@ -214,23 +214,6 @@ export default function OpsPage() {
     setEnriching(false);
   }
 
-  async function resetDatabase() {
-    if (!confirm("This will WIPE all entity data. Are you sure?")) return;
-    try {
-      const res = await fetch("/api/proxy/admin/reset", { method: "POST" });
-      const data = await res.json();
-      if (res.ok) {
-        setSeedResult(data.message || "Database reset complete");
-        fetchCounties();
-        fetchEnrichStatus();
-      } else {
-        setSeedResult(`Reset error: ${data.detail || res.statusText}`);
-      }
-    } catch (err) {
-      setSeedResult(`Reset error: ${err}`);
-    }
-  }
-
   async function runQuery() {
     setQuerying(true);
     try {
