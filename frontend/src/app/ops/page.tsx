@@ -40,6 +40,12 @@ export default function OpsPage() {
   const [harvest, setHarvest] = useState<HarvestStatus | null>(null);
   const [harvesting, setHarvesting] = useState(false);
   const [harvestMsg, setHarvestMsg] = useState<string | null>(null);
+  const [enriching, setEnriching] = useState(false);
+  const [enrichMsg, setEnrichMsg] = useState<string | null>(null);
+  const [enrichStatus, setEnrichStatus] = useState<{
+    total_leads: number; no_enrichment: number;
+    coverage: Record<string, number>;
+  } | null>(null);
 
   // Query state
   const [queryTable, setQueryTable] = useState("entities");
@@ -60,7 +66,8 @@ export default function OpsPage() {
   useEffect(() => {
     fetchServices();
     fetchHarvest();
-    const interval = setInterval(fetchServices, 15000);
+    fetchEnrichStatus();
+    const interval = setInterval(() => { fetchServices(); fetchEnrichStatus(); }, 15000);
     return () => clearInterval(interval);
   }, []);
 
@@ -79,6 +86,30 @@ export default function OpsPage() {
       const res = await fetch("/api/proxy/admin/harvest/status");
       if (res.ok) setHarvest(await res.json());
     } catch {}
+  }
+
+  async function fetchEnrichStatus() {
+    try {
+      const res = await fetch("/api/proxy/admin/enrich/status");
+      if (res.ok) setEnrichStatus(await res.json());
+    } catch {}
+  }
+
+  async function triggerEnrich() {
+    setEnriching(true);
+    setEnrichMsg(null);
+    try {
+      const res = await fetch("/api/proxy/admin/enrich", { method: "POST" });
+      if (res.ok) {
+        const data = await res.json();
+        setEnrichMsg(data.message);
+        const poll = setInterval(fetchEnrichStatus, 10000);
+        setTimeout(() => clearInterval(poll), 600000);
+      }
+    } catch (err) {
+      console.error("Enrich trigger failed:", err);
+    }
+    setEnriching(false);
   }
 
   async function triggerHarvest() {
@@ -212,6 +243,45 @@ export default function OpsPage() {
         {/* ─── Harvest Cache ─── */}
         {tab === "harvest" && (
           <div className="space-y-6">
+            {/* Enrichment Pipeline Status */}
+            <div>
+              <div className="flex items-center justify-between mb-3">
+                <h2 className="text-sm font-semibold text-gray-300">Lead Enrichment Pipeline</h2>
+                <div className="flex gap-2 items-center">
+                  {enrichMsg && <span className="text-green-300 text-xs">{enrichMsg}</span>}
+                  <button onClick={triggerEnrich} disabled={enriching}
+                    className="bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white text-xs px-4 py-1.5 rounded font-medium">
+                    {enriching ? "Starting..." : "Enrich All Leads"}
+                  </button>
+                  <button onClick={fetchEnrichStatus}
+                    className="bg-gray-800 hover:bg-gray-700 text-gray-400 text-xs px-3 py-1.5 rounded">
+                    Refresh
+                  </button>
+                </div>
+              </div>
+              {enrichStatus && (
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                  <div className="bg-gray-900 border border-gray-800 rounded-lg p-3 text-center">
+                    <p className="text-2xl font-bold text-white">{enrichStatus.total_leads.toLocaleString()}</p>
+                    <p className="text-gray-500 text-[10px]">Total Leads</p>
+                  </div>
+                  <div className="bg-gray-900 border border-red-900 rounded-lg p-3 text-center">
+                    <p className="text-2xl font-bold text-red-400">{enrichStatus.no_enrichment.toLocaleString()}</p>
+                    <p className="text-gray-500 text-[10px]">No Enrichment</p>
+                  </div>
+                  {Object.entries(enrichStatus.coverage).map(([source, count]) => (
+                    <div key={source} className="bg-gray-900 border border-gray-800 rounded-lg p-3 text-center">
+                      <p className="text-xl font-bold text-green-400">{Number(count).toLocaleString()}</p>
+                      <p className="text-gray-500 text-[10px]">{source.replace(/_/g, " ")}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="border-t border-gray-800" />
+
+            {/* OSM Building Cache */}
             <div className="flex items-center justify-between">
               <h2 className="text-sm font-semibold text-gray-300">OSM Building Cache</h2>
               <div className="flex gap-2 items-center">
