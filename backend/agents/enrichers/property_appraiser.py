@@ -69,21 +69,24 @@ COUNTY_GIS_ENDPOINTS: dict[str, dict] = {
         "info_url": "https://www.pbcgov.org/papa/",
         "spatial_ref": 4326,
     },
-    # Counties without known GIS REST — we still generate lookup URLs
+    # Counties without GIS REST — generate direct parcel/address lookup URLs
     "Pasco": {
         "name": "Pasco County Property Appraiser",
         "url": None,
         "info_url": "https://search.pascopa.com/#/search/address/{address}",
+        "parcel_url": "https://search.pascopa.com/#/parcel/{parcel}",
     },
     "Manatee": {
         "name": "Manatee County Property Appraiser",
         "url": None,
         "info_url": "https://www.manateepao.com/search/?searchType=address&searchString={address}",
+        "parcel_url": "https://www.manateepao.com/search/?searchType=parcel&searchString={parcel}",
     },
     "Sarasota": {
         "name": "Sarasota County Property Appraiser",
         "url": None,
         "info_url": "https://www.sarasotapropappr.com/#/search/address/{address}",
+        "parcel_url": "https://www.sarasotapropappr.com/#/search/parcel/{parcel}",
     },
     "Charlotte": {
         "name": "Charlotte County Property Appraiser",
@@ -187,16 +190,29 @@ def enrich_property_appraiser(entity: Entity, db: Session) -> bool:
         logger.debug(f"No PA config for county '{county}'")
         return False
 
-    address_encoded = (entity.address or "").replace(" ", "+").replace(",", "")
+    address_encoded = (entity.address or "").split(",")[0].replace(" ", "+")
     info_url = config["info_url"].format(address=address_encoded)
 
-    # If no GIS endpoint, don't record as enriched — just save lookup URL to characteristics
+    # Try parcel-based URL if we have a parcel ID
+    chars = dict(entity.characteristics or {})
+    parcel_id = chars.get("dor_parcel_id", "")
+    if parcel_id and config.get("parcel_url"):
+        info_url = config["parcel_url"].format(parcel=parcel_id.replace(" ", "+"))
+
+    # If no GIS endpoint, save lookup URL and record as enrichment (link is the value)
     if not config.get("url"):
-        chars = dict(entity.characteristics or {})
         chars["pa_lookup_url"] = info_url
         chars["pa_county"] = county
         entity.characteristics = chars
-        return False  # Don't record as enrichment source — we didn't get real data
+
+        record_enrichment(
+            entity, db,
+            source_id="property_appraiser",
+            fields_updated=["pa_lookup_url", "pa_county"],
+            source_url=info_url,
+            detail=f"PA lookup URL for {county}",
+        )
+        return True  # URL itself is useful data
 
     parcel_data = {}
 

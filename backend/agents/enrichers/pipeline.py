@@ -194,12 +194,14 @@ def check_target_to_lead(entity: Entity, db: Session) -> bool:
 def _load_enrichers():
     modules = [
         "fema_flood",           # FEMA flood zone (real API)
+        "property_appraiser",   # County PA GIS lookup + direct parcel links
         "dbpr_bulk",            # DBPR condo CSV (managing entity, project number)
         "dbpr_payments",        # DBPR payment history (delinquency)
         "cam_license",          # CAM license cross-reference
-        "sunbiz",               # Sunbiz association search (scrapes officers)
+        "sunbiz",               # Sunbiz search link + scrape attempt
         "dor_nal",              # DOR NAL cross-reference (supplemental)
         "citizens_insurance",   # Citizens insurance likelihood + swap opportunity
+        "fdot_parcels",         # FDOT statewide parcel API
     ]
     for module in modules:
         try:
