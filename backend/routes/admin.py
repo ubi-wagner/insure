@@ -1,8 +1,10 @@
 import logging
+import os
 import threading
 
 import sqlalchemy as sa
-from fastapi import APIRouter, Depends, Query
+from datetime import datetime
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from sqlalchemy.orm import Session
 
 from database import get_db, SessionLocal
@@ -388,3 +390,266 @@ def query_data(
             "created_at": e.created_at.isoformat(),
         } for e in rows]
         return {"table": "entities", "total": total, "showing": len(results), "results": results}
+
+
+# ─── S3 Bucket Storage ───
+
+def _get_s3_client():
+    """Get S3 client for Railway bucket."""
+    import boto3
+    endpoint = os.getenv("BUCKET_ENDPOINT") or os.getenv("RAILWAY_BUCKET_ENDPOINT")
+    access_key = os.getenv("BUCKET_ACCESS_KEY_ID") or os.getenv("RAILWAY_BUCKET_ACCESS_KEY_ID")
+    secret_key = os.getenv("BUCKET_SECRET_ACCESS_KEY") or os.getenv("RAILWAY_BUCKET_SECRET_ACCESS_KEY")
+
+    if not all([endpoint, access_key, secret_key]):
+        return None, None
+
+    bucket_name = os.getenv("BUCKET_NAME") or os.getenv("RAILWAY_BUCKET_NAME") or "default"
+
+    client = boto3.client(
+        "s3",
+        endpoint_url=endpoint,
+        aws_access_key_id=access_key,
+        aws_secret_access_key=secret_key,
+        region_name="auto",
+    )
+    return client, bucket_name
+
+
+@router.post("/api/admin/upload-data")
+async def upload_data_file(file: UploadFile = File(...)):
+    """Upload a large data file (CSV, etc.) to the S3 bucket.
+
+    Also saves a local copy to backend/data/ for enricher access.
+    """
+    content = await file.read()
+    filename = file.filename or "unknown.csv"
+
+    # Save local copy for enrichers
+    data_dir = os.path.join(os.path.dirname(__file__), "..", "data")
+    os.makedirs(data_dir, exist_ok=True)
+    local_path = os.path.join(data_dir, filename)
+    with open(local_path, "wb") as f:
+        f.write(content)
+    logger.info(f"Saved {filename} locally ({len(content):,} bytes)")
+
+    # Upload to S3 bucket if configured
+    s3_url = None
+    s3_client, bucket_name = _get_s3_client()
+    if s3_client:
+        try:
+            s3_key = f"data/{filename}"
+            s3_client.put_object(
+                Bucket=bucket_name,
+                Key=s3_key,
+                Body=content,
+                ContentType="text/csv",
+            )
+            s3_url = f"s3://{bucket_name}/{s3_key}"
+            logger.info(f"Uploaded {filename} to bucket ({len(content):,} bytes)")
+        except Exception as e:
+            logger.warning(f"S3 upload failed for {filename}: {e}")
+
+    return {
+        "success": True,
+        "filename": filename,
+        "size_bytes": len(content),
+        "local_path": local_path,
+        "s3_url": s3_url,
+    }
+
+
+@router.get("/api/admin/bucket/files")
+def list_bucket_files():
+    """List files in the S3 bucket."""
+    s3_client, bucket_name = _get_s3_client()
+    if not s3_client:
+        # Fall back to listing local data dir
+        data_dir = os.path.join(os.path.dirname(__file__), "..", "data")
+        if os.path.exists(data_dir):
+            files = []
+            for f in sorted(os.listdir(data_dir)):
+                path = os.path.join(data_dir, f)
+                if os.path.isfile(path):
+                    files.append({
+                        "name": f,
+                        "size_bytes": os.path.getsize(path),
+                        "source": "local",
+                    })
+            return {"bucket": "local", "files": files}
+        return {"bucket": "none", "files": []}
+
+    try:
+        response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix="data/")
+        files = []
+        for obj in response.get("Contents", []):
+            files.append({
+                "name": obj["Key"].replace("data/", ""),
+                "size_bytes": obj["Size"],
+                "last_modified": obj["LastModified"].isoformat(),
+                "source": "s3",
+            })
+        return {"bucket": bucket_name, "files": files}
+    except Exception as e:
+        logger.warning(f"Failed to list bucket files: {e}")
+        return {"bucket": bucket_name, "files": [], "error": str(e)}
+
+
+# ─── File Manager (folder structure) ───
+
+FILE_STORE_ROOT = os.path.join(os.path.dirname(__file__), "..", "filestore")
+
+
+def _ensure_filestore():
+    """Create default folder structure if it doesn't exist."""
+    defaults = [
+        "System Data",
+        "System Data/DBPR",
+        "System Data/Overpass Cache",
+        "Associations",
+        "Associations/_templates",
+        "Proposals",
+        "Reports",
+        "Uploads",
+    ]
+    for folder in defaults:
+        path = os.path.join(FILE_STORE_ROOT, folder)
+        os.makedirs(path, exist_ok=True)
+
+
+_ensure_filestore()
+
+
+@router.get("/api/files")
+def list_files(path: str = Query("")):
+    """List files and folders at a given path."""
+    safe_path = os.path.normpath(os.path.join(FILE_STORE_ROOT, path))
+    if not safe_path.startswith(os.path.abspath(FILE_STORE_ROOT)):
+        raise HTTPException(status_code=400, detail="Invalid path")
+
+    if not os.path.exists(safe_path):
+        return {"path": path, "items": []}
+
+    items = []
+    try:
+        for entry in sorted(os.listdir(safe_path)):
+            full = os.path.join(safe_path, entry)
+            rel = os.path.relpath(full, FILE_STORE_ROOT)
+            if os.path.isdir(full):
+                # Count children
+                child_count = len(os.listdir(full)) if os.path.isdir(full) else 0
+                items.append({
+                    "name": entry,
+                    "path": rel,
+                    "type": "folder",
+                    "children": child_count,
+                })
+            else:
+                stat = os.stat(full)
+                items.append({
+                    "name": entry,
+                    "path": rel,
+                    "type": "file",
+                    "size": stat.st_size,
+                    "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                })
+    except Exception as e:
+        logger.warning(f"Failed to list files at {safe_path}: {e}")
+
+    return {"path": path, "items": items}
+
+
+@router.post("/api/files/folder")
+def create_folder(name: str = Query(...), path: str = Query("")):
+    """Create a new folder."""
+    safe_path = os.path.normpath(os.path.join(FILE_STORE_ROOT, path, name))
+    if not safe_path.startswith(os.path.abspath(FILE_STORE_ROOT)):
+        raise HTTPException(status_code=400, detail="Invalid path")
+    os.makedirs(safe_path, exist_ok=True)
+    return {"success": True, "path": os.path.relpath(safe_path, FILE_STORE_ROOT)}
+
+
+@router.post("/api/files/upload")
+async def upload_file(file: UploadFile = File(...), path: str = Query("")):
+    """Upload a file to a specific folder."""
+    safe_dir = os.path.normpath(os.path.join(FILE_STORE_ROOT, path))
+    if not safe_dir.startswith(os.path.abspath(FILE_STORE_ROOT)):
+        raise HTTPException(status_code=400, detail="Invalid path")
+    os.makedirs(safe_dir, exist_ok=True)
+
+    filename = file.filename or "unnamed"
+    filepath = os.path.join(safe_dir, filename)
+    content = await file.read()
+    with open(filepath, "wb") as f:
+        f.write(content)
+
+    # Also upload to S3 if configured
+    s3_client, bucket_name = _get_s3_client()
+    if s3_client:
+        try:
+            s3_key = f"files/{path}/{filename}" if path else f"files/{filename}"
+            s3_client.put_object(Bucket=bucket_name, Key=s3_key, Body=content)
+        except Exception as e:
+            logger.warning(f"S3 upload failed: {e}")
+
+    rel = os.path.relpath(filepath, FILE_STORE_ROOT)
+    return {
+        "success": True,
+        "name": filename,
+        "path": rel,
+        "size": len(content),
+    }
+
+
+@router.get("/api/files/download")
+def download_file(path: str = Query(...)):
+    """Download a file."""
+    from fastapi.responses import FileResponse
+    safe_path = os.path.normpath(os.path.join(FILE_STORE_ROOT, path))
+    if not safe_path.startswith(os.path.abspath(FILE_STORE_ROOT)):
+        raise HTTPException(status_code=400, detail="Invalid path")
+    if not os.path.isfile(safe_path):
+        raise HTTPException(status_code=404, detail="File not found")
+    return FileResponse(safe_path, filename=os.path.basename(safe_path))
+
+
+@router.delete("/api/files")
+def delete_file(path: str = Query(...)):
+    """Delete a file or empty folder."""
+    import shutil
+    safe_path = os.path.normpath(os.path.join(FILE_STORE_ROOT, path))
+    if not safe_path.startswith(os.path.abspath(FILE_STORE_ROOT)):
+        raise HTTPException(status_code=400, detail="Invalid path")
+    if not os.path.exists(safe_path):
+        raise HTTPException(status_code=404, detail="Not found")
+
+    if os.path.isdir(safe_path):
+        shutil.rmtree(safe_path)
+    else:
+        os.remove(safe_path)
+
+    # Also delete from S3
+    s3_client, bucket_name = _get_s3_client()
+    if s3_client:
+        try:
+            s3_key = f"files/{path}"
+            s3_client.delete_object(Bucket=bucket_name, Key=s3_key)
+        except Exception:
+            pass
+
+    return {"success": True}
+
+
+@router.post("/api/files/rename")
+def rename_file(path: str = Query(...), new_name: str = Query(...)):
+    """Rename a file or folder."""
+    safe_path = os.path.normpath(os.path.join(FILE_STORE_ROOT, path))
+    if not safe_path.startswith(os.path.abspath(FILE_STORE_ROOT)):
+        raise HTTPException(status_code=400, detail="Invalid path")
+    if not os.path.exists(safe_path):
+        raise HTTPException(status_code=404, detail="Not found")
+
+    parent = os.path.dirname(safe_path)
+    new_path = os.path.join(parent, new_name)
+    os.rename(safe_path, new_path)
+    return {"success": True, "path": os.path.relpath(new_path, FILE_STORE_ROOT)}

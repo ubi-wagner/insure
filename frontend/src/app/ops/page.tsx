@@ -297,6 +297,31 @@ export default function OpsPage() {
               </div>
             </div>
 
+            {/* Data file upload */}
+            <div className="bg-gray-900 border border-gray-800 rounded-lg p-4">
+              <div className="flex items-center justify-between mb-2">
+                <h3 className="text-xs font-semibold text-gray-400">Data Files</h3>
+                <label className="bg-blue-600 hover:bg-blue-700 text-white text-xs px-3 py-1.5 rounded font-medium cursor-pointer">
+                  Upload CSV
+                  <input type="file" accept=".csv" className="hidden" onChange={async (e) => {
+                    const file = e.target.files?.[0];
+                    if (!file) return;
+                    try {
+                      const formData = new FormData();
+                      formData.append("file", file);
+                      const res = await fetch("/api/proxy/admin/upload-data", { method: "POST", body: formData });
+                      if (res.ok) {
+                        const data = await res.json();
+                        alert(`Uploaded ${data.filename} (${(data.size_bytes / 1024 / 1024).toFixed(1)} MB)`);
+                      }
+                    } catch (err) { console.error("Upload failed:", err); }
+                    e.target.value = "";
+                  }} />
+                </label>
+              </div>
+              <p className="text-gray-600 text-[10px]">Upload DBPR CSVs, CAM licenses, payment history, or other data files. Files are saved locally + to S3 bucket.</p>
+            </div>
+
             {harvest && (
               <>
                 {/* Stats row */}
