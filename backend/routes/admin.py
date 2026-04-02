@@ -420,18 +420,24 @@ def _get_s3_client():
 async def upload_data_file(file: UploadFile = File(...)):
     """Upload a large data file (CSV, etc.) to the S3 bucket.
 
+    Streams to disk in chunks — handles files of any size.
     Also saves a local copy to backend/data/ for enricher access.
     """
-    content = await file.read()
     filename = file.filename or "unknown.csv"
 
-    # Save local copy for enrichers
+    # Stream to disk in chunks
     data_dir = os.path.join(os.path.dirname(__file__), "..", "data")
     os.makedirs(data_dir, exist_ok=True)
     local_path = os.path.join(data_dir, filename)
+    total_size = 0
     with open(local_path, "wb") as f:
-        f.write(content)
-    logger.info(f"Saved {filename} locally ({len(content):,} bytes)")
+        while True:
+            chunk = await file.read(1024 * 1024)
+            if not chunk:
+                break
+            f.write(chunk)
+            total_size += len(chunk)
+    logger.info(f"Saved {filename} locally ({total_size:,} bytes)")
 
     # Upload to S3 bucket if configured
     s3_url = None
@@ -439,21 +445,16 @@ async def upload_data_file(file: UploadFile = File(...)):
     if s3_client:
         try:
             s3_key = f"data/{filename}"
-            s3_client.put_object(
-                Bucket=bucket_name,
-                Key=s3_key,
-                Body=content,
-                ContentType="text/csv",
-            )
+            s3_client.upload_file(local_path, bucket_name, s3_key)
             s3_url = f"s3://{bucket_name}/{s3_key}"
-            logger.info(f"Uploaded {filename} to bucket ({len(content):,} bytes)")
+            logger.info(f"Uploaded {filename} to bucket ({total_size:,} bytes)")
         except Exception as e:
             logger.warning(f"S3 upload failed for {filename}: {e}")
 
     return {
         "success": True,
         "filename": filename,
-        "size_bytes": len(content),
+        "size_bytes": total_size,
         "local_path": local_path,
         "s3_url": s3_url,
     }
@@ -587,7 +588,7 @@ def create_folder(name: str = Query(...), path: str = Query("")):
 
 @router.post("/api/files/upload")
 async def upload_file(file: UploadFile = File(...), path: str = Query("")):
-    """Upload a file to a specific folder."""
+    """Upload a file to a specific folder. Streams to disk for large files."""
     safe_dir = os.path.normpath(os.path.join(FILE_STORE_ROOT, path))
     if not safe_dir.startswith(os.path.abspath(FILE_STORE_ROOT)):
         raise HTTPException(status_code=400, detail="Invalid path")
@@ -595,16 +596,25 @@ async def upload_file(file: UploadFile = File(...), path: str = Query("")):
 
     filename = file.filename or "unnamed"
     filepath = os.path.join(safe_dir, filename)
-    content = await file.read()
-    with open(filepath, "wb") as f:
-        f.write(content)
 
-    # Also upload to S3 if configured
+    # Stream to disk in 1MB chunks (handles files of any size)
+    total_size = 0
+    with open(filepath, "wb") as f:
+        while True:
+            chunk = await file.read(1024 * 1024)  # 1MB chunks
+            if not chunk:
+                break
+            f.write(chunk)
+            total_size += len(chunk)
+
+    logger.info(f"Uploaded {filename} ({total_size:,} bytes) to {safe_dir}")
+
+    # S3 upload for persistence (stream from saved file, not memory)
     s3_client, bucket_name = _get_s3_client()
     if s3_client:
         try:
             s3_key = f"files/{path}/{filename}" if path else f"files/{filename}"
-            s3_client.put_object(Bucket=bucket_name, Key=s3_key, Body=content)
+            s3_client.upload_file(filepath, bucket_name, s3_key)
         except Exception as e:
             logger.warning(f"S3 upload failed: {e}")
 

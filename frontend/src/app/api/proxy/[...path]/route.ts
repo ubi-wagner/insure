@@ -10,6 +10,13 @@ import { NextRequest, NextResponse } from "next/server";
 
 const API_URL = process.env.API_URL || "http://localhost:8000";
 
+// Disable Next.js body parsing — we stream the raw body through
+export const config = {
+  api: {
+    bodyParser: false,
+  },
+};
+
 async function proxyRequest(request: NextRequest, params: Promise<{ path: string[] }>) {
   const { path } = await params;
   const backendPath = "/api/" + path.join("/");
@@ -21,7 +28,10 @@ async function proxyRequest(request: NextRequest, params: Promise<{ path: string
   });
 
   const headers = new Headers();
-  headers.set("Content-Type", request.headers.get("Content-Type") || "application/json");
+  const contentType = request.headers.get("Content-Type");
+  if (contentType) {
+    headers.set("Content-Type", contentType);
+  }
   headers.set("Accept", request.headers.get("Accept") || "application/json");
 
   const fetchOptions: RequestInit = {
@@ -29,9 +39,16 @@ async function proxyRequest(request: NextRequest, params: Promise<{ path: string
     headers,
   };
 
-  // Forward body for POST/PUT/PATCH
+  // Forward body for POST/PUT/PATCH — stream binary for multipart, text for JSON
   if (["POST", "PUT", "PATCH"].includes(request.method)) {
-    fetchOptions.body = await request.text();
+    if (contentType?.includes("multipart/form-data")) {
+      // Stream the raw body through for file uploads (supports large files)
+      fetchOptions.body = request.body;
+      // @ts-expect-error - duplex is needed for streaming request bodies
+      fetchOptions.duplex = "half";
+    } else {
+      fetchOptions.body = await request.text();
+    }
   }
 
   try {
@@ -51,20 +68,20 @@ async function proxyRequest(request: NextRequest, params: Promise<{ path: string
 
     // Handle file downloads — pass through binary with all headers
     const contentDisposition = response.headers.get("content-disposition");
-    const contentType = response.headers.get("content-type") || "application/json";
-    if (contentDisposition || !contentType.includes("json")) {
+    const respContentType = response.headers.get("content-type") || "application/json";
+    if (contentDisposition || (!respContentType.includes("json") && !respContentType.includes("text/html"))) {
       const blob = await response.arrayBuffer();
-      const headers: Record<string, string> = { "Content-Type": contentType };
-      if (contentDisposition) headers["Content-Disposition"] = contentDisposition;
+      const respHeaders: Record<string, string> = { "Content-Type": respContentType };
+      if (contentDisposition) respHeaders["Content-Disposition"] = contentDisposition;
       const contentLength = response.headers.get("content-length");
-      if (contentLength) headers["Content-Length"] = contentLength;
-      return new NextResponse(blob, { status: response.status, headers });
+      if (contentLength) respHeaders["Content-Length"] = contentLength;
+      return new NextResponse(blob, { status: response.status, headers: respHeaders });
     }
 
     const data = await response.text();
     return new NextResponse(data, {
       status: response.status,
-      headers: { "Content-Type": contentType },
+      headers: { "Content-Type": respContentType },
     });
   } catch (error) {
     return NextResponse.json(
