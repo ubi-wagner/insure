@@ -57,17 +57,20 @@ def build_overpass_query(bbox: dict, min_levels: int = MIN_LEVELS) -> str:
     bb = f"{bbox['south']},{bbox['west']},{bbox['north']},{bbox['east']}"
     levels_regex = f"^[{min_levels}-9]|[1-9][0-9]"
 
+    # All building types filtered by min levels to avoid returning
+    # thousands of small apartment buildings
     return f"""
-[out:json][timeout:60];
+[out:json][timeout:90];
 (
-  way["building"="apartments"]({bb});
+  way["building"="apartments"]["building:levels"~"{levels_regex}"]({bb});
   way["building"="residential"]["building:levels"~"{levels_regex}"]({bb});
-  way["building"="condominium"]({bb});
+  way["building"="condominium"]["building:levels"~"{levels_regex}"]({bb});
   way["building"="hotel"]["building:levels"~"{levels_regex}"]({bb});
-  relation["building"="apartments"]({bb});
-  relation["building"="condominium"]({bb});
+  way["building"]["building:levels"~"{levels_regex}"]["building"!="house"]["building"!="garage"]["building"!="yes"]({bb});
+  relation["building"="apartments"]["building:levels"~"{levels_regex}"]({bb});
+  relation["building"="condominium"]["building:levels"~"{levels_regex}"]({bb});
 );
-out center tags geom;
+out center tags;
 """
 
 
@@ -158,18 +161,25 @@ def estimate_tiv(stories: int | None, footprint_sqft: float | None, construction
     return round(tiv, -3)  # Round to nearest thousand
 
 
-def query_overpass(query: str) -> list[dict]:
-    """Execute an Overpass API query and return elements."""
-    try:
-        with httpx.Client(timeout=60) as client:
-            resp = client.post(OVERPASS_URL, data={"data": query})
-            resp.raise_for_status()
-            data = resp.json()
-            return data.get("elements", [])
-    except Exception as e:
-        logger.error(f"Overpass API error: {e}")
-        emit(EventType.HUNTER, "overpass_query", EventStatus.ERROR, detail=str(e)[:200])
-        return []
+def query_overpass(query: str, retries: int = 2) -> list[dict]:
+    """Execute an Overpass API query and return elements. Retries on timeout."""
+    for attempt in range(retries + 1):
+        try:
+            with httpx.Client(timeout=90) as client:
+                resp = client.post(OVERPASS_URL, data={"data": query})
+                resp.raise_for_status()
+                data = resp.json()
+                return data.get("elements", [])
+        except Exception as e:
+            is_timeout = "504" in str(e) or "timeout" in str(e).lower() or "429" in str(e)
+            if is_timeout and attempt < retries:
+                wait = (attempt + 1) * 15  # 15s, 30s
+                logger.warning(f"Overpass timeout (attempt {attempt + 1}), retrying in {wait}s...")
+                time.sleep(wait)
+                continue
+            logger.error(f"Overpass API error: {e}")
+            emit(EventType.HUNTER, "overpass_query", EventStatus.ERROR, detail=str(e)[:200])
+            return []
 
 
 def reverse_geocode(lat: float, lon: float) -> dict:
@@ -193,11 +203,28 @@ def reverse_geocode(lat: float, lon: float) -> dict:
 def parse_osm_element(element: dict) -> dict | None:
     """Parse an OSM element into a property candidate with construction + TIV estimate."""
     tags = element.get("tags", {})
-    center = element.get("center", {})
+    center = element.get("center") or {}
 
     lat = center.get("lat") or element.get("lat")
     lon = center.get("lon") or element.get("lon")
-    if not lat or not lon:
+
+    # Fallback: compute center from geometry nodes
+    if (lat is None or lon is None) and element.get("geometry"):
+        geom = element["geometry"]
+        if isinstance(geom, list) and len(geom) >= 2:
+            lats = [p["lat"] for p in geom if "lat" in p]
+            lons = [p["lon"] for p in geom if "lon" in p]
+            if lats and lons:
+                lat = sum(lats) / len(lats)
+                lon = sum(lons) / len(lons)
+
+    # Fallback: compute center from bounds
+    if (lat is None or lon is None) and element.get("bounds"):
+        bounds = element["bounds"]
+        lat = (bounds.get("minlat", 0) + bounds.get("maxlat", 0)) / 2
+        lon = (bounds.get("minlon", 0) + bounds.get("maxlon", 0)) / 2
+
+    if lat is None or lon is None:
         return None
 
     name = tags.get("name", "")
@@ -319,10 +346,35 @@ def process_region(region: RegionOfInterest, db: Session) -> int:
          detail=f"Region '{region.name}' county={county}", region_id=region.id)
     logger.info(f"Processing region '{region.name}' - County: {county}")
 
-    # Query OSM Overpass for buildings
+    # Query OSM Overpass for buildings with known levels
     min_levels = (region.parameters or {}).get("stories", MIN_LEVELS)
     query = build_overpass_query(bbox, min_levels)
     elements = query_overpass(query)
+
+    emit(EventType.HUNTER, "overpass_query", EventStatus.SUCCESS,
+         detail=f"{len(elements)} buildings with levels in '{region.name}'", region_id=region.id)
+
+    # Fallback: also find condominiums without levels tag (common in FL)
+    if len(elements) < 200:
+        bb = f"{bbox['south']},{bbox['west']},{bbox['north']},{bbox['east']}"
+        fallback_query = f"""
+[out:json][timeout:60];
+(
+  way["building"="condominium"]["building:levels"!~"."]({bb});
+  relation["building"="condominium"]["building:levels"!~"."]({bb});
+);
+out center tags;
+"""
+        fallback = query_overpass(fallback_query)
+        if fallback:
+            # Dedupe against already-found elements
+            existing_ids = {e.get("id") for e in elements}
+            new_elements = [e for e in fallback if e.get("id") not in existing_ids]
+            elements.extend(new_elements[:100])  # Cap at 100 untagged condos
+            if new_elements:
+                emit(EventType.HUNTER, "overpass_query", EventStatus.SUCCESS,
+                     detail=f"+{len(new_elements[:100])} condos without levels in '{region.name}'",
+                     region_id=region.id)
 
     if not elements:
         logger.info(f"No buildings found in region '{region.name}'")
@@ -330,13 +382,18 @@ def process_region(region: RegionOfInterest, db: Session) -> int:
              detail=f"0 buildings in '{region.name}'", region_id=region.id)
 
     found = 0
+    skipped_parse = 0
+    skipped_bounds = 0
+    skipped_dupe = 0
     for element in elements:
         prop = parse_osm_element(element)
         if not prop:
+            skipped_parse += 1
             continue
 
         # Verify within bounds (Overpass bbox is approximate)
         if not is_within_bounds(prop["latitude"], prop["longitude"], bbox):
+            skipped_bounds += 1
             continue
 
         # Enrich with geocode if address is sparse
@@ -349,16 +406,28 @@ def process_region(region: RegionOfInterest, db: Session) -> int:
         # Rate limit Nominatim (1 req/sec policy)
         time.sleep(1.1)
 
-        found += save_property(prop, region, db)
+        result = save_property(prop, region, db)
+        if result:
+            found += result
+        else:
+            skipped_dupe += 1
 
     # Mark region as completed
     region.status = RegionStatus.COMPLETED
     db.commit()
 
+    detail = f"Region '{region.name}' done, {found} saved"
+    if skipped_dupe:
+        detail += f", {skipped_dupe} dupes"
+    if skipped_parse:
+        detail += f", {skipped_parse} unparseable"
+    if skipped_bounds:
+        detail += f", {skipped_bounds} out-of-bounds"
+
     emit(EventType.HUNTER, "process_region", EventStatus.SUCCESS,
-         detail=f"Region '{region.name}' done, {found}/{len(elements)} properties saved",
-         region_id=region.id)
-    logger.info(f"Region '{region.name}' completed. Found {found} new properties from {len(elements)} OSM elements.")
+         detail=detail, region_id=region.id)
+    logger.info(f"Region '{region.name}' completed. {found} new from {len(elements)} elements. "
+                f"Skipped: {skipped_dupe} dupe, {skipped_parse} parse, {skipped_bounds} bounds.")
     return found
 
 

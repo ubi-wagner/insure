@@ -71,6 +71,7 @@ interface PipelineProps {
 
 export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, selectedLeadId, onFlyTo, onOpenDetails }: PipelineProps) {
   const [leads, setLeads] = useState<Lead[]>([]);
+  const [totalFetched, setTotalFetched] = useState(0);
   const [sortBy, setSortBy] = useState<SortBy>("date");
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [votingId, setVotingId] = useState<number | null>(null);
@@ -111,7 +112,9 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
     try {
       const res = await fetch(`/api/proxy/leads?${buildQueryString()}`);
       if (res.ok) {
-        let data: Lead[] = await res.json();
+        const allData: Lead[] = await res.json();
+        setTotalFetched(allData.length);
+        let data = [...allData];
 
         // Client-side: filter out archived/churned when "active" is selected
         if (filters.status_filter === "active") {
@@ -371,9 +374,29 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
         </div>
       )}
 
-      {/* Count */}
-      {leads.length > 0 && (
-        <p className="text-gray-600 text-xs mb-2">{leads.length} lead{leads.length !== 1 ? "s" : ""}</p>
+      {/* Count + stage summary */}
+      {totalFetched > 0 && (
+        <div className="mb-2">
+          <div className="flex items-center gap-2 text-xs">
+            <span className="text-gray-500">
+              {leads.length === totalFetched
+                ? `${leads.length} lead${leads.length !== 1 ? "s" : ""}`
+                : `${leads.length} of ${totalFetched} leads (filtered)`
+              }
+            </span>
+            {leads.length > 0 && (
+              <div className="flex gap-1 ml-auto">
+                {Object.entries(
+                  leads.reduce((acc, l) => { acc[l.status] = (acc[l.status] || 0) + 1; return acc; }, {} as Record<string, number>)
+                ).map(([stage, count]) => (
+                  <span key={stage} className={`px-1.5 py-0.5 rounded text-[10px] ${STAGE_BADGE[stage] || STAGE_BADGE.NEW}`}>
+                    {count} {stage.toLowerCase()}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
       )}
 
       {/* Empty state */}
