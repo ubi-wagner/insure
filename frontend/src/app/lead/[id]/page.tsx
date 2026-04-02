@@ -259,9 +259,9 @@ export default function LeadDetailPage() {
           <div className="mt-2 bg-amber-900/30 border border-amber-800 rounded px-3 py-2 flex items-center justify-between">
             <p className="text-amber-300 text-xs">{stageError}</p>
             <button onClick={() => {
-              const nextStage = lead.pipeline_stage === "NEW" ? "CANDIDATE" :
-                lead.pipeline_stage === "CANDIDATE" ? "TARGET" :
-                lead.pipeline_stage === "TARGET" ? "OPPORTUNITY" : "";
+              const nextStage = lead.pipeline_stage === "TARGET" ? "LEAD" :
+                lead.pipeline_stage === "LEAD" ? "OPPORTUNITY" :
+                lead.pipeline_stage === "OPPORTUNITY" ? "CUSTOMER" : "";
               if (nextStage) handleStageChange(nextStage, true);
             }}
               className="bg-amber-800 hover:bg-amber-700 text-amber-200 text-xs px-2 py-1 rounded ml-3 shrink-0">
@@ -318,21 +318,20 @@ export default function LeadDetailPage() {
         {activeTab === "overview" && (
           <div className="space-y-6">
             {/* Building Profile */}
-            {!!(chars.construction_class || chars.stories || chars.building_type) && (
+            {!!(chars.construction_class || chars.dor_construction_class || chars.stories || chars.building_type || chars.year_built || chars.dor_year_built || chars.units_estimate || chars.tiv_estimate) && (
               <div>
                 <h2 className="text-sm font-semibold text-gray-300 mb-3">Building Profile</h2>
                 <div className="bg-gray-900 border border-gray-800 rounded-lg p-4">
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                    {!!chars.construction_class && (
+                    {!!(chars.construction_class || chars.dor_construction_class) && (
                       <div>
                         <p className="text-gray-500 text-xs">Construction Class</p>
                         <p className={`text-sm font-medium mt-1 ${
-                          String(chars.construction_class).includes("Fire Resistive") ? "text-emerald-400" :
-                          String(chars.construction_class).includes("Non-Combustible") ? "text-sky-400" :
-                          String(chars.construction_class).includes("Masonry") ? "text-amber-400" :
-                          String(chars.construction_class).includes("Frame") ? "text-red-400" : "text-white"
-                        }`}>{String(chars.construction_class)}</p>
-                        {chars.iso_class ? <p className="text-gray-600 text-xs mt-0.5">ISO Class {String(chars.iso_class)}</p> : null}
+                          String(chars.construction_class || chars.dor_construction_class).includes("Fire Resistive") ? "text-emerald-400" :
+                          String(chars.construction_class || chars.dor_construction_class).includes("Non-Combustible") ? "text-sky-400" :
+                          String(chars.construction_class || chars.dor_construction_class).includes("Masonry") ? "text-amber-400" :
+                          String(chars.construction_class || chars.dor_construction_class).includes("Frame") ? "text-red-400" : "text-white"
+                        }`}>{String(chars.construction_class || chars.dor_construction_class)}</p>
                       </div>
                     )}
                     {!!chars.stories && (
@@ -353,16 +352,16 @@ export default function LeadDetailPage() {
                         <p className="text-white text-sm font-medium mt-1 capitalize">{String(chars.building_material)}</p>
                       </div>
                     )}
-                    {!!chars.year_built && (
+                    {!!(chars.year_built || chars.dor_year_built) && (
                       <div>
                         <p className="text-gray-500 text-xs">Year Built</p>
-                        <p className="text-white text-sm font-medium mt-1">{String(chars.year_built)}</p>
+                        <p className="text-white text-sm font-medium mt-1">{String(chars.year_built || chars.dor_year_built)}</p>
                       </div>
                     )}
-                    {!!chars.units_estimate && (
+                    {!!(chars.units_estimate || chars.dor_num_units) && (
                       <div>
-                        <p className="text-gray-500 text-xs">Est. Units</p>
-                        <p className="text-white text-sm font-medium mt-1">~{String(chars.units_estimate)}</p>
+                        <p className="text-gray-500 text-xs">Units</p>
+                        <p className="text-white text-sm font-medium mt-1">{String(chars.units_estimate || chars.dor_num_units)}</p>
                       </div>
                     )}
                     {!!chars.footprint_sqft && (

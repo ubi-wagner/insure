@@ -61,8 +61,13 @@ TARGET_USE_CODES = {
     "039": "Hotels/Motels",
 }
 
-# Also include if they have enough units
+# Also include if they have enough units (for non-target use codes)
 MIN_UNITS_FOR_OTHER = 10
+
+# Minimum thresholds to filter out non-starters on ingest
+# Properties below these aren't worth pursuing for commercial insurance
+MIN_MARKET_VALUE = 500_000      # $500K minimum market value
+MIN_UNITS_TARGET = 4            # At least 4 units for condos/multi-family
 
 
 def _find_nal_file(county_no: str) -> str | None:
@@ -203,12 +208,30 @@ def seed_county(county_no: str, db: Session) -> dict:
                     if not num_units or num_units < MIN_UNITS_FOR_OTHER:
                         continue
 
+                # Weed out non-starters: too small or too low value
+                jv_raw = _safe_int(_get_col(row, col_map, "JV"))
+                if jv_raw is not None and 0 < jv_raw < MIN_MARKET_VALUE:
+                    continue
+                if dor_uc in ("004", "005", "008") and num_units and num_units < MIN_UNITS_TARGET:
+                    continue
+
                 filtered += 1
 
                 # Get physical address
                 phy_addr = _get_col(row, col_map, "PHY_ADDR1").strip()
+                phy_city = _get_col(row, col_map, "PHY_CITY").strip()
+                phy_zip = _get_col(row, col_map, "PHY_ZIPCD").strip()
                 parcel_id = _get_col(row, col_map, "PARCEL_ID").strip()
                 owner = _get_col(row, col_map, "OWN_NAME").strip()
+
+                # Build full address for geocoding
+                full_addr = phy_addr
+                if phy_city:
+                    full_addr += f", {phy_city}"
+                if phy_zip:
+                    full_addr += f", FL {phy_zip}"
+                elif phy_city:
+                    full_addr += ", FL"
 
                 if not phy_addr and not owner:
                     continue
@@ -223,7 +246,7 @@ def seed_county(county_no: str, db: Session) -> dict:
                         continue
 
                 # Build characteristics from NAL data
-                jv = _safe_int(_get_col(row, col_map, "JV"))
+                jv = jv_raw  # Already extracted above for filtering
                 tiv_estimate = round(jv * 1.3, -3) if jv and jv > 0 else None
                 const_class = _get_col(row, col_map, "CONST_CLASS").strip() or None
                 act_yr_blt = _safe_int(_get_col(row, col_map, "ACT_YR_BLT"))
@@ -249,6 +272,8 @@ def seed_county(county_no: str, db: Session) -> dict:
                     "tiv": f"${tiv_estimate:,.0f}" if tiv_estimate else None,
                     "construction_class": const_class,
                     "imp_qual": _get_col(row, col_map, "IMP_QUAL").strip() or None,
+                    "phy_city": phy_city or None,
+                    "phy_zip": phy_zip or None,
                 }
 
                 # Owner address
@@ -308,7 +333,7 @@ def seed_county(county_no: str, db: Session) -> dict:
 
                 entity = Entity(
                     name=name,
-                    address=phy_addr,
+                    address=full_addr if full_addr != phy_addr else phy_addr,
                     county=county_name,
                     characteristics=characteristics,
                     enrichment_sources=enrichment_sources,

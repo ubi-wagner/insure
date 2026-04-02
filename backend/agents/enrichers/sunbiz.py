@@ -162,13 +162,14 @@ def enrich_sunbiz(entity: Entity, db: Session) -> bool:
     search_name = _build_search_name(entity.name)
     search_url = f"{SUNBIZ_SEARCH_URL}?searchNameOrder={quote_plus(search_name)}&searchTypeOrder=STARTS"
 
-    # Search for the association
+    # Try to search — may get 403 from cloud servers
     results = _search_sunbiz(search_name)
 
     updates: dict = {
         "sunbiz_search_url": search_url,
         "sunbiz_search_name": search_name,
     }
+    # Even if scraping fails, we still have the search URL for manual lookup
     contacts_added = []
 
     if results:
