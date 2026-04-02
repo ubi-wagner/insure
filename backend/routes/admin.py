@@ -87,34 +87,43 @@ FL_HARVEST_AREAS = [
 def _run_bulk_harvest():
     """Background job: harvest all FL coastal strips."""
     import logging
+    import time
     from agents.hunter import _harvest_to_cache, _is_area_harvested
     from services.event_bus import EventStatus, EventType, emit
 
     logger = logging.getLogger(__name__)
     db = SessionLocal()
     total = 0
+    skipped = 0
+    failed = 0
     try:
-        for strip in FL_HARVEST_AREAS:
+        for i, strip in enumerate(FL_HARVEST_AREAS):
             bbox = {
                 "south": strip["south"], "north": strip["north"],
                 "west": strip["west"], "east": strip["east"],
             }
             if _is_area_harvested(bbox, db):
-                logger.info(f"Skipping {strip['name']} — already harvested")
+                skipped += 1
                 continue
 
-            logger.info(f"Harvesting {strip['name']}...")
+            logger.info(f"Harvesting {strip['name']} ({i+1}/{len(FL_HARVEST_AREAS)})...")
             emit(EventType.HUNTER, "bulk_harvest", EventStatus.PENDING,
-                 detail=f"Harvesting {strip['name']}...")
-            cached = _harvest_to_cache(bbox, db, region_name=strip["name"])
-            total += cached
+                 detail=f"({i+1}/{len(FL_HARVEST_AREAS)}) {strip['name']}...")
+            try:
+                cached = _harvest_to_cache(bbox, db, region_name=strip["name"])
+                total += cached
+            except Exception as e:
+                failed += 1
+                logger.warning(f"Harvest failed for {strip['name']}: {e}")
+                emit(EventType.HUNTER, "bulk_harvest_area_failed", EventStatus.ERROR,
+                     detail=f"{strip['name']}: {str(e)[:100]}")
 
-            # Small delay between areas to be nice to Overpass
-            import time
-            time.sleep(5)
+            # 15s between areas — Overpass rate limits aggressively
+            time.sleep(15)
 
-        emit(EventType.HUNTER, "bulk_harvest", EventStatus.SUCCESS,
-             detail=f"Bulk harvest complete: {total} buildings cached across {len(FL_HARVEST_AREAS)} areas")
+        detail = f"Bulk harvest done: {total} buildings cached, {skipped} skipped, {failed} failed"
+        emit(EventType.HUNTER, "bulk_harvest", EventStatus.SUCCESS, detail=detail)
+        logger.info(detail)
     except Exception as e:
         logger.error(f"Bulk harvest failed: {e}")
         emit(EventType.HUNTER, "bulk_harvest", EventStatus.ERROR,
