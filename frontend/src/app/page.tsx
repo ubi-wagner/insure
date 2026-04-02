@@ -5,7 +5,6 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import MapView from "@/components/MapView";
 import LeadPipeline from "@/components/LeadPipeline";
-import StatusBar from "@/components/StatusBar";
 
 interface LeadLocation {
   id: number;
@@ -23,8 +22,8 @@ export default function Dashboard() {
   const [hoveredLeadId, setHoveredLeadId] = useState<number | null>(null);
   const [selectedLeadId, setSelectedLeadId] = useState<number | null>(null);
   const [flyToTarget, setFlyToTarget] = useState<{ lat: number; lng: number } | null>(null);
-  const [detailIds, setDetailIds] = useState<number[]>([]);
   const [huntingStatus, setHuntingStatus] = useState<string | null>(null);
+  const [mobileView, setMobileView] = useState<"map" | "pipeline">("pipeline");
   const huntPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const router = useRouter();
 
@@ -32,9 +31,17 @@ export default function Dashboard() {
     setLeads(loadedLeads);
   }, []);
 
-  // Poll for region completion after hunt starts
+  function handleMarkerClick(id: number) {
+    setSelectedLeadId(id);
+    const lead = leads.find((l: LeadLocation) => l.id === id);
+    if (lead?.latitude && lead?.longitude) {
+      setFlyToTarget({ lat: lead.latitude, lng: lead.longitude });
+    }
+  }
+
   function startHuntPolling(regionId: number) {
-    setHuntingStatus("Hunting...");
+    setHuntingStatus("Discovering properties...");
+    setMobileView("pipeline");
     if (huntPollRef.current) clearInterval(huntPollRef.current);
     let polls = 0;
     huntPollRef.current = setInterval(async () => {
@@ -44,84 +51,62 @@ export default function Dashboard() {
         if (!res.ok) return;
         const data = await res.json();
         if (data.status === "COMPLETED") {
-          setHuntingStatus(`Found ${data.lead_count} properties`);
-          setRefreshKey((k) => k + 1);
+          setHuntingStatus(data.lead_count > 0
+            ? `Found ${data.lead_count} properties`
+            : "No matching buildings in this area"
+          );
+          setRefreshKey((k: number) => k + 1);
           if (huntPollRef.current) clearInterval(huntPollRef.current);
-          setTimeout(() => setHuntingStatus(null), 5000);
+          setTimeout(() => setHuntingStatus(null), 6000);
         } else {
-          setHuntingStatus(`Hunting... ${data.lead_count > 0 ? `(${data.lead_count} found)` : ""}`);
-          // Also refresh leads periodically so results appear as they're found
-          if (polls % 2 === 0) setRefreshKey((k) => k + 1);
+          setHuntingStatus(`Discovering${data.lead_count > 0 ? ` (${data.lead_count})` : "..."}`);
+          if (polls % 2 === 0) setRefreshKey((k: number) => k + 1);
         }
       } catch {}
     }, 3000);
   }
 
-  // Cleanup polling on unmount
   useEffect(() => {
     return () => { if (huntPollRef.current) clearInterval(huntPollRef.current); };
   }, []);
 
-  function handleMarkerClick(id: number) {
-    setSelectedLeadId(id);
-    // Find the lead and zoom to it
-    const lead = leads.find(l => l.id === id);
-    if (lead?.latitude && lead?.longitude) {
-      setFlyToTarget({ lat: lead.latitude, lng: lead.longitude });
-    }
-  }
-
-  function handleOpenDetails(id: number) {
-    setDetailIds(prev => {
-      if (prev.includes(id)) return prev;
-      const next = [...prev, id];
-      return next.length > 5 ? next.slice(-5) : next; // max 5 open
-    });
-    router.push(`/lead/${id}`);
-  }
-
-  async function handleLogout() {
-    await fetch("/api/auth", { method: "DELETE" });
-    router.push("/login");
-    router.refresh();
-  }
-
   return (
-    <div className="h-screen flex flex-col">
-      {/* Top Bar */}
-      <header className="bg-gray-900 border-b border-gray-800 px-6 py-2 flex items-center justify-between shrink-0">
-        <div className="flex items-center gap-3">
-          <h1 className="text-lg font-bold">Insure</h1>
-          <span className="text-gray-500 text-sm">Hunt · Kill · Cook</span>
+    <div className="h-screen flex flex-col bg-gray-950 text-white">
+      {/* Header */}
+      <header className="bg-gray-900 border-b border-gray-800 px-3 md:px-4 py-2 flex items-center justify-between shrink-0">
+        <div className="flex items-center gap-2">
+          <h1 className="text-base font-bold tracking-tight">Insure</h1>
+          <span className="text-gray-600 text-xs hidden sm:inline">Pipeline</span>
         </div>
-        <div className="flex items-center gap-4">
-          {detailIds.length > 0 && (
-            <div className="flex gap-1">
-              {detailIds.map((id) => (
-                <Link key={id} href={`/lead/${id}`}
-                  className="bg-gray-800 text-gray-400 hover:text-white text-xs px-2 py-1 rounded">
-                  #{id}
-                </Link>
-              ))}
+        <div className="flex items-center gap-2">
+          {huntingStatus && (
+            <div className="flex items-center gap-1.5 bg-blue-900/30 border border-blue-800/50 rounded-full px-2.5 py-1">
+              <div className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-pulse" />
+              <span className="text-blue-300 text-[11px]">{huntingStatus}</span>
             </div>
           )}
-          <Link href="/events" className="text-gray-400 hover:text-white text-sm">
-            Events
-          </Link>
-          <button onClick={handleLogout} className="text-gray-400 hover:text-white text-sm">
-            Logout
-          </button>
+          <Link href="/ops" className="text-gray-500 hover:text-white text-xs">Ops</Link>
         </div>
       </header>
 
-      <StatusBar />
+      {/* Mobile tab toggle */}
+      <div className="md:hidden flex border-b border-gray-800">
+        <button onClick={() => setMobileView("pipeline")}
+          className={`flex-1 py-2.5 text-sm font-medium text-center ${mobileView === "pipeline" ? "text-white border-b-2 border-blue-500" : "text-gray-500"}`}>
+          Pipeline ({leads.length})
+        </button>
+        <button onClick={() => setMobileView("map")}
+          className={`flex-1 py-2.5 text-sm font-medium text-center ${mobileView === "map" ? "text-white border-b-2 border-blue-500" : "text-gray-500"}`}>
+          Map
+        </button>
+      </div>
 
-      {/* Split layout: map left, cards right */}
+      {/* Split layout — side by side on desktop, tabbed on mobile */}
       <main className="flex-1 flex overflow-hidden">
-        {/* Map panel */}
-        <div className="flex-1 relative">
+        {/* Map — hidden on mobile when pipeline is active */}
+        <div className={`flex-1 relative ${mobileView === "pipeline" ? "hidden md:block" : ""}`}>
           <MapView
-            onRegionCreated={(regionId) => startHuntPolling(regionId)}
+            onRegionCreated={(regionId: number) => startHuntPolling(regionId)}
             leads={leads}
             hoveredLeadId={hoveredLeadId}
             selectedLeadId={selectedLeadId}
@@ -130,22 +115,20 @@ export default function Dashboard() {
           />
         </div>
 
-        {/* Lead panel */}
-        <div className="w-[420px] border-l border-gray-800 bg-gray-950 flex flex-col shrink-0">
-          <div className="p-4 overflow-y-auto flex-1">
-            {huntingStatus && (
-              <div className="bg-blue-900/30 border border-blue-800 rounded-lg px-3 py-2 mb-3 flex items-center gap-2">
-                <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse" />
-                <span className="text-blue-300 text-xs font-medium">{huntingStatus}</span>
-              </div>
-            )}
+        {/* Pipeline — full width on mobile, fixed width on desktop */}
+        <div className={`w-full md:w-[380px] md:border-l border-gray-800 bg-gray-950 flex flex-col shrink-0 ${mobileView === "map" ? "hidden md:flex" : "flex"}`}>
+          <div className="p-3 flex-1 overflow-hidden flex flex-col">
             <LeadPipeline
               refreshKey={refreshKey}
               onLeadsLoaded={handleLeadsLoaded}
               onLeadHover={setHoveredLeadId}
               selectedLeadId={selectedLeadId}
-              onFlyTo={(lat, lng, id) => { setFlyToTarget({ lat, lng }); setSelectedLeadId(id); }}
-              onOpenDetails={handleOpenDetails}
+              onFlyTo={(lat: number, lng: number, id: number) => {
+                setFlyToTarget({ lat, lng });
+                setSelectedLeadId(id);
+                setMobileView("map");
+              }}
+              onOpenDetails={(id: number) => router.push(`/lead/${id}`)}
             />
           </div>
         </div>

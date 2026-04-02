@@ -331,7 +331,7 @@ export default function MapViewInner({
       <form onSubmit={handleSearch} className="absolute top-3 left-3 z-[1000] flex gap-2">
         <input type="text" placeholder="Search zip or address..."
           value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)}
-          className="bg-gray-900/90 border border-gray-700 rounded px-3 py-2 text-white text-sm w-56 focus:outline-none focus:border-blue-500" />
+          className="bg-gray-900/90 border border-gray-700 rounded px-3 py-2 text-white text-sm w-40 sm:w-56 focus:outline-none focus:border-blue-500" />
         <button type="submit" className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded text-sm font-medium">Go</button>
       </form>
 
@@ -368,7 +368,7 @@ export default function MapViewInner({
       {/* Region form */}
       {showForm && (
         <div className="absolute inset-0 bg-black/50 flex items-center justify-center z-[1001]">
-          <form onSubmit={handleSubmitRegion} className="bg-gray-900 p-6 rounded-xl border border-gray-700 w-96">
+          <form onSubmit={handleSubmitRegion} className="bg-gray-900 p-4 md:p-6 rounded-xl border border-gray-700 w-[calc(100%-2rem)] max-w-96 mx-4">
             <h3 className="text-lg font-bold mb-4">New Hunt Region</h3>
             {pendingBounds && (
               <p className="text-gray-500 text-xs mb-3">

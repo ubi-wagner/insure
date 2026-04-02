@@ -361,36 +361,12 @@ def vote_lead(entity_id: int, vote: VoteRequest, db: Session = Depends(get_db)):
     ledger_event = LeadLedger(entity_id=entity_id, action_type=action)
     db.add(ledger_event)
 
-    # Update pipeline stage
-    if action == ActionType.USER_THUMB_UP and entity.pipeline_stage == "NEW":
-        entity.pipeline_stage = "CANDIDATE"
-    elif action == ActionType.USER_THUMB_DOWN:
-        entity.pipeline_stage = "ARCHIVED"
-
+    # Vote records the user's intent but does NOT change pipeline stage.
+    # Stage changes are explicit user actions via the stage endpoint.
     db.commit()
 
     emit(EventType.DB_OPERATION, "vote_lead", EventStatus.SUCCESS,
          detail=f"{action.value} on '{entity.name}'", entity_id=entity_id)
-
-    # If thumbed up, trigger CANDIDATE-stage enrichments + AI deep dive
-    if action == ActionType.USER_THUMB_UP:
-        # Run CANDIDATE enrichments (Sunbiz, etc.)
-        try:
-            from agents.enrichers.pipeline import run_on_candidate
-            run_on_candidate(entity, db)
-        except Exception as e:
-            logger.warning(f"CANDIDATE enrichment failed for entity {entity_id}: {e}")
-
-        # AI Kill & Cook analysis
-        emit(EventType.AI_ANALYZER, "deep_dive_start", EventStatus.PENDING,
-             detail=f"Starting for '{entity.name}'", entity_id=entity_id)
-        try:
-            from services.ai_analyzer import trigger_deep_dive
-            trigger_deep_dive(entity_id, db)
-        except Exception as e:
-            logger.error(f"Deep dive failed for entity {entity_id}: {e}")
-            emit(EventType.AI_ANALYZER, "deep_dive", EventStatus.ERROR,
-                 detail=str(e)[:200], entity_id=entity_id)
 
     return {"success": True, "action": action.value, "pipeline_stage": entity.pipeline_stage}
 
@@ -550,12 +526,24 @@ def change_stage(entity_id: int, req: StageChangeRequest, db: Session = Depends(
     emit(EventType.DB_OPERATION, "stage_change", EventStatus.SUCCESS,
          detail=f"'{entity.name}': {old_stage} → {req.stage}", entity_id=entity_id)
 
-    # Trigger stage-appropriate enrichments
+    # Trigger stage-appropriate enrichments (data population only, no stage changes)
     try:
         from agents.enrichers.pipeline import run_enrichment_for_stage
         run_enrichment_for_stage(entity, req.stage, db)
     except Exception as e:
         logger.warning(f"Enrichment on stage change failed for entity {entity_id}: {e}")
+
+    # On CANDIDATE: also run AI Kill & Cook for insurance intel + email generation
+    if req.stage == "CANDIDATE":
+        try:
+            from services.ai_analyzer import trigger_deep_dive
+            emit(EventType.AI_ANALYZER, "deep_dive_start", EventStatus.PENDING,
+                 detail=f"Starting for '{entity.name}'", entity_id=entity_id)
+            trigger_deep_dive(entity_id, db)
+        except Exception as e:
+            logger.error(f"Deep dive failed for entity {entity_id}: {e}")
+            emit(EventType.AI_ANALYZER, "deep_dive", EventStatus.ERROR,
+                 detail=str(e)[:200], entity_id=entity_id)
 
     return {"success": True, "pipeline_stage": entity.pipeline_stage}
 

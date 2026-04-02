@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 DBPR_CONDO_SEARCH = "https://www.myfloridalicense.com/wl11.asp"
 DBPR_CONDO_PORTAL = "https://condos.myfloridalicense.com"
-CAM_LICENSE_SEARCH = "https://www.myfloridalicense.com/wl11.asp?mode=0&SID=&bession=&page=LicenseDetail"
+CAM_LICENSE_SEARCH = "https://www.myfloridalicense.com/wl11.asp?mode=0&SID=&session=&page=LicenseDetail"
 
 
 def _search_dbpr_condo(search_name: str) -> list[dict]:
@@ -96,7 +96,7 @@ def enrich_dbpr_condo(entity: Entity, db: Session) -> bool:
 
     # Generate lookup URLs
     condo_search_url = f"{DBPR_CONDO_PORTAL}/SearchCondos?searchText={quote_plus(clean_name)}&searchType=Name"
-    cam_search_url = f"{DBPR_CONDO_SEARCH}?mode=0&SID=&bession=&page=LicenseSearch"
+    cam_search_url = f"{DBPR_CONDO_SEARCH}?mode=0&SID=&session=&page=LicenseSearch"
 
     updates: dict = {
         "dbpr_condo_search_url": condo_search_url,
@@ -106,7 +106,7 @@ def enrich_dbpr_condo(entity: Entity, db: Session) -> bool:
     # If we have the property manager from sunbiz, generate a CAM lookup URL
     property_manager = chars.get("property_manager") or chars.get("sunbiz_registered_agent")
     if property_manager:
-        cam_lookup = f"{DBPR_CONDO_SEARCH}?mode=0&SID=&bession=&page=LicenseSearch&searchType=Business&searchText={quote_plus(str(property_manager))}"
+        cam_lookup = f"{DBPR_CONDO_SEARCH}?mode=0&SID=&session=&page=LicenseSearch&searchType=Business&searchText={quote_plus(str(property_manager))}"
         updates["dbpr_cam_lookup_url"] = cam_lookup
         updates["dbpr_management_company"] = str(property_manager)
 

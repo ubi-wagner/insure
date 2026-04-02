@@ -109,7 +109,7 @@ def _load_enrichers():
     for module in modules:
         try:
             __import__(f"agents.enrichers.{module}")
-        except ImportError as e:
+        except Exception as e:
             logger.warning(f"Failed to load {module} enricher: {e}")
 
 

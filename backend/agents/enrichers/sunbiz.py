@@ -137,7 +137,7 @@ def enrich_sunbiz(entity: Entity, db: Session) -> bool:
         return False
 
     search_name = _build_search_name(entity.name)
-    search_url = f"https://search.sunbiz.org/Inquiry/CorporationSearch/ByName?searchNameOrder={quote_plus(search_name)}&searchTypeOrder=STARTS"
+    search_url = f"{SUNBIZ_SEARCH_URL}?searchNameOrder={quote_plus(search_name)}&searchTypeOrder=STARTS"
 
     # Attempt search
     results = _search_sunbiz(search_name)
