@@ -172,8 +172,8 @@ def trigger_deep_dive(entity_id: int, db: Session):
     if not intel:
         return
 
-    # Save extracted intel to entity characteristics
-    characteristics = entity.characteristics or {}
+    # Save extracted intel to entity characteristics (shallow copy for JSONB detection)
+    characteristics = dict(entity.characteristics or {})
     characteristics.update(intel)
     entity.characteristics = characteristics
     db.commit()
@@ -219,8 +219,8 @@ def trigger_deep_dive(entity_id: int, db: Session):
     if not emails:
         return
 
-    # Save emails to entity characteristics
-    characteristics = entity.characteristics or {}
+    # Save emails to entity characteristics (shallow copy for JSONB detection)
+    characteristics = dict(entity.characteristics or {})
     characteristics["emails"] = emails
     entity.characteristics = characteristics
     db.commit()

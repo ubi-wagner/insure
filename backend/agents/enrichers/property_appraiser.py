@@ -187,14 +187,21 @@ def enrich_property_appraiser(entity: Entity, db: Session) -> bool:
         logger.debug(f"No PA config for county '{county}'")
         return False
 
-    # Generate the lookup URL regardless of whether we can query GIS
     address_encoded = (entity.address or "").replace(" ", "+").replace(",", "")
     info_url = config["info_url"].format(address=address_encoded)
 
+    # If no GIS endpoint, don't record as enriched — just save lookup URL to characteristics
+    if not config.get("url"):
+        chars = dict(entity.characteristics or {})
+        chars["pa_lookup_url"] = info_url
+        chars["pa_county"] = county
+        entity.characteristics = chars
+        return False  # Don't record as enrichment source — we didn't get real data
+
     parcel_data = {}
 
-    # If GIS endpoint exists and we have coordinates, try spatial query
-    if config.get("url") and entity.latitude and entity.longitude:
+    # GIS endpoint exists — try spatial query
+    if entity.latitude and entity.longitude:
         raw = _query_arcgis_by_point(
             config["url"], entity.latitude, entity.longitude,
             config.get("spatial_ref", 4326),
@@ -202,7 +209,15 @@ def enrich_property_appraiser(entity: Entity, db: Session) -> bool:
         if raw:
             parcel_data = _normalize_parcel_data(raw)
 
-    # Even without GIS data, record the lookup URL as a source
+    if not parcel_data:
+        # GIS query failed or returned nothing — save URL but don't claim enrichment
+        chars = dict(entity.characteristics or {})
+        chars["pa_lookup_url"] = info_url
+        chars["pa_county"] = county
+        entity.characteristics = chars
+        return False
+
+    # Got real data from GIS
     updates = {**parcel_data}
     updates["pa_county"] = county
     updates["pa_lookup_url"] = info_url

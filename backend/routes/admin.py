@@ -538,6 +538,42 @@ def _ensure_filestore():
 _ensure_filestore()
 
 
+def _sync_from_s3():
+    """On startup, download files from S3 bucket to local filestore.
+    This restores uploaded files that were lost on redeploy."""
+    s3_client, bucket_name = _get_s3_client()
+    if not s3_client:
+        return
+
+    try:
+        response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix="files/")
+        for obj in response.get("Contents", []):
+            s3_key = obj["Key"]
+            # Strip "files/" prefix to get the local path
+            local_rel = s3_key.replace("files/", "", 1)
+            if not local_rel:
+                continue
+            local_path = os.path.join(FILE_STORE_ROOT, local_rel)
+            if os.path.exists(local_path):
+                continue  # Already have it locally
+            # Ensure parent directory exists
+            os.makedirs(os.path.dirname(local_path), exist_ok=True)
+            try:
+                s3_client.download_file(bucket_name, s3_key, local_path)
+                logger.info(f"S3 sync: restored {local_rel}")
+            except Exception as e:
+                logger.warning(f"S3 sync failed for {s3_key}: {e}")
+    except Exception as e:
+        logger.warning(f"S3 sync listing failed: {e}")
+
+
+# Sync from S3 on startup (restores files lost on redeploy)
+try:
+    _sync_from_s3()
+except Exception:
+    pass  # Non-critical — S3 may not be configured
+
+
 @router.get("/api/files")
 def list_files(path: str = Query("")):
     """List files and folders at a given path."""
@@ -648,7 +684,7 @@ async def upload_file(
         "success": True,
         "name": filename,
         "path": rel,
-        "size": len(content),
+        "size": total_size,
     }
 
 
