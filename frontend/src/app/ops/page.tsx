@@ -32,10 +32,15 @@ interface QueryResult {
   results: Record<string, unknown>[];
 }
 
-type ActiveTab = "services" | "harvest" | "query" | "events";
+type ActiveTab = "counties" | "services" | "harvest" | "query" | "events";
 
 export default function OpsPage() {
-  const [tab, setTab] = useState<ActiveTab>("services");
+  const [tab, setTab] = useState<ActiveTab>("counties");
+  const [counties, setCounties] = useState<{
+    counties: { county_no: string; county_name: string; nal_file: string | null; sdf_file: string | null; nal_size: number; sdf_size: number; ready: boolean; lead_count: number }[];
+    nal_download_url: string;
+  } | null>(null);
+  const [seeding, setSeeding] = useState<string | null>(null);
   const [services, setServices] = useState<ServiceStatus[]>([]);
   const [harvest, setHarvest] = useState<HarvestStatus | null>(null);
   const [harvesting, setHarvesting] = useState(false);
@@ -63,10 +68,37 @@ export default function OpsPage() {
     "Charlotte", "Lee", "Collier", "Palm Beach", "Miami-Dade", "Broward",
   ];
 
+  async function fetchCounties() {
+    try {
+      const res = await fetch("/api/proxy/admin/counties");
+      if (res.ok) setCounties(await res.json());
+    } catch {}
+  }
+
+  async function seedCounty(countyNo: string) {
+    setSeeding(countyNo);
+    try {
+      await fetch(`/api/proxy/admin/seed-county/${countyNo}`, { method: "POST" });
+      setTimeout(fetchCounties, 5000);
+    } catch (err) { console.error("Seed failed:", err); }
+    setSeeding(null);
+  }
+
+  async function seedAll() {
+    setSeeding("all");
+    try {
+      await fetch("/api/proxy/admin/seed-all", { method: "POST" });
+      const poll = setInterval(fetchCounties, 15000);
+      setTimeout(() => clearInterval(poll), 600000);
+    } catch (err) { console.error("Seed all failed:", err); }
+    setSeeding(null);
+  }
+
   useEffect(() => {
     fetchServices();
     fetchHarvest();
     fetchEnrichStatus();
+    fetchCounties();
     const interval = setInterval(() => { fetchServices(); fetchEnrichStatus(); }, 15000);
     return () => clearInterval(interval);
   }, []);
@@ -168,10 +200,11 @@ export default function OpsPage() {
   };
 
   const tabs: { key: ActiveTab; label: string }[] = [
+    { key: "counties", label: "Counties" },
     { key: "services", label: "Services" },
-    { key: "harvest", label: "Harvest Cache" },
-    { key: "query", label: "Query Data" },
-    { key: "events", label: "Event Stream" },
+    { key: "harvest", label: "Data & Enrichment" },
+    { key: "query", label: "Query" },
+    { key: "events", label: "Events" },
   ];
 
   return (
@@ -205,6 +238,84 @@ export default function OpsPage() {
       <div className="px-3 md:px-6 py-4 md:py-6 max-w-7xl">
 
         {/* ─── Services ─── */}
+        {tab === "counties" && (
+          <div className="space-y-6">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-sm font-semibold text-gray-300">County Management</h2>
+                <p className="text-gray-600 text-xs mt-1">
+                  Upload NAL + SDF files from{" "}
+                  <a href="https://floridarevenue.com/property/Pages/DataPortal_RequestAssessmentRollGISData.aspx"
+                    target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline">
+                    FL DOR Data Portal
+                  </a>
+                  {" "}to System Data/DOR/ via{" "}
+                  <a href="/files" className="text-blue-400 hover:underline">File Manager</a>
+                </p>
+              </div>
+              <div className="flex gap-2">
+                <button onClick={seedAll} disabled={seeding !== null}
+                  className="bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white text-xs px-4 py-2 rounded font-medium">
+                  {seeding === "all" ? "Seeding..." : "Seed All Counties"}
+                </button>
+                <button onClick={fetchCounties}
+                  className="bg-gray-800 hover:bg-gray-700 text-gray-400 text-xs px-3 py-2 rounded">
+                  Refresh
+                </button>
+              </div>
+            </div>
+
+            {counties && (
+              <div className="bg-gray-900 border border-gray-800 rounded-lg overflow-hidden">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-gray-800 text-gray-500 text-xs">
+                      <th className="text-left px-4 py-2.5">County</th>
+                      <th className="text-left px-4 py-2.5">Code</th>
+                      <th className="text-right px-4 py-2.5">NAL File</th>
+                      <th className="text-right px-4 py-2.5">SDF File</th>
+                      <th className="text-right px-4 py-2.5">Leads</th>
+                      <th className="text-right px-4 py-2.5"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {counties.counties.map((c) => (
+                      <tr key={c.county_no} className="border-b border-gray-800/50 hover:bg-gray-800/30">
+                        <td className="px-4 py-2.5 text-white font-medium">{c.county_name}</td>
+                        <td className="px-4 py-2.5 text-gray-500 font-mono text-xs">{c.county_no}</td>
+                        <td className="px-4 py-2.5 text-right">
+                          {c.nal_file ? (
+                            <span className="text-green-400 text-xs">{c.nal_file} ({(c.nal_size / 1024 / 1024).toFixed(0)}MB)</span>
+                          ) : (
+                            <span className="text-red-400 text-xs">Missing</span>
+                          )}
+                        </td>
+                        <td className="px-4 py-2.5 text-right">
+                          {c.sdf_file ? (
+                            <span className="text-green-400 text-xs">{(c.sdf_size / 1024 / 1024).toFixed(1)}MB</span>
+                          ) : (
+                            <span className="text-gray-600 text-xs">-</span>
+                          )}
+                        </td>
+                        <td className="px-4 py-2.5 text-right text-white">{c.lead_count.toLocaleString()}</td>
+                        <td className="px-4 py-2.5 text-right">
+                          {c.ready && (
+                            <button onClick={() => seedCounty(c.county_no)}
+                              disabled={seeding !== null}
+                              className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-[11px] px-3 py-1 rounded">
+                              {seeding === c.county_no ? "Seeding..." : c.lead_count > 0 ? "Reseed" : "Seed"}
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
+
         {tab === "services" && (
           <div className="space-y-4">
             <h2 className="text-sm font-semibold text-gray-300 mb-3">Registered Services</h2>
