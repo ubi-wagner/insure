@@ -50,7 +50,7 @@ async def lifespan(app: FastAPI):
                 "migrations": "current",
             }, detail="FastAPI server running")
             register("database", capabilities={
-                "migration_head": "a1b2c3d4e5f6",
+                "migration_head": "f6a7b8c9d0e1",
             }, detail="Connected, migrations applied")
             register("ai_analyzer", capabilities={
                 "anthropic_key": has_anthropic,
@@ -69,6 +69,23 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Failed to start hunter agent: {e}")
         emit(EventType.HUNTER, "agent_start", EventStatus.ERROR, detail=str(e)[:300])
+
+    # Start heartbeat thread for api/database/ai_analyzer services
+    def _heartbeat_loop():
+        import time
+        from services.registry import heartbeat
+        while True:
+            time.sleep(30)
+            try:
+                heartbeat("api", detail="FastAPI server running")
+                heartbeat("database", detail="Connected, migrations applied")
+                has_ai = bool(os.getenv("ANTHROPIC_API_KEY"))
+                heartbeat("ai_analyzer", detail="Ready" if has_ai else "Disabled (no API key)")
+            except Exception:
+                pass
+
+    hb_thread = threading.Thread(target=_heartbeat_loop, daemon=True)
+    hb_thread.start()
 
     emit(EventType.SYSTEM, "startup", EventStatus.SUCCESS, detail="Application ready")
     yield
