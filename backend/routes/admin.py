@@ -22,6 +22,34 @@ def run_seed(db: Session = Depends(get_db)):
     return {"success": True, "message": "Seed complete"}
 
 
+@router.post("/api/admin/reset")
+def reset_database(db: Session = Depends(get_db)):
+    """DESTRUCTIVE: Wipe all entity data and start fresh.
+
+    Clears: entities, contacts, policies, engagements, entity_assets,
+    lead_ledger, osm_buildings, osm_harvest_areas, regions.
+    Keeps: service_registry, broker_profiles.
+    """
+    try:
+        db.execute(sa.text("DELETE FROM engagements"))
+        db.execute(sa.text("DELETE FROM policies"))
+        db.execute(sa.text("DELETE FROM entity_assets"))
+        db.execute(sa.text("DELETE FROM contacts"))
+        db.execute(sa.text("DELETE FROM lead_ledger"))
+        db.execute(sa.text("DELETE FROM entities"))
+        db.execute(sa.text("DELETE FROM osm_buildings"))
+        db.execute(sa.text("DELETE FROM osm_harvest_areas"))
+        db.execute(sa.text("DELETE FROM regions_of_interest"))
+        db.commit()
+        logger.info("Database reset complete")
+        emit(EventType.SYSTEM, "reset", EventStatus.SUCCESS, detail="All entity data cleared")
+        return {"success": True, "message": "Database wiped. Ready for NAL seeding."}
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Reset failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/api/admin/counties")
 def list_counties():
     """List available counties and their NAL/SDF file status."""
