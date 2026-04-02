@@ -73,7 +73,7 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
   async function fetchRegions() {
     try {
       const res = await fetch("/api/proxy/regions");
-      if (res.ok) setRegions(await res.json());
+      if (res.ok) { const d = await res.json(); setRegions(Array.isArray(d) ? d : []); }
     } catch {}
   }
 
@@ -85,7 +85,8 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
       if (county) params.set("county", county);
       const res = await fetch(`/api/proxy/leads?${params}`);
       if (res.ok) {
-        let data: Lead[] = await res.json();
+        const raw = await res.json();
+        let data: Lead[] = Array.isArray(raw) ? raw : [];
 
         // Filter out archived
         data = data.filter((l) => !["ARCHIVED", "CHURNED", "REJECTED"].includes(l.status));
