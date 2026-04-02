@@ -610,7 +610,20 @@ def download_file(path: str = Query(...)):
         raise HTTPException(status_code=400, detail="Invalid path")
     if not os.path.isfile(safe_path):
         raise HTTPException(status_code=404, detail="File not found")
-    return FileResponse(safe_path, filename=os.path.basename(safe_path))
+
+    filename = os.path.basename(safe_path)
+    # Determine content type
+    import mimetypes
+    content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+
+    return FileResponse(
+        safe_path,
+        filename=filename,
+        media_type=content_type,
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+        },
+    )
 
 
 @router.delete("/api/files")

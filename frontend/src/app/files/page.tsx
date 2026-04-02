@@ -12,6 +12,13 @@ interface FileItem {
   children?: number;
 }
 
+interface UploadState {
+  name: string;
+  progress: number; // 0-100
+  status: "uploading" | "done" | "error" | "duplicate";
+  size: number;
+}
+
 export default function FilesPage() {
   const [currentPath, setCurrentPath] = useState("");
   const [items, setItems] = useState<FileItem[]>([]);
@@ -19,6 +26,7 @@ export default function FilesPage() {
   const [newFolderName, setNewFolderName] = useState("");
   const [showNewFolder, setShowNewFolder] = useState(false);
   const [dragOver, setDragOver] = useState(false);
+  const [uploads, setUploads] = useState<UploadState[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -41,19 +49,65 @@ export default function FilesPage() {
 
   async function handleUpload(files: FileList | null) {
     if (!files || files.length === 0) return;
+
+    const existingNames = new Set(items.filter((i) => i.type === "file").map((i) => i.name));
+
     for (const file of Array.from(files)) {
+      // Check for duplicate
+      if (existingNames.has(file.name)) {
+        setUploads((prev) => [...prev, {
+          name: file.name, progress: 0, status: "duplicate", size: file.size,
+        }]);
+        continue;
+      }
+
+      // Check if already uploading this file
+      if (uploads.some((u) => u.name === file.name && u.status === "uploading")) {
+        continue;
+      }
+
+      // Add to upload queue
+      const uploadIdx = uploads.length;
+      setUploads((prev) => [...prev, {
+        name: file.name, progress: 0, status: "uploading", size: file.size,
+      }]);
+
+      // Use XMLHttpRequest for progress tracking
+      const xhr = new XMLHttpRequest();
       const formData = new FormData();
       formData.append("file", file);
-      try {
-        await fetch(`/api/proxy/files/upload?path=${encodeURIComponent(currentPath)}`, {
-          method: "POST",
-          body: formData,
-        });
-      } catch (err) {
-        console.error("Upload failed:", err);
-      }
+
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) {
+          const pct = Math.round((e.loaded / e.total) * 100);
+          setUploads((prev) => prev.map((u, i) =>
+            u.name === file.name && u.status === "uploading" ? { ...u, progress: pct } : u
+          ));
+        }
+      };
+
+      xhr.onload = () => {
+        const ok = xhr.status >= 200 && xhr.status < 300;
+        setUploads((prev) => prev.map((u) =>
+          u.name === file.name && u.status === "uploading"
+            ? { ...u, progress: 100, status: ok ? "done" : "error" } : u
+        ));
+        if (ok) fetchFiles();
+      };
+
+      xhr.onerror = () => {
+        setUploads((prev) => prev.map((u) =>
+          u.name === file.name && u.status === "uploading" ? { ...u, status: "error" } : u
+        ));
+      };
+
+      xhr.open("POST", `/api/proxy/files/upload?path=${encodeURIComponent(currentPath)}`);
+      xhr.send(formData);
     }
-    fetchFiles();
+  }
+
+  function clearUploads() {
+    setUploads((prev) => prev.filter((u) => u.status === "uploading"));
   }
 
   async function handleCreateFolder() {
@@ -99,6 +153,8 @@ export default function FilesPage() {
   }
 
   const breadcrumbs = ["Files", ...currentPath.split("/").filter(Boolean)];
+  const activeUploads = uploads.filter((u) => u.status === "uploading");
+  const finishedUploads = uploads.filter((u) => u.status !== "uploading");
 
   return (
     <div className="min-h-screen bg-gray-950 text-white">
@@ -146,8 +202,9 @@ export default function FilesPage() {
             + New Folder
           </button>
           <button onClick={() => fileInputRef.current?.click()}
-            className="bg-blue-600 hover:bg-blue-700 text-white text-xs px-3 py-2 rounded font-medium">
-            Upload Files
+            disabled={activeUploads.length > 0}
+            className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs px-3 py-2 rounded font-medium">
+            {activeUploads.length > 0 ? `Uploading (${activeUploads.length})...` : "Upload Files"}
           </button>
           <input ref={fileInputRef} type="file" multiple className="hidden"
             onChange={(e) => { handleUpload(e.target.files); e.target.value = ""; }} />
@@ -156,6 +213,41 @@ export default function FilesPage() {
             Refresh
           </button>
         </div>
+
+        {/* Upload progress */}
+        {uploads.length > 0 && (
+          <div className="mb-4 space-y-1.5">
+            {uploads.map((u, i) => (
+              <div key={`${u.name}-${i}`} className={`rounded-lg px-3 py-2 text-xs flex items-center gap-3 ${
+                u.status === "uploading" ? "bg-blue-950/40 border border-blue-800" :
+                u.status === "done" ? "bg-green-950/40 border border-green-800" :
+                u.status === "duplicate" ? "bg-amber-950/40 border border-amber-800" :
+                "bg-red-950/40 border border-red-800"
+              }`}>
+                <span className="truncate flex-1 font-medium">{u.name}</span>
+                <span className="text-gray-500 shrink-0">{formatSize(u.size)}</span>
+                {u.status === "uploading" && (
+                  <div className="w-32 shrink-0">
+                    <div className="bg-gray-800 rounded-full h-1.5 overflow-hidden">
+                      <div className="bg-blue-500 h-full rounded-full transition-all duration-300"
+                        style={{ width: `${u.progress}%` }} />
+                    </div>
+                    <span className="text-blue-300 text-[10px]">{u.progress}%</span>
+                  </div>
+                )}
+                {u.status === "done" && <span className="text-green-400 shrink-0">Done</span>}
+                {u.status === "error" && <span className="text-red-400 shrink-0">Failed</span>}
+                {u.status === "duplicate" && <span className="text-amber-400 shrink-0">Already exists</span>}
+              </div>
+            ))}
+            {finishedUploads.length > 0 && (
+              <button onClick={clearUploads}
+                className="text-gray-600 hover:text-gray-400 text-xs">
+                Clear completed
+              </button>
+            )}
+          </div>
+        )}
 
         {/* New folder input */}
         {showNewFolder && (
@@ -173,7 +265,7 @@ export default function FilesPage() {
 
         {/* Drop zone + file list */}
         <div
-          className={`bg-gray-900 border rounded-lg overflow-hidden transition-colors ${
+          className={`bg-gray-900 border rounded-lg overflow-hidden transition-colors relative ${
             dragOver ? "border-blue-500 bg-blue-950/20" : "border-gray-800"
           }`}
           onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
@@ -244,7 +336,7 @@ export default function FilesPage() {
 
           {/* Drop overlay */}
           {dragOver && (
-            <div className="absolute inset-0 flex items-center justify-center bg-blue-950/40 pointer-events-none">
+            <div className="absolute inset-0 flex items-center justify-center bg-blue-950/60 z-10">
               <p className="text-blue-300 text-lg font-medium">Drop files to upload</p>
             </div>
           )}
