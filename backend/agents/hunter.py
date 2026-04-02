@@ -25,6 +25,8 @@ from database.models import (
     ActionType,
     Entity,
     LeadLedger,
+    OsmBuilding,
+    OsmHarvestArea,
     RegionOfInterest,
     RegionStatus,
 )
@@ -57,17 +59,20 @@ def build_overpass_query(bbox: dict, min_levels: int = MIN_LEVELS) -> str:
     bb = f"{bbox['south']},{bbox['west']},{bbox['north']},{bbox['east']}"
     levels_regex = f"^[{min_levels}-9]|[1-9][0-9]"
 
+    # All building types filtered by min levels to avoid returning
+    # thousands of small apartment buildings
     return f"""
-[out:json][timeout:60];
+[out:json][timeout:90];
 (
-  way["building"="apartments"]({bb});
+  way["building"="apartments"]["building:levels"~"{levels_regex}"]({bb});
   way["building"="residential"]["building:levels"~"{levels_regex}"]({bb});
-  way["building"="condominium"]({bb});
+  way["building"="condominium"]["building:levels"~"{levels_regex}"]({bb});
   way["building"="hotel"]["building:levels"~"{levels_regex}"]({bb});
-  relation["building"="apartments"]({bb});
-  relation["building"="condominium"]({bb});
+  way["building"]["building:levels"~"{levels_regex}"]["building"!="house"]["building"!="garage"]["building"!="yes"]({bb});
+  relation["building"="apartments"]["building:levels"~"{levels_regex}"]({bb});
+  relation["building"="condominium"]["building:levels"~"{levels_regex}"]({bb});
 );
-out center tags geom;
+out center tags;
 """
 
 
@@ -158,18 +163,25 @@ def estimate_tiv(stories: int | None, footprint_sqft: float | None, construction
     return round(tiv, -3)  # Round to nearest thousand
 
 
-def query_overpass(query: str) -> list[dict]:
-    """Execute an Overpass API query and return elements."""
-    try:
-        with httpx.Client(timeout=60) as client:
-            resp = client.post(OVERPASS_URL, data={"data": query})
-            resp.raise_for_status()
-            data = resp.json()
-            return data.get("elements", [])
-    except Exception as e:
-        logger.error(f"Overpass API error: {e}")
-        emit(EventType.HUNTER, "overpass_query", EventStatus.ERROR, detail=str(e)[:200])
-        return []
+def query_overpass(query: str, retries: int = 2) -> list[dict]:
+    """Execute an Overpass API query and return elements. Retries on timeout."""
+    for attempt in range(retries + 1):
+        try:
+            with httpx.Client(timeout=90) as client:
+                resp = client.post(OVERPASS_URL, data={"data": query})
+                resp.raise_for_status()
+                data = resp.json()
+                return data.get("elements", [])
+        except Exception as e:
+            is_timeout = "504" in str(e) or "timeout" in str(e).lower() or "429" in str(e)
+            if is_timeout and attempt < retries:
+                wait = (attempt + 1) * 15  # 15s, 30s
+                logger.warning(f"Overpass timeout (attempt {attempt + 1}), retrying in {wait}s...")
+                time.sleep(wait)
+                continue
+            logger.error(f"Overpass API error: {e}")
+            emit(EventType.HUNTER, "overpass_query", EventStatus.ERROR, detail=str(e)[:200])
+            return []
 
 
 def reverse_geocode(lat: float, lon: float) -> dict:
@@ -193,11 +205,28 @@ def reverse_geocode(lat: float, lon: float) -> dict:
 def parse_osm_element(element: dict) -> dict | None:
     """Parse an OSM element into a property candidate with construction + TIV estimate."""
     tags = element.get("tags", {})
-    center = element.get("center", {})
+    center = element.get("center") or {}
 
     lat = center.get("lat") or element.get("lat")
     lon = center.get("lon") or element.get("lon")
-    if not lat or not lon:
+
+    # Fallback: compute center from geometry nodes
+    if (lat is None or lon is None) and element.get("geometry"):
+        geom = element["geometry"]
+        if isinstance(geom, list) and len(geom) >= 2:
+            lats = [p["lat"] for p in geom if "lat" in p]
+            lons = [p["lon"] for p in geom if "lon" in p]
+            if lats and lons:
+                lat = sum(lats) / len(lats)
+                lon = sum(lons) / len(lons)
+
+    # Fallback: compute center from bounds
+    if (lat is None or lon is None) and element.get("bounds"):
+        bounds = element["bounds"]
+        lat = (bounds.get("minlat", 0) + bounds.get("maxlat", 0)) / 2
+        lon = (bounds.get("minlon", 0) + bounds.get("maxlon", 0)) / 2
+
+    if lat is None or lon is None:
         return None
 
     name = tags.get("name", "")
@@ -304,10 +333,236 @@ def enrich_with_geocode(prop: dict) -> dict:
     return prop
 
 
+def _harvest_to_cache(bbox: dict, db: Session, region_name: str = "") -> int:
+    """Harvest ALL buildings from Overpass into osm_buildings cache.
+
+    Caches every building regardless of filter criteria. Returns count cached.
+    """
+    bb_str = f"{bbox['south']},{bbox['west']},{bbox['north']},{bbox['east']}"
+
+    # Broad query: ALL multi-unit/commercial buildings (no levels filter)
+    harvest_query = f"""
+[out:json][timeout:90];
+(
+  way["building"="apartments"]({bb_str});
+  way["building"="condominium"]({bb_str});
+  way["building"="residential"]["building:levels"~"^[3-9]|[1-9][0-9]"]({bb_str});
+  way["building"="hotel"]["building:levels"~"^[3-9]|[1-9][0-9]"]({bb_str});
+  way["building"="commercial"]["building:levels"~"^[3-9]|[1-9][0-9]"]({bb_str});
+  relation["building"="apartments"]({bb_str});
+  relation["building"="condominium"]({bb_str});
+);
+out center tags;
+"""
+    elements = query_overpass(harvest_query)
+    if not elements:
+        return 0
+
+    cached = 0
+    for element in elements:
+        osm_id = element.get("id")
+        if not osm_id:
+            continue
+
+        # Skip if already cached
+        existing = db.query(OsmBuilding).filter(OsmBuilding.osm_id == osm_id).first()
+        if existing:
+            continue
+
+        # Parse basic info
+        prop = parse_osm_element(element)
+        if not prop:
+            continue
+
+        tags = element.get("tags", {})
+        chars = prop.get("characteristics", {})
+
+        building = OsmBuilding(
+            osm_id=osm_id,
+            osm_type=element.get("type", "way"),
+            lat=prop["latitude"],
+            lon=prop["longitude"],
+            name=prop.get("name"),
+            address=prop.get("address"),
+            building_type=tags.get("building"),
+            stories=chars.get("stories"),
+            construction_class=chars.get("construction_class"),
+            iso_class=chars.get("iso_class"),
+            tiv_estimate=chars.get("tiv_estimate"),
+            units_estimate=chars.get("units_estimate"),
+            footprint_sqft=chars.get("footprint_sqft"),
+            tags=tags,
+            raw_element=element,
+        )
+        db.add(building)
+        cached += 1
+
+        # Batch commit every 50
+        if cached % 50 == 0:
+            db.flush()
+
+    # Record this harvest area
+    harvest_area = OsmHarvestArea(
+        name=region_name,
+        bbox_south=bbox["south"],
+        bbox_north=bbox["north"],
+        bbox_west=bbox["west"],
+        bbox_east=bbox["east"],
+        building_count=cached,
+        query_params={"total_elements": len(elements)},
+    )
+    db.add(harvest_area)
+    db.commit()
+
+    emit(EventType.HUNTER, "harvest_cache", EventStatus.SUCCESS,
+         detail=f"Cached {cached} new buildings from {len(elements)} elements ({region_name})")
+    logger.info(f"Harvest cache: {cached} new from {len(elements)} elements ({region_name})")
+    return cached
+
+
+def _is_area_harvested(bbox: dict, db: Session) -> bool:
+    """Check if a bounding box is substantially covered by existing harvests."""
+    # Simple check: is there a harvest area that fully contains this bbox?
+    existing = db.query(OsmHarvestArea).filter(
+        OsmHarvestArea.bbox_south <= bbox["south"],
+        OsmHarvestArea.bbox_north >= bbox["north"],
+        OsmHarvestArea.bbox_west <= bbox["west"],
+        OsmHarvestArea.bbox_east >= bbox["east"],
+    ).first()
+    return existing is not None
+
+
+def _filter_cached_buildings(
+    bbox: dict, db: Session, min_stories: int = 3, construction_filter: str = "any"
+) -> list[OsmBuilding]:
+    """Filter cached buildings by region parameters."""
+    query = db.query(OsmBuilding).filter(
+        OsmBuilding.lat >= bbox["south"],
+        OsmBuilding.lat <= bbox["north"],
+        OsmBuilding.lon >= bbox["west"],
+        OsmBuilding.lon <= bbox["east"],
+        OsmBuilding.promoted_entity_id.is_(None),  # Not yet promoted to lead
+    )
+
+    if min_stories and min_stories > 1:
+        # Include buildings with stories >= min OR with no stories (unknown, could be multi-story)
+        query = query.filter(
+            (OsmBuilding.stories >= min_stories) | (OsmBuilding.stories.is_(None))
+        )
+
+    if construction_filter and construction_filter != "any":
+        if construction_filter == "fire_resistive":
+            query = query.filter(OsmBuilding.construction_class.ilike("%fire resistive%"))
+        elif construction_filter == "non_combustible":
+            query = query.filter(
+                OsmBuilding.construction_class.ilike("%fire resistive%") |
+                OsmBuilding.construction_class.ilike("%non-combustible%")
+            )
+        elif construction_filter == "masonry":
+            query = query.filter(
+                OsmBuilding.construction_class.ilike("%fire resistive%") |
+                OsmBuilding.construction_class.ilike("%non-combustible%") |
+                OsmBuilding.construction_class.ilike("%masonry%")
+            )
+
+    return query.all()
+
+
+def _promote_to_lead(
+    building: OsmBuilding, region: RegionOfInterest, county: str | None, db: Session
+) -> int:
+    """Promote a cached OSM building to a lead Entity."""
+    # Geocode if not yet done
+    if not building.geocoded and building.lat and building.lon:
+        if not building.address or len(building.address) < 10:
+            geo = reverse_geocode(building.lat, building.lon)
+            if geo:
+                address_data = geo.get("address", {})
+                road = address_data.get("road", "")
+                house = address_data.get("house_number", "")
+                city = address_data.get("city") or address_data.get("town") or ""
+                postcode = address_data.get("postcode", "")
+                geo_county = address_data.get("county", "").replace(" County", "")
+
+                if road:
+                    addr = f"{house} {road}".strip() if house else road
+                    if city:
+                        addr += f", {city}"
+                    addr += f", FL {postcode}".strip()
+                    building.address = addr
+                if geo_county:
+                    building.county = geo_county
+
+            building.geocoded = 1
+            time.sleep(1.1)  # Nominatim rate limit
+
+    # Build characteristics from cached data
+    characteristics = {
+        "stories": building.stories,
+        "construction_class": building.construction_class,
+        "iso_class": building.iso_class,
+        "building_type": building.building_type,
+        "tiv_estimate": building.tiv_estimate,
+        "units_estimate": building.units_estimate,
+        "footprint_sqft": building.footprint_sqft,
+        "osm_id": building.osm_id,
+        "osm_tags": building.tags or {},
+    }
+    if building.tiv_estimate:
+        characteristics["tiv"] = f"${building.tiv_estimate:,.0f}"
+
+    # Dedupe: check if Entity already exists for this OSM ID
+    existing = db.query(Entity).filter(
+        Entity.characteristics.op("->>")(  "osm_id") == str(building.osm_id)
+    ).first()
+    if existing:
+        building.promoted_entity_id = existing.id
+        return 0
+
+    try:
+        entity = Entity(
+            name=building.name or f"Building at {building.lat:.4f}, {building.lon:.4f}",
+            address=building.address or "",
+            county=building.county or county or region.target_county,
+            latitude=building.lat,
+            longitude=building.lon,
+            characteristics={k: v for k, v in characteristics.items() if v is not None},
+            pipeline_stage="NEW",
+        )
+        db.add(entity)
+        db.flush()
+
+        building.promoted_entity_id = entity.id
+
+        ledger = LeadLedger(
+            entity_id=entity.id,
+            action_type=ActionType.HUNT_FOUND.value,
+            detail=f"Promoted from OSM cache (region '{region.name}')",
+            source="overpass",
+            source_url=f"https://www.openstreetmap.org/way/{building.osm_id}",
+        )
+        db.add(ledger)
+        db.commit()
+    except SQLAlchemyError as e:
+        db.rollback()
+        logger.error(f"Failed to promote building {building.osm_id}: {e}")
+        return 0
+
+    # Run enrichments on the new entity
+    try:
+        from agents.enrichers.pipeline import run_on_new_lead
+        run_on_new_lead(entity, db)
+    except Exception as e:
+        logger.warning(f"Enrichment failed for promoted entity {entity.id}: {e}")
+
+    return 1
+
+
 def process_region(region: RegionOfInterest, db: Session) -> int:
-    """Process a single region: query Overpass and save discovered properties."""
+    """Process a region: harvest to cache if needed, then filter + promote matches."""
     bbox = region.bounding_box
     center_lat, center_lng = get_bounding_box_center(bbox)
+    params = region.parameters or {}
 
     # Determine county
     county = get_county_from_coords(center_lat, center_lng)
@@ -319,122 +574,43 @@ def process_region(region: RegionOfInterest, db: Session) -> int:
          detail=f"Region '{region.name}' county={county}", region_id=region.id)
     logger.info(f"Processing region '{region.name}' - County: {county}")
 
-    # Query OSM Overpass for buildings
-    min_levels = (region.parameters or {}).get("stories", MIN_LEVELS)
-    query = build_overpass_query(bbox, min_levels)
-    elements = query_overpass(query)
+    # Step 1: Harvest to cache if this area hasn't been harvested yet
+    if not _is_area_harvested(bbox, db):
+        emit(EventType.HUNTER, "harvest_start", EventStatus.PENDING,
+             detail=f"Harvesting Overpass for '{region.name}'", region_id=region.id)
+        cached = _harvest_to_cache(bbox, db, region_name=region.name)
+        emit(EventType.HUNTER, "harvest_complete", EventStatus.SUCCESS,
+             detail=f"{cached} buildings cached for '{region.name}'", region_id=region.id)
+    else:
+        emit(EventType.HUNTER, "harvest_skip", EventStatus.SUCCESS,
+             detail=f"Area already harvested for '{region.name}'", region_id=region.id)
 
-    if not elements:
-        logger.info(f"No buildings found in region '{region.name}'")
-        emit(EventType.HUNTER, "overpass_query", EventStatus.SUCCESS,
-             detail=f"0 buildings in '{region.name}'", region_id=region.id)
+    # Step 2: Filter cached buildings by region params
+    min_stories = params.get("stories", MIN_LEVELS)
+    construction_filter = params.get("construction_filter", "any")
+    candidates = _filter_cached_buildings(bbox, db, min_stories, construction_filter)
 
+    emit(EventType.HUNTER, "filter_cache", EventStatus.SUCCESS,
+         detail=f"{len(candidates)} matching buildings for '{region.name}'", region_id=region.id)
+
+    # Step 3: Promote matching buildings to leads
     found = 0
-    for element in elements:
-        prop = parse_osm_element(element)
-        if not prop:
-            continue
-
-        # Verify within bounds (Overpass bbox is approximate)
-        if not is_within_bounds(prop["latitude"], prop["longitude"], bbox):
-            continue
-
-        # Enrich with geocode if address is sparse
-        prop = enrich_with_geocode(prop)
-
-        # Set county from geocode or region
-        if not prop.get("county"):
-            prop["county"] = county
-
-        # Rate limit Nominatim (1 req/sec policy)
-        time.sleep(1.1)
-
-        found += save_property(prop, region, db)
+    for building in candidates:
+        found += _promote_to_lead(building, region, county, db)
 
     # Mark region as completed
     region.status = RegionStatus.COMPLETED
     db.commit()
 
+    detail = f"Region '{region.name}' done, {found} new leads from {len(candidates)} candidates"
     emit(EventType.HUNTER, "process_region", EventStatus.SUCCESS,
-         detail=f"Region '{region.name}' done, {found}/{len(elements)} properties saved",
-         region_id=region.id)
-    logger.info(f"Region '{region.name}' completed. Found {found} new properties from {len(elements)} OSM elements.")
+         detail=detail, region_id=region.id)
+    logger.info(detail)
     return found
 
 
-def save_property(prop: dict, region: RegionOfInterest, db: Session) -> int:
-    """Save a property to the database if not already exists."""
-    # Dedupe by name+address or by OSM ID
-    osm_id = (prop.get("characteristics") or {}).get("osm_id")
-    if osm_id:
-        existing = db.query(Entity).filter(
-            Entity.characteristics.op("->>")(  "osm_id") == str(osm_id)
-        ).first()
-        if existing:
-            return 0
 
-    existing = db.query(Entity).filter(
-        Entity.name == prop["name"],
-        Entity.address == prop.get("address", ""),
-    ).first()
-    if existing:
-        return 0
 
-    try:
-        entity = Entity(
-            name=prop["name"],
-            address=prop.get("address", ""),
-            county=prop.get("county") or region.target_county,
-            latitude=prop.get("latitude"),
-            longitude=prop.get("longitude"),
-            characteristics=prop.get("characteristics", {}),
-            pipeline_stage="NEW",
-        )
-        db.add(entity)
-        db.commit()
-        db.refresh(entity)
-
-        ledger = LeadLedger(
-            entity_id=entity.id,
-            action_type=ActionType.HUNT_FOUND.value,
-            detail=f"Discovered via OSM Overpass in region '{region.name}'",
-        )
-        db.add(ledger)
-        db.commit()
-    except SQLAlchemyError as e:
-        db.rollback()
-        logger.error(f"Failed to save property '{prop.get('name')}': {e}")
-        emit(EventType.DB_OPERATION, "save_property", EventStatus.ERROR,
-             detail=f"'{prop.get('name')}': {str(e)[:200]}")
-        return 0
-
-    emit(EventType.DB_OPERATION, "save_property", EventStatus.SUCCESS,
-         detail=f"Saved '{entity.name}' (id={entity.id})", entity_id=entity.id)
-
-    # Record Overpass as the discovery source + run NEW-stage enrichments
-    try:
-        from agents.enrichers import record_enrichment
-        osm_id = (prop.get("characteristics") or {}).get("osm_id")
-        record_enrichment(
-            entity, db,
-            source_id="overpass",
-            fields_updated=list((prop.get("characteristics") or {}).keys()),
-            source_url=f"https://www.openstreetmap.org/way/{osm_id}" if osm_id else None,
-            detail=f"Discovered via OSM Overpass in region '{region.name}'",
-        )
-        db.commit()
-    except Exception as e:
-        logger.warning(f"Overpass source tracking failed for '{entity.name}': {e}")
-        db.rollback()
-
-    try:
-        from agents.enrichers.pipeline import run_on_new_lead
-        run_on_new_lead(entity, db)
-    except Exception as e:
-        logger.warning(f"Enrichment failed for '{entity.name}': {e}")
-        db.rollback()
-
-    return 1
 
 
 def run_hunter_loop():

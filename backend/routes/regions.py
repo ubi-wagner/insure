@@ -1,4 +1,5 @@
 import logging
+import threading
 import time
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -6,8 +7,8 @@ from pydantic import BaseModel
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from database import get_db
-from database.models import RegionOfInterest, RegionStatus
+from database import get_db, SessionLocal
+from database.models import Entity, RegionOfInterest, RegionStatus
 from services.event_bus import EventStatus, EventType, emit
 
 router = APIRouter()
@@ -24,12 +25,31 @@ class BoundingBox(BaseModel):
 class RegionParams(BaseModel):
     stories: int = 3
     coast_distance: float = 5.0
+    construction_filter: str = "any"
+    search_profile: str = "custom"
 
 
 class RegionCreate(BaseModel):
     name: str
     bounding_box: BoundingBox
     parameters: RegionParams | None = None
+
+
+def _process_region_background(region_id: int):
+    """Process a region in a background thread — called immediately on creation."""
+    db = SessionLocal()
+    try:
+        region = db.query(RegionOfInterest).filter(RegionOfInterest.id == region_id).first()
+        if not region or region.status != RegionStatus.PENDING:
+            return
+        from agents.hunter import process_region
+        process_region(region, db)
+    except Exception as e:
+        logger.error(f"Background region processing failed for region {region_id}: {e}")
+        emit(EventType.HUNTER, "process_region", EventStatus.ERROR,
+             detail=f"Background processing failed: {str(e)[:200]}")
+    finally:
+        db.close()
 
 
 @router.post("/api/regions")
@@ -63,7 +83,44 @@ def create_region(region: RegionCreate, db: Session = Depends(get_db)):
          detail=f"Region '{db_region.name}' created (id={db_region.id})",
          duration_ms=duration_ms, region_id=db_region.id)
 
+    # Start processing immediately in background thread (don't wait for poll)
+    thread = threading.Thread(
+        target=_process_region_background,
+        args=(db_region.id,),
+        daemon=True,
+    )
+    thread.start()
+
     return {"id": db_region.id, "name": db_region.name, "status": db_region.status.value}
+
+
+@router.get("/api/regions/{region_id}")
+def get_region(region_id: int, db: Session = Depends(get_db)):
+    """Get region status + count of discovered leads."""
+    region = db.query(RegionOfInterest).filter(RegionOfInterest.id == region_id).first()
+    if not region:
+        raise HTTPException(status_code=404, detail="Region not found")
+
+    # Count leads discovered in this region's bounding box
+    bbox = region.bounding_box or {}
+    lead_count = 0
+    if bbox:
+        lead_count = db.query(Entity).filter(
+            Entity.latitude >= bbox.get("south", 0),
+            Entity.latitude <= bbox.get("north", 0),
+            Entity.longitude >= bbox.get("west", 0),
+            Entity.longitude <= bbox.get("east", 0),
+        ).count()
+
+    return {
+        "id": region.id,
+        "name": region.name,
+        "bounding_box": region.bounding_box,
+        "parameters": region.parameters,
+        "status": region.status.value,
+        "lead_count": lead_count,
+        "created_at": region.created_at.isoformat(),
+    }
 
 
 @router.get("/api/regions")
@@ -76,6 +133,7 @@ def list_regions(db: Session = Depends(get_db)):
             "bounding_box": r.bounding_box,
             "parameters": r.parameters,
             "status": r.status.value,
+            "target_county": r.target_county,
             "created_at": r.created_at.isoformat(),
         }
         for r in regions
