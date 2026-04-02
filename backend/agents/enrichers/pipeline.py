@@ -150,6 +150,7 @@ def _load_enrichers():
     modules = [
         "fema_flood",           # NEW: FEMA flood zone
         "fdot_parcels",         # NEW: FDOT/DOR statewide parcels
+        "dor_nal",              # NEW: FL DOR NAL tax roll (authoritative parcel data)
         "property_appraiser",   # NEW: County PA GIS lookup
         "dbpr_bulk",            # NEW: DBPR bulk CSV (condo name, units, managing entity, financials)
         "dbpr_payments",        # NEW: DBPR payment history (delinquency, financial stress)

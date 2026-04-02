@@ -472,6 +472,83 @@ export default function LeadDetailPage() {
               </div>
             )}
 
+            {/* DOR Tax Roll */}
+            {!!(chars.dor_owner || chars.dor_market_value) && (
+              <div>
+                <h2 className="text-sm font-semibold text-gray-300 mb-3">DOR Tax Roll</h2>
+                <div className="bg-gray-900 border border-gray-800 rounded-lg p-4">
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                    {!!chars.dor_owner && (
+                      <div className="col-span-2">
+                        <p className="text-gray-500 text-xs">Owner</p>
+                        <p className="text-white text-sm font-medium mt-1">{String(chars.dor_owner)}</p>
+                        {!!chars.dor_owner_address && (
+                          <p className="text-gray-600 text-[10px] mt-0.5">{String(chars.dor_owner_address)}</p>
+                        )}
+                      </div>
+                    )}
+                    {!!chars.dor_market_value && (
+                      <div>
+                        <p className="text-gray-500 text-xs">Market Value</p>
+                        <p className="text-white text-sm font-semibold mt-1">${Number(chars.dor_market_value).toLocaleString()}</p>
+                      </div>
+                    )}
+                    {!!chars.dor_land_value && (
+                      <div>
+                        <p className="text-gray-500 text-xs">Land Value</p>
+                        <p className="text-white text-sm mt-1">${Number(chars.dor_land_value).toLocaleString()}</p>
+                      </div>
+                    )}
+                    {!!chars.dor_construction_class && (
+                      <div>
+                        <p className="text-gray-500 text-xs">Construction Class</p>
+                        <p className="text-white text-sm font-medium mt-1">{String(chars.dor_construction_class)}</p>
+                      </div>
+                    )}
+                    {!!chars.dor_use_description && (
+                      <div>
+                        <p className="text-gray-500 text-xs">Use Type</p>
+                        <p className="text-white text-sm mt-1">{String(chars.dor_use_description)}</p>
+                      </div>
+                    )}
+                    {!!chars.dor_living_sqft && (
+                      <div>
+                        <p className="text-gray-500 text-xs">Living Area</p>
+                        <p className="text-white text-sm mt-1">{Number(chars.dor_living_sqft).toLocaleString()} sqft</p>
+                      </div>
+                    )}
+                    {!!chars.dor_num_units && (
+                      <div>
+                        <p className="text-gray-500 text-xs">Units</p>
+                        <p className="text-white text-sm mt-1">{String(chars.dor_num_units)}</p>
+                      </div>
+                    )}
+                    {!!chars.dor_num_buildings && (
+                      <div>
+                        <p className="text-gray-500 text-xs">Buildings</p>
+                        <p className="text-white text-sm mt-1">{String(chars.dor_num_buildings)}</p>
+                      </div>
+                    )}
+                    {!!chars.dor_last_sale_price && (
+                      <div>
+                        <p className="text-gray-500 text-xs">Last Sale</p>
+                        <p className="text-white text-sm mt-1">
+                          ${Number(chars.dor_last_sale_price).toLocaleString()}
+                          {!!chars.dor_last_sale_date && <span className="text-gray-500 text-xs ml-1">({String(chars.dor_last_sale_date)})</span>}
+                        </p>
+                      </div>
+                    )}
+                    {!!chars.dor_parcel_id && (
+                      <div>
+                        <p className="text-gray-500 text-xs">Parcel ID</p>
+                        <p className="text-gray-400 text-xs mt-1 font-mono">{String(chars.dor_parcel_id)}</p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+
             {/* DBPR Condo Association Data */}
             {!!(chars.dbpr_condo_name || chars.dbpr_managing_entity) && (
               <div>
@@ -642,6 +719,11 @@ export default function LeadDetailPage() {
                       "dbpr_cam_status", "dbpr_cam_address", "dbpr_management_company",
                       "cam_license_number", "cam_license_name", "cam_license_address",
                       "cam_license_expiration", "cam_license_active", "cam_license_found", "cam_license_warning",
+                      "dor_parcel_id", "dor_owner", "dor_owner_address", "dor_market_value",
+                      "dor_land_value", "dor_construction_class", "dor_use_code", "dor_use_description",
+                      "dor_year_built", "dor_effective_year_built", "dor_living_sqft",
+                      "dor_num_buildings", "dor_num_units", "dor_last_sale_price",
+                      "dor_last_sale_year", "dor_last_sale_date", "dor_special_features_value", "dor_land_sqft",
                       "has_user_intel", "user_doc_types", "_field_sources"].includes(k))
                     .map(([key, val]) => (
                     <div key={key} className="bg-gray-900 border border-gray-800 rounded-lg p-3">
@@ -1028,6 +1110,7 @@ export default function LeadDetailPage() {
                     overpass: "OpenStreetMap Overpass API",
                     fema_flood: "FEMA National Flood Hazard Layer",
                     fdot_parcels: "FL DOT/DOR Statewide Parcels",
+                    dor_nal: "FL DOR Tax Roll (NAL)",
                     property_appraiser: "County Property Appraiser",
                     dbpr_bulk: "DBPR Condo Registry (Bulk CSV)",
                     dbpr_condo: "DBPR CAM License Lookup",
