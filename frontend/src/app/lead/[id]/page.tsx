@@ -72,8 +72,9 @@ const HEAT_STYLES: Record<string, string> = {
 };
 
 const STAGE_COLORS: Record<string, string> = {
-  NEW: "bg-gray-700", CANDIDATE: "bg-purple-900", TARGET: "bg-amber-900",
-  OPPORTUNITY: "bg-blue-900", CUSTOMER: "bg-green-800", CHURNED: "bg-gray-800", ARCHIVED: "bg-red-900",
+  NEW: "bg-gray-700", ENRICHED: "bg-cyan-900", INVESTIGATING: "bg-purple-900",
+  RESEARCHED: "bg-indigo-900", TARGETED: "bg-amber-900",
+  OPPORTUNITY: "bg-blue-900", CUSTOMER: "bg-green-800", ARCHIVED: "bg-red-900",
 };
 
 function fmt(val: number | null | undefined): string {
@@ -186,8 +187,8 @@ export default function LeadDetailPage() {
   }
 
   const chars = lead.characteristics || {};
-  const stages = ["NEW", "CANDIDATE", "TARGET", "OPPORTUNITY", "CUSTOMER", "CHURNED", "ARCHIVED"];
-  const isEngageReady = ["OPPORTUNITY", "CUSTOMER"].includes(lead.pipeline_stage);
+  const stages = ["NEW", "ENRICHED", "INVESTIGATING", "RESEARCHED", "TARGETED", "OPPORTUNITY", "CUSTOMER", "ARCHIVED"];
+  const isEngageReady = ["TARGETED", "OPPORTUNITY", "CUSTOMER"].includes(lead.pipeline_stage);
   const tabs: { key: TabName; label: string; count?: number }[] = [
     { key: "overview", label: "Overview" },
     ...(isEngageReady || lead.engagements.length > 0 ? [{ key: "engage" as TabName, label: "Engage" }] : []),
@@ -271,9 +272,9 @@ export default function LeadDetailPage() {
         )}
         {/* Next stage readiness checklist */}
         {lead.readiness && (() => {
-          const nextStageKey = lead.pipeline_stage === "NEW" ? "candidate" :
-            lead.pipeline_stage === "CANDIDATE" ? "target" :
-            lead.pipeline_stage === "TARGET" ? "opportunity" : null;
+          const nextStageKey = lead.pipeline_stage === "ENRICHED" ? "investigating" :
+            lead.pipeline_stage === "RESEARCHED" ? "targeted" :
+            lead.pipeline_stage === "TARGETED" ? "opportunity" : null;
           if (!nextStageKey || !lead.readiness[nextStageKey]) return null;
           const r = lead.readiness[nextStageKey];
           const checks = Object.values(r.checks) as { done: boolean; label: string }[];
@@ -471,6 +472,71 @@ export default function LeadDetailPage() {
               </div>
             )}
 
+            {/* DBPR Condo Association Data */}
+            {!!(chars.dbpr_condo_name || chars.dbpr_managing_entity) && (
+              <div>
+                <h2 className="text-sm font-semibold text-gray-300 mb-3">DBPR Condo Registry</h2>
+                <div className="bg-gray-900 border border-gray-800 rounded-lg p-4">
+                  <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+                    {!!chars.dbpr_condo_name && (
+                      <div>
+                        <p className="text-gray-500 text-xs">DBPR Condo Name</p>
+                        <p className="text-white text-sm font-medium mt-1">{String(chars.dbpr_condo_name)}</p>
+                      </div>
+                    )}
+                    {!!chars.dbpr_official_units && (
+                      <div>
+                        <p className="text-gray-500 text-xs">Official Units</p>
+                        <p className="text-white text-sm font-medium mt-1">{String(chars.dbpr_official_units)}</p>
+                      </div>
+                    )}
+                    {!!chars.dbpr_managing_entity && (
+                      <div>
+                        <p className="text-gray-500 text-xs">Managing Entity</p>
+                        <p className="text-white text-sm font-medium mt-1">{String(chars.dbpr_managing_entity)}</p>
+                      </div>
+                    )}
+                    {!!chars.dbpr_managing_entity_address && (
+                      <div>
+                        <p className="text-gray-500 text-xs">Mgmt Address</p>
+                        <p className="text-gray-400 text-xs mt-1">{String(chars.dbpr_managing_entity_address)}</p>
+                      </div>
+                    )}
+                    {!!chars.dbpr_status && (
+                      <div>
+                        <p className="text-gray-500 text-xs">Status</p>
+                        <p className="text-white text-sm font-medium mt-1">{String(chars.dbpr_status)}</p>
+                      </div>
+                    )}
+                    {!!chars.dbpr_project_number && (
+                      <div>
+                        <p className="text-gray-500 text-xs">Project #</p>
+                        <p className="text-gray-400 text-xs mt-1">{String(chars.dbpr_project_number)}</p>
+                      </div>
+                    )}
+                    {!!chars.dbpr_operating_revenue && (
+                      <div>
+                        <p className="text-gray-500 text-xs">Operating Revenue</p>
+                        <p className="text-white text-sm font-medium mt-1">{String(chars.dbpr_operating_revenue)}</p>
+                      </div>
+                    )}
+                    {!!chars.dbpr_operating_expenses && (
+                      <div>
+                        <p className="text-gray-500 text-xs">Operating Expenses</p>
+                        <p className="text-white text-sm font-medium mt-1">{String(chars.dbpr_operating_expenses)}</p>
+                      </div>
+                    )}
+                    {!!chars.dbpr_reserve_fund_balance && (
+                      <div>
+                        <p className="text-gray-500 text-xs">Reserve Fund Balance</p>
+                        <p className="text-white text-sm font-medium mt-1">{String(chars.dbpr_reserve_fund_balance)}</p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+
             {/* Sunbiz / Association */}
             {!!(chars.sunbiz_corp_name || chars.sunbiz_search_url) && (
               <div>
@@ -527,6 +593,13 @@ export default function LeadDetailPage() {
                       "pa_county", "pa_lookup_url",
                       "sunbiz_search_url", "sunbiz_search_name", "sunbiz_corp_name", "sunbiz_doc_number",
                       "sunbiz_detail_url", "sunbiz_filing_status", "sunbiz_registered_agent", "property_manager",
+                      "sunbiz_filing_date", "sunbiz_principal_address",
+                      "dbpr_condo_name", "dbpr_project_number", "dbpr_file_number", "dbpr_official_units",
+                      "dbpr_status", "dbpr_managing_entity", "dbpr_managing_entity_number",
+                      "dbpr_managing_entity_address", "dbpr_operating_revenue", "dbpr_operating_expenses",
+                      "dbpr_reserve_revenue", "dbpr_operating_fund_balance", "dbpr_reserve_fund_balance",
+                      "dbpr_fiscal_year_end", "dbpr_search_url", "dbpr_cam_name", "dbpr_cam_license",
+                      "dbpr_cam_status", "dbpr_cam_address", "dbpr_management_company",
                       "has_user_intel", "user_doc_types", "_field_sources"].includes(k))
                     .map(([key, val]) => (
                     <div key={key} className="bg-gray-900 border border-gray-800 rounded-lg p-3">
@@ -890,7 +963,10 @@ export default function LeadDetailPage() {
                   const sourceColors: Record<string, string> = {
                     overpass: "border-blue-800 bg-blue-950/30",
                     fema_flood: "border-cyan-800 bg-cyan-950/30",
+                    fdot_parcels: "border-orange-800 bg-orange-950/30",
                     property_appraiser: "border-amber-800 bg-amber-950/30",
+                    dbpr_bulk: "border-teal-800 bg-teal-950/30",
+                    dbpr_condo: "border-lime-800 bg-lime-950/30",
                     sunbiz: "border-purple-800 bg-purple-950/30",
                     user_upload: "border-green-800 bg-green-950/30",
                     ai_analyzer: "border-pink-800 bg-pink-950/30",
@@ -898,7 +974,10 @@ export default function LeadDetailPage() {
                   const badgeColors: Record<string, string> = {
                     overpass: "bg-blue-900 text-blue-300",
                     fema_flood: "bg-cyan-900 text-cyan-300",
+                    fdot_parcels: "bg-orange-900 text-orange-300",
                     property_appraiser: "bg-amber-900 text-amber-300",
+                    dbpr_bulk: "bg-teal-900 text-teal-300",
+                    dbpr_condo: "bg-lime-900 text-lime-300",
                     sunbiz: "bg-purple-900 text-purple-300",
                     user_upload: "bg-green-900 text-green-300",
                     ai_analyzer: "bg-pink-900 text-pink-300",
@@ -906,7 +985,10 @@ export default function LeadDetailPage() {
                   const sourceLabels: Record<string, string> = {
                     overpass: "OpenStreetMap Overpass API",
                     fema_flood: "FEMA National Flood Hazard Layer",
+                    fdot_parcels: "FL DOT/DOR Statewide Parcels",
                     property_appraiser: "County Property Appraiser",
+                    dbpr_bulk: "DBPR Condo Registry (Bulk CSV)",
+                    dbpr_condo: "DBPR CAM License Lookup",
                     sunbiz: "Florida Sunbiz (Div. of Corporations)",
                     user_upload: "User Upload",
                     ai_analyzer: "AI Analyzer (Claude)",

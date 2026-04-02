@@ -7,10 +7,8 @@ Searches search.sunbiz.org for the condo/HOA association to find:
 - Officers (board president, secretary, treasurer = decision makers)
 - Annual report filing status
 
-No public API — generates search URLs for manual/future scrape access.
-When the search URL pattern is known, we can extract structured data.
-
-Sunbiz search URL: https://search.sunbiz.org/Inquiry/CorporationSearch/ByName
+Sunbiz search: https://search.sunbiz.org/Inquiry/CorporationSearch/SearchByName
+Detail page: https://search.sunbiz.org/Inquiry/CorporationSearch/ConvertTiffToPDF?storagePath=COR\\...
 """
 
 import logging
@@ -27,17 +25,16 @@ from database.models import Contact, Entity
 logger = logging.getLogger(__name__)
 
 SUNBIZ_SEARCH_URL = "https://search.sunbiz.org/Inquiry/CorporationSearch/SearchByName"
-SUNBIZ_DETAIL_BASE = "https://search.sunbiz.org/Inquiry/CorporationSearch/SearchResultDetail"
+SUNBIZ_BASE = "https://search.sunbiz.org"
+HTTP_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+}
 
 
 def _build_search_name(entity_name: str) -> str:
-    """Extract the association name suitable for Sunbiz search.
-
-    Strips common suffixes and prefixes that would pollute the search.
-    e.g., "Ultimar Condominium Association, Inc." → "Ultimar"
-    """
+    """Extract the association name suitable for Sunbiz search."""
     name = entity_name
-    # Remove common suffixes
     for suffix in [
         "condominium association", "condo association", "condo assoc",
         "homeowners association", "hoa", "owners association",
@@ -45,45 +42,37 @@ def _build_search_name(entity_name: str) -> str:
         "association", "assoc", "of", "the",
     ]:
         name = re.sub(rf"\b{re.escape(suffix)}\b", "", name, flags=re.IGNORECASE)
-
     name = re.sub(r"[,.\-]+", " ", name).strip()
-    # Use first 2-3 significant words for search
     words = [w for w in name.split() if len(w) > 2]
     return " ".join(words[:3]) if words else entity_name
 
 
 def _search_sunbiz(search_name: str) -> list[dict]:
-    """Search Sunbiz for corporation by name.
-
-    Returns list of matching corporations with basic info.
-    Note: Sunbiz may block automated requests; this is best-effort.
-    """
+    """Search Sunbiz and return matching corporation results."""
     try:
-        with httpx.Client(timeout=15, follow_redirects=True) as client:
+        with httpx.Client(timeout=20, follow_redirects=True, headers=HTTP_HEADERS) as client:
             resp = client.get(SUNBIZ_SEARCH_URL, params={
                 "searchNameOrder": search_name,
                 "searchTypeOrder": "STARTS",
-            }, headers={
-                "User-Agent": "Mozilla/5.0 (compatible; InsureLeadGen/1.0)",
             })
             resp.raise_for_status()
-
-            # Parse basic results from HTML
-            # Look for corporation names and document numbers
-            results = []
             text = resp.text
+            results = []
 
-            # Find corporation links: /Inquiry/CorporationSearch/SearchResultDetail?inquirytype=EntityName&directionType=Initial&searchNameOrder=...&...&...documentNumber=...
-            pattern = r'SearchResultDetail[^"]*documentNumber=([A-Z0-9]+)[^"]*"[^>]*>([^<]+)</a>'
-            matches = re.findall(pattern, text)
-
-            for doc_num, corp_name in matches[:5]:  # Top 5 matches
-                results.append({
-                    "document_number": doc_num.strip(),
-                    "name": corp_name.strip(),
-                    "url": f"https://search.sunbiz.org/Inquiry/CorporationSearch/SearchResultDetail?inquirytype=EntityName&directionType=Initial&searchNameOrder={quote_plus(search_name)}&searchTerm={quote_plus(search_name)}&listNameOrder={quote_plus(corp_name.strip())}&documentNumber={doc_num.strip()}",
-                })
-
+            # Parse search result links — they contain document numbers
+            # Pattern: /Inquiry/CorporationSearch/SearchResultDetail?...documentNumber=XXXXX
+            rows = re.findall(
+                r'<a href="(/Inquiry/CorporationSearch/SearchResultDetail[^"]*)"[^>]*>([^<]+)</a>',
+                text
+            )
+            for url_path, corp_name in rows[:5]:
+                doc_match = re.search(r'[&?]documentNumber=([A-Z0-9]+)', url_path)
+                if doc_match:
+                    results.append({
+                        "document_number": doc_match.group(1),
+                        "name": corp_name.strip(),
+                        "detail_url": f"{SUNBIZ_BASE}{url_path}",
+                    })
             return results
     except Exception as e:
         logger.warning(f"Sunbiz search failed for '{search_name}': {e}")
@@ -93,36 +82,70 @@ def _search_sunbiz(search_name: str) -> list[dict]:
 def _get_corporation_detail(detail_url: str) -> dict:
     """Fetch corporation detail page and extract officers and registered agent."""
     try:
-        with httpx.Client(timeout=15, follow_redirects=True) as client:
-            resp = client.get(detail_url, headers={
-                "User-Agent": "Mozilla/5.0 (compatible; InsureLeadGen/1.0)",
-            })
+        with httpx.Client(timeout=20, follow_redirects=True, headers=HTTP_HEADERS) as client:
+            resp = client.get(detail_url)
             resp.raise_for_status()
             text = resp.text
+            result = {"officers": [], "registered_agent": None, "status": None, "filing_date": None, "address": None}
 
-            result = {"officers": [], "registered_agent": None, "status": None}
-
-            # Extract filing status
-            status_match = re.search(r'Status[^<]*<[^>]*>([^<]+)', text)
+            # Filing status — look for "Status" label followed by value
+            status_match = re.search(r'Status\s*</label>\s*<span[^>]*>([^<]+)', text)
             if status_match:
                 result["status"] = status_match.group(1).strip()
 
-            # Extract registered agent (often the management company)
-            agent_section = re.search(r'Registered Agent.*?<div[^>]*>(.*?)</div>', text, re.DOTALL)
+            # Filing date
+            date_match = re.search(r'(?:Date Filed|Filed Date)\s*</label>\s*<span[^>]*>([^<]+)', text)
+            if date_match:
+                result["filing_date"] = date_match.group(1).strip()
+
+            # Principal address
+            addr_section = re.search(r'Principal Address.*?<div[^>]*class="[^"]*detailSection[^"]*"[^>]*>(.*?)</div>', text, re.DOTALL)
+            if addr_section:
+                addr_text = re.sub(r'<br\s*/?>', '\n', addr_section.group(1))
+                addr_text = re.sub(r'<[^>]+>', '', addr_text).strip()
+                lines = [l.strip() for l in addr_text.split('\n') if l.strip()]
+                if lines:
+                    result["address"] = ", ".join(lines[:3])
+
+            # Registered agent — in its own section
+            agent_section = re.search(
+                r'Registered Agent.*?<div[^>]*class="[^"]*detailSection[^"]*"[^>]*>(.*?)</div>',
+                text, re.DOTALL
+            )
             if agent_section:
-                agent_text = re.sub(r'<[^>]+>', '\n', agent_section.group(1)).strip()
+                agent_html = agent_section.group(1)
+                agent_text = re.sub(r'<br\s*/?>', '\n', agent_html)
+                agent_text = re.sub(r'<[^>]+>', '', agent_text).strip()
                 lines = [l.strip() for l in agent_text.split('\n') if l.strip()]
                 if lines:
                     result["registered_agent"] = lines[0]
 
-            # Extract officers (President, Secretary, Treasurer, etc.)
-            officer_pattern = r'<span[^>]*>([^<]*(?:President|Secretary|Treasurer|Director|VP|Vice President)[^<]*)</span>[^<]*<[^>]*>([^<]+)'
-            officer_matches = re.findall(officer_pattern, text, re.IGNORECASE)
-            for title, name in officer_matches:
-                result["officers"].append({
-                    "title": title.strip(),
-                    "name": name.strip(),
-                })
+            # Officers — in the Officer/Director Detail section
+            # Each officer block: Title followed by Name
+            officer_section = re.search(
+                r'Officer/Director Detail(.*?)(?:Annual Report|$)',
+                text, re.DOTALL
+            )
+            if officer_section:
+                block = officer_section.group(1)
+                # Title lines followed by name lines
+                title_pattern = r'<span[^>]*>\s*((?:President|Vice President|Secretary|Treasurer|Director|VP|Chairman|Manager|Member|Registered Agent)[^<]*)</span>'
+                titles = re.findall(title_pattern, block, re.IGNORECASE)
+
+                # Get all names (typically in spans after titles)
+                name_spans = re.findall(r'<span[^>]*>([A-Z][A-Z\s,.\'-]+)</span>', block)
+                # Filter out titles from names
+                title_set = {t.strip().upper() for t in titles}
+                names = [n.strip() for n in name_spans if n.strip().upper() not in title_set and len(n.strip()) > 3]
+
+                # Pair them up
+                for idx, title in enumerate(titles):
+                    name = names[idx] if idx < len(names) else None
+                    if name:
+                        result["officers"].append({
+                            "title": title.strip(),
+                            "name": name.strip().title(),  # Normalize case
+                        })
 
             return result
     except Exception as e:
@@ -130,7 +153,7 @@ def _get_corporation_detail(detail_url: str) -> dict:
         return {}
 
 
-@register_enricher("CANDIDATE", "sunbiz", requires=[])
+@register_enricher("INVESTIGATING", "sunbiz", requires=[])
 def enrich_sunbiz(entity: Entity, db: Session) -> bool:
     """Search Florida Sunbiz for condo/HOA association information."""
     if not entity.name:
@@ -139,7 +162,7 @@ def enrich_sunbiz(entity: Entity, db: Session) -> bool:
     search_name = _build_search_name(entity.name)
     search_url = f"{SUNBIZ_SEARCH_URL}?searchNameOrder={quote_plus(search_name)}&searchTypeOrder=STARTS"
 
-    # Attempt search
+    # Search for the association
     results = _search_sunbiz(search_name)
 
     updates: dict = {
@@ -149,25 +172,26 @@ def enrich_sunbiz(entity: Entity, db: Session) -> bool:
     contacts_added = []
 
     if results:
-        # Use best match (first result)
         best = results[0]
         updates["sunbiz_corp_name"] = best["name"]
         updates["sunbiz_doc_number"] = best["document_number"]
-        updates["sunbiz_detail_url"] = best["url"]
+        updates["sunbiz_detail_url"] = best["detail_url"]
 
-        # Try to get detailed info (officers, registered agent)
-        detail = _get_corporation_detail(best["url"])
+        # Fetch the actual detail page to get officers and registered agent
+        detail = _get_corporation_detail(best["detail_url"])
         if detail:
             if detail.get("status"):
                 updates["sunbiz_filing_status"] = detail["status"]
+            if detail.get("filing_date"):
+                updates["sunbiz_filing_date"] = detail["filing_date"]
+            if detail.get("address"):
+                updates["sunbiz_principal_address"] = detail["address"]
             if detail.get("registered_agent"):
                 updates["sunbiz_registered_agent"] = detail["registered_agent"]
-                # Registered agent is often the property management company
                 updates["property_manager"] = detail["registered_agent"]
 
-            # Create contacts from officers
+            # Create contacts from officers — these are the decision makers
             for officer in detail.get("officers", []):
-                # Check if contact already exists
                 existing = db.query(Contact).filter(
                     Contact.entity_id == entity.id,
                     Contact.name == officer["name"],
@@ -180,20 +204,25 @@ def enrich_sunbiz(entity: Entity, db: Session) -> bool:
                         title=officer["title"],
                         is_primary=1 if is_president else 0,
                         source="sunbiz",
-                        source_url=best["url"],
+                        source_url=best["detail_url"],
                     )
                     db.add(contact)
-                    contacts_added.append(officer["name"])
+                    contacts_added.append(f"{officer['name']} ({officer['title']})")
 
-        if contacts_added:
-            db.flush()
+                    # If this is the president, also store as decision maker
+                    if is_president:
+                        updates["decision_maker"] = officer["name"]
+                        updates["decision_maker_title"] = officer["title"]
+
+            if contacts_added:
+                db.flush()
 
     update_characteristics(entity, updates, "sunbiz")
 
     fields = [k for k, v in updates.items() if v is not None]
     detail_msg = f"Sunbiz: {len(fields)} fields"
     if contacts_added:
-        detail_msg += f", {len(contacts_added)} contacts added"
+        detail_msg += f", {len(contacts_added)} contacts ({', '.join(contacts_added[:3])})"
     if updates.get("sunbiz_corp_name"):
         detail_msg += f" — {updates['sunbiz_corp_name']}"
 

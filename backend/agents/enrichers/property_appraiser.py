@@ -110,7 +110,7 @@ def _query_arcgis_by_point(endpoint_url: str, lat: float, lon: float, sr: int = 
         "f": "json",
     }
     try:
-        with httpx.Client(timeout=10) as client:
+        with httpx.Client(timeout=10, headers={"User-Agent": "insure-lead-gen/1.0"}) as client:
             resp = client.get(endpoint_url, params=params)
             resp.raise_for_status()
             # Guard against HTML error pages

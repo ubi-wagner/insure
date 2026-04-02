@@ -28,11 +28,19 @@ class RegionStatus(str, enum.Enum):
 
 
 class PipelineStage(str, enum.Enum):
-    NEW = "NEW"
-    CANDIDATE = "CANDIDATE"
-    TARGET = "TARGET"
-    OPPORTUNITY = "OPPORTUNITY"
-    CUSTOMER = "CUSTOMER"
+    # Automatic tier (enrichers auto-advance)
+    NEW = "NEW"                     # Just discovered from Overpass
+    ENRICHED = "ENRICHED"           # FEMA + FDOT + PA data populated automatically
+
+    # Investigation tier (Jason triggers, enrichers auto-complete)
+    INVESTIGATING = "INVESTIGATING" # Jason clicked Investigate → Sunbiz + AI running
+    RESEARCHED = "RESEARCHED"       # Investigation complete — contacts + emails ready
+
+    # Manual tier (Jason decides)
+    TARGETED = "TARGETED"           # Jason picked this for deeper profiling → DBPR runs
+    OPPORTUNITY = "OPPORTUNITY"     # Full CRM profile + portal created
+    CUSTOMER = "CUSTOMER"           # Converted deal
+
     CHURNED = "CHURNED"
     ARCHIVED = "ARCHIVED"
 

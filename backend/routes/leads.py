@@ -430,31 +430,31 @@ def _compute_readiness(entity: Entity, db: Session) -> dict:
     has_property_manager = bool(chars.get("property_manager") or chars.get("dbpr_management_company"))
 
     return {
-        "candidate": {
-            "ready": True,  # Any lead can become a candidate
+        "investigating": {
+            "ready": True,  # Any enriched lead can be investigated
             "checks": {
                 "flood_zone": {"done": has_flood, "label": "FEMA flood zone"},
-                "property_data": {"done": has_property_data, "label": "Property appraiser data"},
+                "property_data": {"done": has_property_data, "label": "Property data"},
                 "tiv": {"done": has_tiv, "label": "TIV estimate"},
             },
         },
-        "target": {
+        "targeted": {
             "ready": has_sunbiz or has_contacts,
             "checks": {
-                "association_search": {"done": has_sunbiz, "label": "Sunbiz association search"},
-                "contacts": {"done": has_contacts, "label": "At least one contact"},
-                "carrier": {"done": has_carrier, "label": "Current carrier identified"},
-                "ai_analysis": {"done": has_emails, "label": "AI Kill & Cook analysis"},
+                "association_search": {"done": has_sunbiz, "label": "Sunbiz association"},
+                "contacts": {"done": has_contacts, "label": "Contacts found"},
+                "carrier": {"done": has_carrier, "label": "Carrier identified"},
+                "ai_analysis": {"done": has_emails, "label": "AI analysis complete"},
             },
         },
         "opportunity": {
             "ready": has_decision_maker and (has_emails or has_contact_email),
             "checks": {
-                "decision_maker": {"done": has_decision_maker, "label": "Decision maker identified"},
-                "contact_email": {"done": has_contact_email, "label": "Contact email available"},
-                "emails_generated": {"done": has_emails, "label": "Outreach emails generated"},
-                "property_manager": {"done": has_property_manager, "label": "Property manager identified"},
-                "dbpr_lookup": {"done": has_dbpr, "label": "DBPR condo registry checked"},
+                "decision_maker": {"done": has_decision_maker, "label": "Decision maker"},
+                "contact_email": {"done": has_contact_email, "label": "Contact email"},
+                "emails_generated": {"done": has_emails, "label": "Outreach emails"},
+                "property_manager": {"done": has_property_manager, "label": "Property manager"},
+                "dbpr_lookup": {"done": has_dbpr, "label": "DBPR checked"},
             },
         },
     }
@@ -483,7 +483,7 @@ class StageChangeRequest(BaseModel):
 @router.post("/api/leads/{entity_id}/stage")
 def change_stage(entity_id: int, req: StageChangeRequest, db: Session = Depends(get_db)):
     """Advance or change an entity's pipeline stage with readiness validation."""
-    valid_stages = ["NEW", "CANDIDATE", "TARGET", "OPPORTUNITY", "CUSTOMER", "CHURNED", "ARCHIVED"]
+    valid_stages = ["NEW", "ENRICHED", "INVESTIGATING", "RESEARCHED", "TARGETED", "OPPORTUNITY", "CUSTOMER", "CHURNED", "ARCHIVED"]
     if req.stage not in valid_stages:
         raise HTTPException(status_code=400, detail=f"Invalid stage. Must be one of: {valid_stages}")
 
@@ -492,11 +492,11 @@ def change_stage(entity_id: int, req: StageChangeRequest, db: Session = Depends(
         raise HTTPException(status_code=404, detail="Entity not found")
 
     # Check readiness for forward progression (skip for demotions/archive)
-    forward_stages = ["CANDIDATE", "TARGET", "OPPORTUNITY", "CUSTOMER"]
+    forward_stages = ["INVESTIGATING", "TARGETED", "OPPORTUNITY", "CUSTOMER"]
     if req.stage in forward_stages and not req.force:
         readiness = _compute_readiness(entity, db)
         stage_key = req.stage.lower()
-        if stage_key in readiness and not readiness[stage_key]["ready"]:
+        if stage_key in readiness and not readiness[stage_key].get("ready", True):
             missing = [
                 check["label"]
                 for check in readiness[stage_key]["checks"].values()
@@ -526,15 +526,15 @@ def change_stage(entity_id: int, req: StageChangeRequest, db: Session = Depends(
     emit(EventType.DB_OPERATION, "stage_change", EventStatus.SUCCESS,
          detail=f"'{entity.name}': {old_stage} → {req.stage}", entity_id=entity_id)
 
-    # Trigger stage-appropriate enrichments (data population only, no stage changes)
+    # Trigger stage-appropriate enrichments + auto-advance when complete
     try:
         from agents.enrichers.pipeline import run_enrichment_for_stage
         run_enrichment_for_stage(entity, req.stage, db)
     except Exception as e:
         logger.warning(f"Enrichment on stage change failed for entity {entity_id}: {e}")
 
-    # On CANDIDATE: also run AI Kill & Cook for insurance intel + email generation
-    if req.stage == "CANDIDATE":
+    # On INVESTIGATING: also run AI Kill & Cook for insurance intel + email generation
+    if req.stage == "INVESTIGATING":
         try:
             from services.ai_analyzer import trigger_deep_dive
             emit(EventType.AI_ANALYZER, "deep_dive_start", EventStatus.PENDING,

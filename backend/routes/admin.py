@@ -1,3 +1,4 @@
+import logging
 import threading
 
 import sqlalchemy as sa
@@ -5,8 +6,10 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from database import get_db, SessionLocal
+from database.models import Entity
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 @router.post("/api/admin/seed")
@@ -141,6 +144,125 @@ def trigger_bulk_harvest():
         "success": True,
         "message": f"Bulk harvest started for {len(FL_HARVEST_AREAS)} areas across 11 counties",
         "areas": [s["name"] for s in FL_HARVEST_AREAS],
+    }
+
+
+def _run_bulk_enrich():
+    """Background job: enrich all leads that are missing enrichment data."""
+    import time as _time
+    from agents.enrichers.pipeline import run_enrichment_for_stage
+    from services.event_bus import EventStatus, EventType, emit
+
+    _logger = logging.getLogger(__name__)
+    db = SessionLocal()
+    enriched = 0
+    skipped = 0
+    failed = 0
+    try:
+        # Get all leads missing enrichment sources
+        entities = db.query(Entity).filter(
+            Entity.pipeline_stage.in_(["NEW", "ENRICHED", "INVESTIGATING", "RESEARCHED", "TARGETED", "OPPORTUNITY"]),
+        ).order_by(Entity.id).all()
+
+        total = len(entities)
+        emit(EventType.HUNTER, "bulk_enrich", EventStatus.PENDING,
+             detail=f"Starting bulk enrichment for {total} leads")
+        _logger.info(f"Bulk enrichment: {total} leads to process")
+
+        for i, entity in enumerate(entities):
+            sources = entity.enrichment_sources or {}
+
+            # Skip if already fully enriched for current stage
+            stage = entity.pipeline_stage or "NEW"
+            if stage in ("ENRICHED", "RESEARCHED") and all(s in sources for s in ["fema_flood", "fdot_parcels"]):
+                skipped += 1
+                continue
+
+            try:
+                # Run enrichments for the entity's current stage
+                run_enrichment_for_stage(entity, stage, db)
+
+                # Also backfill NEW enrichments if they haven't run yet
+                if stage not in ("NEW",) and not any(s in sources for s in ["fema_flood", "fdot_parcels"]):
+                    run_enrichment_for_stage(entity, "NEW", db)
+
+                enriched += 1
+
+                if enriched % 25 == 0:
+                    emit(EventType.HUNTER, "bulk_enrich", EventStatus.PENDING,
+                         detail=f"Progress: {enriched}/{total} enriched, {skipped} skipped, {failed} failed")
+                    _logger.info(f"Bulk enrich progress: {enriched}/{total}")
+
+            except Exception as e:
+                failed += 1
+                db.rollback()
+                _logger.warning(f"Enrich failed for entity {entity.id}: {e}")
+
+            # Brief pause to not hammer external APIs
+            _time.sleep(0.5)
+
+        detail = f"Bulk enrichment done: {enriched} enriched, {skipped} skipped, {failed} failed (of {total})"
+        emit(EventType.HUNTER, "bulk_enrich", EventStatus.SUCCESS, detail=detail)
+        _logger.info(detail)
+    except Exception as e:
+        _logger.error(f"Bulk enrichment failed: {e}")
+        emit(EventType.HUNTER, "bulk_enrich", EventStatus.ERROR, detail=str(e)[:200])
+    finally:
+        db.close()
+
+
+@router.post("/api/admin/enrich")
+def trigger_bulk_enrich():
+    """Trigger bulk enrichment for all leads missing data. Runs in background."""
+    thread = threading.Thread(target=_run_bulk_enrich, daemon=True)
+    thread.start()
+    return {
+        "success": True,
+        "message": "Bulk enrichment started for all unenriched leads",
+    }
+
+
+@router.get("/api/admin/enrich/status")
+def get_enrich_status(db: Session = Depends(get_db)):
+    """Get enrichment coverage stats."""
+    from database.models import OsmBuilding
+
+    total_leads = db.query(Entity).filter(
+        Entity.pipeline_stage.in_(["NEW", "ENRICHED", "INVESTIGATING", "RESEARCHED", "TARGETED", "OPPORTUNITY", "CUSTOMER"])
+    ).count()
+
+    # Count leads with each enrichment source
+    has_fema = db.execute(sa.text(
+        "SELECT COUNT(*) FROM entities WHERE enrichment_sources ? 'fema_flood'"
+    )).scalar() or 0
+    has_fdot = db.execute(sa.text(
+        "SELECT COUNT(*) FROM entities WHERE enrichment_sources ? 'fdot_parcels'"
+    )).scalar() or 0
+    has_pa = db.execute(sa.text(
+        "SELECT COUNT(*) FROM entities WHERE enrichment_sources ? 'property_appraiser'"
+    )).scalar() or 0
+    has_sunbiz = db.execute(sa.text(
+        "SELECT COUNT(*) FROM entities WHERE enrichment_sources ? 'sunbiz'"
+    )).scalar() or 0
+    has_overpass = db.execute(sa.text(
+        "SELECT COUNT(*) FROM entities WHERE enrichment_sources ? 'overpass'"
+    )).scalar() or 0
+
+    # Count leads with no enrichment at all
+    no_enrichment = db.execute(sa.text(
+        "SELECT COUNT(*) FROM entities WHERE enrichment_sources IS NULL OR enrichment_sources = '{}'"
+    )).scalar() or 0
+
+    return {
+        "total_leads": total_leads,
+        "no_enrichment": no_enrichment,
+        "coverage": {
+            "overpass": has_overpass,
+            "fema_flood": has_fema,
+            "fdot_parcels": has_fdot,
+            "property_appraiser": has_pa,
+            "sunbiz": has_sunbiz,
+        },
     }
 
 
