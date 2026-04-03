@@ -42,7 +42,7 @@ def reset_database(db: Session = Depends(get_db)):
     except Exception as e:
         db.rollback()
         logger.error(f"Reset failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Database reset failed. Check server logs.")
 
 
 @router.get("/api/admin/counties")
@@ -402,7 +402,7 @@ def query_data(
     table: str = Query("entities"),
     county: str = Query(""),
     stage: str = Query(""),
-    limit: int = Query(50),
+    limit: int = Query(50, ge=1, le=500),
     db: Session = Depends(get_db),
 ):
     """Guided data query — search entities or contacts.
@@ -490,7 +490,7 @@ async def upload_data_file(file: UploadFile = File(...)):
     Streams to disk in chunks — handles files of any size.
     Also saves a local copy to backend/data/ for enricher access.
     """
-    filename = file.filename or "unknown.csv"
+    filename = os.path.basename(file.filename or "unknown.csv")
 
     # Stream to disk in chunks
     data_dir = os.path.join(os.path.dirname(__file__), "..", "data")
@@ -635,8 +635,8 @@ def _sync_from_s3():
 # Sync from S3 on startup (restores files lost on redeploy)
 try:
     _sync_from_s3()
-except Exception:
-    pass  # Non-critical — S3 may not be configured
+except Exception as e:
+    logger.debug(f"S3 sync skipped: {e}")  # Non-critical — S3 may not be configured
 
 
 @router.get("/api/files")
@@ -702,7 +702,7 @@ async def upload_file(
         raise HTTPException(status_code=400, detail="Invalid path")
     os.makedirs(safe_dir, exist_ok=True)
 
-    filename = file.filename or "unnamed"
+    filename = os.path.basename(file.filename or "unnamed")
     filepath = os.path.join(safe_dir, filename)
 
     if total_chunks > 1:
