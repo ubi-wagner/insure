@@ -168,10 +168,16 @@ def download_sunbiz_bulk():
     """
     def _run():
         try:
-            from scripts.download_sunbiz import download_and_filter
-            path = download_and_filter()
-            emit(EventType.SYSTEM, "download_sunbiz", EventStatus.SUCCESS,
-                 detail=f"Downloaded to {os.path.basename(path)}" if path else "No data found")
+            from scripts.download_sunbiz import download_and_process
+            result = download_and_process()
+            if result.get("success"):
+                detail = f"{result.get('total_matches', 0):,} associations"
+                if result.get("csv_path"):
+                    detail += f" -> {os.path.basename(result['csv_path'])}"
+                emit(EventType.SYSTEM, "download_sunbiz", EventStatus.SUCCESS, detail=detail)
+            else:
+                emit(EventType.SYSTEM, "download_sunbiz", EventStatus.ERROR,
+                     detail=result.get("error", "Unknown error")[:200])
         except Exception as e:
             logger.error(f"Sunbiz bulk download failed: {e}")
             emit(EventType.SYSTEM, "download_sunbiz", EventStatus.ERROR,
