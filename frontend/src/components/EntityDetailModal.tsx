@@ -306,7 +306,7 @@ export default function EntityDetailModal({
               {lead.county && <span className="shrink-0">{lead.county}</span>}
               {lead.latitude != null && lead.longitude != null && lead.latitude !== 0 && onFlyTo && (
                 <button
-                  onClick={() => onFlyTo(lead.latitude, lead.longitude)}
+                  onClick={() => onFlyTo(lead.latitude!, lead.longitude!)}
                   className="text-blue-400 hover:underline shrink-0"
                 >
                   Fly to
