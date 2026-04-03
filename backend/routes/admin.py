@@ -193,6 +193,56 @@ def download_sunbiz_bulk():
     }
 
 
+@router.post("/api/admin/refresh-data")
+def refresh_all_data():
+    """Download fresh data from all FL state sources.
+
+    Refreshes: DBPR CSVs, Sunbiz corporate extract, ArcGIS cadastral parcels.
+    Runs in background. Files saved to data/, filestore/, and S3.
+    """
+    def _run():
+        try:
+            from scripts.data_refresh import refresh_all
+            results = refresh_all()
+            total = results["total_files"]
+            failed = results["total_failed"]
+            emit(EventType.SYSTEM, "refresh_data", EventStatus.SUCCESS,
+                 detail=f"{total} files downloaded, {failed} failed")
+        except Exception as e:
+            logger.error(f"Data refresh failed: {e}")
+            emit(EventType.SYSTEM, "refresh_data", EventStatus.ERROR,
+                 detail=str(e)[:200])
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+    emit(EventType.SYSTEM, "refresh_data", EventStatus.PENDING,
+         detail="Refreshing all data sources (DBPR, Sunbiz, ArcGIS)...")
+    return {
+        "success": True,
+        "message": "Full data refresh started. DBPR CSVs + Sunbiz + ArcGIS Cadastral. Check Events tab.",
+    }
+
+
+@router.post("/api/admin/refresh-dbpr")
+def refresh_dbpr_data():
+    """Download fresh DBPR condo registry + payment history CSVs."""
+    def _run():
+        try:
+            from scripts.data_refresh import refresh_dbpr
+            result = refresh_dbpr()
+            files = len(result.get("files", []))
+            emit(EventType.SYSTEM, "refresh_dbpr", EventStatus.SUCCESS,
+                 detail=f"{files} DBPR files refreshed")
+        except Exception as e:
+            logger.error(f"DBPR refresh failed: {e}")
+            emit(EventType.SYSTEM, "refresh_dbpr", EventStatus.ERROR,
+                 detail=str(e)[:200])
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+    return {"success": True, "message": "DBPR refresh started."}
+
+
 # Full county harvest areas — covers entire county footprints
 # Split into grid tiles (~0.15° ≈ 10 miles) to keep Overpass queries manageable
 # Counties ordered south → north along both coasts

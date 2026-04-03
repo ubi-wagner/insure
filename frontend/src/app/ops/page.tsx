@@ -588,6 +588,19 @@ export default function OpsPage() {
                   className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs px-3 py-2 rounded font-medium">
                   Pull Sunbiz
                 </button>
+                <button onClick={async () => {
+                  setSeedResult(null);
+                  try {
+                    const res = await fetch("/api/proxy/admin/refresh-data", { method: "POST" });
+                    const data = await res.json();
+                    setSeedResult(data.message || "Data refresh started");
+                  } catch (err) {
+                    setSeedResult(`Error: ${err}`);
+                  }
+                }}
+                  className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs px-3 py-2 rounded font-medium">
+                  Refresh All Data
+                </button>
               </div>
             </div>
 
