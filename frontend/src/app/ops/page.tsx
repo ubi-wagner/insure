@@ -323,7 +323,7 @@ export default function OpsPage() {
   // ─── Helpers ───
 
   const totalEntities = enrichStatus?.stage_counts
-    ? Object.values(enrichStatus.stage_counts).reduce((a: number, b: number) => a + b, 0)
+    ? Object.values(enrichStatus.stage_counts).reduce((a, b) => a + b, 0)
     : enrichStatus?.total_leads || 0;
 
   const tabs: { key: ActiveTab; label: string; badge?: number }[] = [
