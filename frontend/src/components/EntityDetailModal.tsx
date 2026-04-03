@@ -154,7 +154,7 @@ function DataRow({ label, value, href }: { label: string; value: unknown; href?:
  * Collapsible section wrapper. Automatically hides itself when all children
  * are null / false (i.e. every DataRow returned null because its value was empty).
  */
-function DataSection({ title, children }: { title: string; children: React.ReactNode }) {
+function DataSection({ title, children }: { title: string; children?: React.ReactNode }) {
   const filtered = Array.isArray(children)
     ? children.filter((c) => c !== null && c !== undefined && c !== false)
     : children ? [children] : [];

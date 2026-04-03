@@ -323,7 +323,7 @@ export default function OpsPage() {
   // ─── Helpers ───
 
   const totalEntities = enrichStatus?.stage_counts
-    ? Object.values(enrichStatus.stage_counts).reduce((a, b) => a + b, 0)
+    ? Object.values(enrichStatus.stage_counts).reduce((a: number, b: number) => a + b, 0)
     : enrichStatus?.total_leads || 0;
 
   const tabs: { key: ActiveTab; label: string; badge?: number }[] = [
@@ -433,7 +433,8 @@ export default function OpsPage() {
               </div>
               {enrichStatus && (
                 <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-5 gap-3">
-                  {Object.entries(enrichStatus.coverage || {}).map(([source, count]) => {
+                  {Object.entries(enrichStatus.coverage || {}).map(([source, rawCount]) => {
+                    const count = Number(rawCount) || 0;
                     const pct = enrichStatus.total_leads > 0
                       ? Math.round((count / enrichStatus.total_leads) * 100) : 0;
                     return (
