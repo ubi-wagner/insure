@@ -9,7 +9,6 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelna
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from routes.regions import router as regions_router
 from routes.leads import router as leads_router
 from routes.admin import router as admin_router
 from routes.events import router as events_router, EventLoggingMiddleware
@@ -59,18 +58,7 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.error(f"Service registration failed: {e}")
 
-    # Start hunter agent (Overpass harvesting)
-    try:
-        from agents.hunter import run_hunter_loop
-        thread = threading.Thread(target=run_hunter_loop, daemon=True)
-        thread.start()
-        logger.info("Hunter agent started")
-        emit(EventType.HUNTER, "agent_start", EventStatus.SUCCESS)
-    except Exception as e:
-        logger.error(f"Failed to start hunter agent: {e}")
-        emit(EventType.HUNTER, "agent_start", EventStatus.ERROR, detail=str(e)[:300])
-
-    # Start Overpass association worker (TARGET → LEAD)
+    # Start Census geocode association worker (TARGET → LEAD)
     try:
         from agents.associator import start_association_worker
         start_association_worker()
@@ -105,6 +93,17 @@ async def lifespan(app: FastAPI):
     hb_thread = threading.Thread(target=_heartbeat_loop, daemon=True)
     hb_thread.start()
 
+    # Start timebomb scheduler (data refresh triggers)
+    try:
+        from services.timebomb import start_timebomb_checker, setup_default_schedules
+        setup_default_schedules()
+        start_timebomb_checker()
+        logger.info("Timebomb scheduler started")
+        emit(EventType.SYSTEM, "timebomb_start", EventStatus.SUCCESS,
+             detail="Data refresh schedules configured")
+    except Exception as e:
+        logger.error(f"Failed to start timebomb scheduler: {e}")
+
     emit(EventType.SYSTEM, "startup", EventStatus.SUCCESS, detail="Application ready")
     yield
     emit(EventType.SYSTEM, "shutdown", EventStatus.SUCCESS, detail="Application shutting down")
@@ -128,7 +127,6 @@ app.add_middleware(
 # HTTP logging middleware (must be added after CORS)
 app.add_middleware(EventLoggingMiddleware)
 
-app.include_router(regions_router)
 app.include_router(leads_router)
 app.include_router(admin_router)
 app.include_router(events_router)

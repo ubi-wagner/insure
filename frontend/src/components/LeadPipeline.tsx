@@ -7,14 +7,14 @@ interface Lead {
   name: string;
   address: string;
   county: string;
-  latitude: number;
-  longitude: number;
+  latitude: number | null;
+  longitude: number | null;
   characteristics: Record<string, unknown> | null;
-  created_at: string;
+  created_at: string | null;
   status: string;
   pipeline_stage: string;
   wind_ratio: number | null;
-  heat_score: string;
+  heat_score: string | null;
   premium_parsed: number | null;
   tiv_parsed: number | null;
   enrichment_status?: string;
@@ -47,6 +47,7 @@ const TARGET_COUNTIES = [
 ];
 
 const SORT_OPTIONS = [
+  { value: "cream-desc", label: "Best Opportunity" },
   { value: "value-desc", label: "Value (High-Low)" },
   { value: "value-asc", label: "Value (Low-High)" },
   { value: "stories-desc", label: "Stories (Most)" },
@@ -55,6 +56,14 @@ const SORT_OPTIONS = [
   { value: "year_built-asc", label: "Oldest Built" },
   { value: "name-asc", label: "Name A-Z" },
   { value: "date-desc", label: "Newest Added" },
+];
+
+const CREAM_TIERS = [
+  { value: "", label: "All Tiers" },
+  { value: "platinum", label: "Platinum (90+)" },
+  { value: "gold", label: "Gold (70-89)" },
+  { value: "silver", label: "Silver (50-69)" },
+  { value: "bronze", label: "Bronze (30-49)" },
 ];
 
 const USE_CODE_OPTIONS = [
@@ -97,6 +106,7 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
   const [useCode, setUseCode] = useState("");
   const [heatFilter, setHeatFilter] = useState("");
   const [citizensOnly, setCitizensOnly] = useState(false);
+  const [creamTier, setCreamTier] = useState("");
   const [showFilters, setShowFilters] = useState(false);
 
   // Pagination
@@ -155,6 +165,7 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
       if (useCode) params.set("use_code", useCode);
       if (heatFilter) params.set("heat", heatFilter);
       if (citizensOnly) params.set("on_citizens", "true");
+      if (creamTier) params.set("cream_tier", creamTier);
 
       const res = await fetch(`/api/proxy/leads?${params}`);
       if (res.ok) {
@@ -177,7 +188,7 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
       setFetchError("Unable to connect");
     }
     setLoading(false);
-  }, [activeStage, search, county, sortKey, page, minValue, maxValue, minUnits, minStories, useCode, heatFilter, citizensOnly, onLeadsLoaded]);
+  }, [activeStage, search, county, sortKey, page, minValue, maxValue, minUnits, minStories, useCode, heatFilter, citizensOnly, creamTier, onLeadsLoaded]);
 
   // Fetch stage counts for the tab badges
   const fetchStageCounts = useCallback(async () => {
@@ -199,7 +210,7 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
   }, [fetchStageCounts, refreshKey]);
 
   // Reset page when filters change
-  useEffect(() => { setPage(0); }, [activeStage, search, county, sortKey, minValue, maxValue, minUnits, minStories, useCode, heatFilter, citizensOnly]);
+  useEffect(() => { setPage(0); }, [activeStage, search, county, sortKey, minValue, maxValue, minUnits, minStories, useCode, heatFilter, citizensOnly, creamTier]);
 
   // Clear selection when stage changes
   useEffect(() => { setSelected(new Set()); setSelectMode(false); setBulkMsg(null); }, [activeStage]);
@@ -221,7 +232,9 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
       }
       await fetchLeads();
       fetchStageCounts();
-    } catch {}
+    } catch {
+      setFetchError("Action failed — try again");
+    }
     setActionId(null);
   }
 
@@ -243,6 +256,8 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
         setSelectMode(false);
         await fetchLeads();
         fetchStageCounts();
+      } else {
+        setBulkMsg("Action failed — " + res.status);
       }
     } catch {
       setBulkMsg("Bulk action failed");
@@ -272,6 +287,8 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
         setBulkMsg(`${data.changed ?? 0} moved to ${targetStage}`);
         await fetchLeads();
         fetchStageCounts();
+      } else {
+        setBulkMsg("Action failed — " + res.status);
       }
     } catch {
       setBulkMsg("Bulk action failed");
@@ -400,13 +417,25 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
               </div>
             </div>
             <div className="flex gap-2 items-center">
-              <label className="flex items-center gap-1.5 text-xs text-gray-400 cursor-pointer">
-                <input type="checkbox" checked={citizensOnly} onChange={(e) => setCitizensOnly(e.target.checked)}
-                  className="rounded bg-gray-800 border-gray-600 text-blue-600" />
-                Citizens Insurance Only
-              </label>
+              <div className="flex-1">
+                <label className="text-[10px] text-gray-500 block mb-0.5">Opportunity Tier</label>
+                <select value={creamTier} onChange={(e) => setCreamTier(e.target.value)}
+                  className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-white">
+                  {CREAM_TIERS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                </select>
+              </div>
+              <div className="flex-1">
+                <label className="text-[10px] text-gray-500 block mb-0.5">&nbsp;</label>
+                <label className="flex items-center gap-1.5 text-xs text-gray-400 cursor-pointer py-1">
+                  <input type="checkbox" checked={citizensOnly} onChange={(e) => setCitizensOnly(e.target.checked)}
+                    className="rounded bg-gray-800 border-gray-600 text-blue-600" />
+                  Citizens Only
+                </label>
+              </div>
+            </div>
+            <div className="flex gap-2 items-center">
               <div className="flex-1" />
-              <button onClick={() => { setMinValue(""); setMaxValue(""); setMinUnits(""); setMinStories(""); setUseCode(""); setHeatFilter(""); setCitizensOnly(false); }}
+              <button onClick={() => { setMinValue(""); setMaxValue(""); setMinUnits(""); setMinStories(""); setUseCode(""); setHeatFilter(""); setCitizensOnly(false); setCreamTier(""); }}
                 className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-400 hover:text-white">
                 Clear All
               </button>
@@ -595,8 +624,8 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
                   )}
 
                   {/* Map button */}
-                  {lead.latitude != null && (
-                    <button onClick={() => onFlyTo?.(lead.latitude, lead.longitude, lead.id)}
+                  {lead.latitude != null && lead.longitude != null && (
+                    <button onClick={() => onFlyTo?.(lead.latitude!, lead.longitude!, lead.id)}
                       className="bg-gray-800 hover:bg-gray-700 text-gray-500 text-xs py-1.5 px-2 rounded" title="Fly to on map">
                       Map
                     </button>

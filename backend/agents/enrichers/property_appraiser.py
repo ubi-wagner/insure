@@ -36,7 +36,7 @@ COUNTY_GIS_ENDPOINTS: dict[str, dict] = {
     "Pinellas": {
         "name": "Pinellas County Property Appraiser",
         "url": "https://egis.pinellascounty.org/arcgis/rest/services/PropertyInfo/PropertyInformation/MapServer/0/query",
-        "info_url": "https://www.pcpao.gov/search.php?q={address}",
+        "info_url": "https://www.pcpao.org/",
         "spatial_ref": 4326,
     },
     "Hillsborough": {
@@ -60,43 +60,43 @@ COUNTY_GIS_ENDPOINTS: dict[str, dict] = {
     "Broward": {
         "name": "Broward County Property Appraiser",
         "url": "https://gis.bcpa.net/arcgis/rest/services/Public/Parcels/MapServer/0/query",
-        "info_url": "https://web.bcpa.net/BcpaClient/#/Record-Search",
+        "info_url": "https://bcpa.net/",
         "spatial_ref": 4326,
     },
     "Palm Beach": {
         "name": "Palm Beach County Property Appraiser",
         "url": "https://maps.co.palm-beach.fl.us/arcgis/rest/services/Parcels/MapServer/0/query",
-        "info_url": "https://www.pbcgov.org/papa/",
+        "info_url": "https://www.pbcgov.org/papa/index.htm",
         "spatial_ref": 4326,
     },
     # Counties without GIS REST — generate direct parcel/address lookup URLs
     "Pasco": {
         "name": "Pasco County Property Appraiser",
         "url": None,
-        "info_url": "https://search.pascopa.com/#/search/address/{address}",
+        "info_url": "https://pascopa.com/",
         "parcel_url": "https://search.pascopa.com/#/parcel/{parcel}",
     },
     "Manatee": {
         "name": "Manatee County Property Appraiser",
         "url": None,
-        "info_url": "https://www.manateepao.com/search/?searchType=address&searchString={address}",
-        "parcel_url": "https://www.manateepao.com/search/?searchType=parcel&searchString={parcel}",
+        "info_url": "https://www.manateepao.gov/search/",
+        "parcel_url": "https://www.manateepao.gov/search/?searchType=parcel&searchString={parcel}",
     },
     "Sarasota": {
         "name": "Sarasota County Property Appraiser",
         "url": None,
-        "info_url": "https://www.sarasotapropappr.com/#/search/address/{address}",
-        "parcel_url": "https://www.sarasotapropappr.com/#/search/parcel/{parcel}",
+        "info_url": "https://www.sc-pa.com/",
+        "parcel_url": "https://www.sc-pa.com/propertysearch?parcel={parcel}",
     },
     "Charlotte": {
         "name": "Charlotte County Property Appraiser",
         "url": None,
-        "info_url": "https://www.ccappraiser.com/search.asp",
+        "info_url": "https://www.ccappraiser.com/",
     },
     "Collier": {
         "name": "Collier County Property Appraiser",
         "url": None,
-        "info_url": "https://www.collierappraiser.com/Main/Home.aspx",
+        "info_url": "https://www.collierappraiser.com/",
     },
 }
 

@@ -15,17 +15,21 @@ export default function LoginPage() {
     setLoading(true);
     setError("");
 
-    const res = await fetch("/api/auth", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username, password }),
-    });
+    try {
+      const res = await fetch("/api/auth", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, password }),
+      });
 
-    if (res.ok) {
-      router.push("/");
-      router.refresh();
-    } else {
-      setError("Invalid credentials");
+      if (res.ok) {
+        router.push("/");
+        router.refresh();
+      } else {
+        setError("Invalid credentials");
+      }
+    } catch {
+      setError("Network error — check your connection");
     }
     setLoading(false);
   }

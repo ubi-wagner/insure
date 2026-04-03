@@ -28,13 +28,13 @@ def reset_database(db: Session = Depends(get_db)):
     """DESTRUCTIVE: Wipe all entity data and start fresh.
 
     Clears: entities, contacts, policies, engagements, entity_assets,
-    lead_ledger, osm_buildings, osm_harvest_areas, regions.
+    lead_ledger, regions.
     Keeps: service_registry, broker_profiles.
     """
     try:
         # Order matters — children before parents, disable FK checks
         db.execute(sa.text("SET CONSTRAINTS ALL DEFERRED"))
-        db.execute(sa.text("TRUNCATE engagements, policies, entity_assets, contacts, lead_ledger, osm_buildings, osm_harvest_areas, regions_of_interest, entities CASCADE"))
+        db.execute(sa.text("TRUNCATE engagements, policies, entity_assets, contacts, lead_ledger, regions_of_interest, entities CASCADE"))
         db.commit()
         logger.info("Database reset complete")
         emit(EventType.SYSTEM, "reset", EventStatus.SUCCESS, detail="All entity data cleared")
@@ -42,7 +42,7 @@ def reset_database(db: Session = Depends(get_db)):
     except Exception as e:
         db.rollback()
         logger.error(f"Reset failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Database reset failed. Check server logs.")
 
 
 @router.get("/api/admin/counties")
@@ -131,131 +131,153 @@ def seed_all_counties(db: Session = Depends(get_db)):
     }
 
 
-# Full county harvest areas — covers entire county footprints
-# Split into grid tiles (~0.15° ≈ 10 miles) to keep Overpass queries manageable
-# Counties ordered south → north along both coasts
+@router.post("/api/admin/download-cadastral")
+def download_cadastral():
+    """Download commercial parcels from FL ArcGIS Cadastral FeatureServer.
 
-FL_HARVEST_AREAS = [
-    # ─── Miami-Dade County ───
-    {"name": "Miami-Dade South (Homestead)", "south": 25.40, "north": 25.55, "west": -80.50, "east": -80.30, "county": "Miami-Dade"},
-    {"name": "Miami-Dade Central (Kendall/Coral Gables)", "south": 25.55, "north": 25.72, "west": -80.40, "east": -80.20, "county": "Miami-Dade"},
-    {"name": "Miami-Dade Downtown/Brickell", "south": 25.72, "north": 25.82, "west": -80.25, "east": -80.15, "county": "Miami-Dade"},
-    {"name": "Miami Beach / Key Biscayne", "south": 25.72, "north": 25.88, "west": -80.17, "east": -80.08, "county": "Miami-Dade"},
-    {"name": "Miami-Dade North (Aventura/Sunny Isles)", "south": 25.88, "north": 26.00, "west": -80.20, "east": -80.08, "county": "Miami-Dade"},
+    Filters: DOR_UC 004/005/006/008/039, JV >= $10M, 11 coastal counties.
+    Runs in background thread. Result saved to data/ and filestore/.
+    """
+    def _run():
+        try:
+            from scripts.download_cadastral import download_all_counties
+            path = download_all_counties()
+            emit(EventType.SYSTEM, "download_cadastral", EventStatus.SUCCESS,
+                 detail=f"Downloaded to {os.path.basename(path)}" if path else "No parcels found")
+        except Exception as e:
+            logger.error(f"Cadastral download failed: {e}")
+            emit(EventType.SYSTEM, "download_cadastral", EventStatus.ERROR,
+                 detail=str(e)[:200])
 
-    # ─── Broward County ───
-    {"name": "Broward South (Hollywood/Hallandale)", "south": 25.97, "north": 26.08, "west": -80.20, "east": -80.08, "county": "Broward"},
-    {"name": "Broward Central (Fort Lauderdale)", "south": 26.08, "north": 26.20, "west": -80.20, "east": -80.08, "county": "Broward"},
-    {"name": "Broward North (Pompano/Deerfield)", "south": 26.20, "north": 26.35, "west": -80.15, "east": -80.05, "county": "Broward"},
-
-    # ─── Palm Beach County ───
-    {"name": "Palm Beach South (Boca Raton/Delray)", "south": 26.30, "north": 26.48, "west": -80.12, "east": -80.02, "county": "Palm Beach"},
-    {"name": "Palm Beach Central (Boynton/Lake Worth)", "south": 26.48, "north": 26.63, "west": -80.10, "east": -80.00, "county": "Palm Beach"},
-    {"name": "Palm Beach North (Palm Beach/Jupiter)", "south": 26.63, "north": 26.80, "west": -80.08, "east": -80.00, "county": "Palm Beach"},
-
-    # ─── Collier County ───
-    {"name": "Collier South (Marco Island)", "south": 25.88, "north": 26.02, "west": -81.80, "east": -81.68, "county": "Collier"},
-    {"name": "Collier Central (Naples)", "south": 26.10, "north": 26.25, "west": -81.85, "east": -81.72, "county": "Collier"},
-    {"name": "Collier North (Bonita area)", "south": 26.25, "north": 26.40, "west": -81.85, "east": -81.75, "county": "Collier"},
-
-    # ─── Lee County ───
-    {"name": "Lee South (Fort Myers Beach/Estero)", "south": 26.35, "north": 26.50, "west": -82.00, "east": -81.85, "county": "Lee"},
-    {"name": "Lee Central (Fort Myers/Cape Coral)", "south": 26.50, "north": 26.70, "west": -82.05, "east": -81.85, "county": "Lee"},
-    {"name": "Lee North (Sanibel/Pine Island)", "south": 26.42, "north": 26.55, "west": -82.15, "east": -82.00, "county": "Lee"},
-
-    # ─── Charlotte County ───
-    {"name": "Charlotte (Punta Gorda/Port Charlotte)", "south": 26.82, "north": 27.00, "west": -82.12, "east": -81.95, "county": "Charlotte"},
-    {"name": "Charlotte Coast (Englewood)", "south": 26.92, "north": 27.05, "west": -82.40, "east": -82.25, "county": "Charlotte"},
-
-    # ─── Sarasota County ───
-    {"name": "Sarasota South (Venice/Nokomis)", "south": 27.05, "north": 27.18, "west": -82.50, "east": -82.38, "county": "Sarasota"},
-    {"name": "Sarasota Central (Siesta/Lido)", "south": 27.18, "north": 27.35, "west": -82.60, "east": -82.48, "county": "Sarasota"},
-    {"name": "Sarasota North (Longboat Key)", "south": 27.35, "north": 27.48, "west": -82.68, "east": -82.55, "county": "Sarasota"},
-    {"name": "Sarasota Mainland", "south": 27.25, "north": 27.42, "west": -82.55, "east": -82.42, "county": "Sarasota"},
-
-    # ─── Manatee County ───
-    {"name": "Manatee Coast (Anna Maria/Holmes Beach)", "south": 27.47, "north": 27.55, "west": -82.75, "east": -82.65, "county": "Manatee"},
-    {"name": "Manatee Central (Bradenton)", "south": 27.45, "north": 27.55, "west": -82.62, "east": -82.48, "county": "Manatee"},
-    {"name": "Manatee East (Lakewood Ranch)", "south": 27.35, "north": 27.50, "west": -82.48, "east": -82.35, "county": "Manatee"},
-
-    # ─── Hillsborough County ───
-    {"name": "Hillsborough South (Sun City/Apollo Beach)", "south": 27.70, "north": 27.82, "west": -82.45, "east": -82.30, "county": "Hillsborough"},
-    {"name": "Hillsborough Central (Tampa Downtown)", "south": 27.90, "north": 28.00, "west": -82.50, "east": -82.40, "county": "Hillsborough"},
-    {"name": "Hillsborough West (Westchase/Town'n'Country)", "south": 28.00, "north": 28.10, "west": -82.62, "east": -82.48, "county": "Hillsborough"},
-    {"name": "Hillsborough East (Brandon/Riverview)", "south": 27.85, "north": 28.00, "west": -82.35, "east": -82.20, "county": "Hillsborough"},
-
-    # ─── Pinellas County ───
-    {"name": "Pinellas South (St Pete/Gulfport)", "south": 27.68, "north": 27.80, "west": -82.78, "east": -82.62, "county": "Pinellas"},
-    {"name": "Pinellas Beaches (Treasure Is → Indian Rocks)", "south": 27.75, "north": 27.92, "west": -82.86, "east": -82.78, "county": "Pinellas"},
-    {"name": "Pinellas Central (Largo/Seminole)", "south": 27.80, "north": 27.92, "west": -82.78, "east": -82.68, "county": "Pinellas"},
-    {"name": "Pinellas North (Clearwater/Dunedin)", "south": 27.92, "north": 28.05, "west": -82.82, "east": -82.68, "county": "Pinellas"},
-    {"name": "Clearwater Beach / Sand Key", "south": 27.90, "north": 28.02, "west": -82.85, "east": -82.80, "county": "Pinellas"},
-
-    # ─── Pasco County ───
-    {"name": "Pasco South (New Port Richey/Hudson)", "south": 28.15, "north": 28.30, "west": -82.75, "east": -82.55, "county": "Pasco"},
-    {"name": "Pasco Central (Wesley Chapel/Zephyrhills)", "south": 28.20, "north": 28.35, "west": -82.50, "east": -82.30, "county": "Pasco"},
-    {"name": "Pasco Coast (Holiday/Tarpon Springs border)", "south": 28.05, "north": 28.20, "west": -82.80, "east": -82.65, "county": "Pasco"},
-]
-
-
-def _run_bulk_harvest():
-    """Background job: harvest all FL coastal strips."""
-    import logging
-    import time
-    from agents.hunter import _harvest_to_cache, _is_area_harvested
-    from services.event_bus import EventStatus, EventType, emit
-
-    logger = logging.getLogger(__name__)
-    db = SessionLocal()
-    total = 0
-    skipped = 0
-    failed = 0
-    try:
-        for i, strip in enumerate(FL_HARVEST_AREAS):
-            bbox = {
-                "south": strip["south"], "north": strip["north"],
-                "west": strip["west"], "east": strip["east"],
-            }
-            if _is_area_harvested(bbox, db):
-                skipped += 1
-                continue
-
-            logger.info(f"Harvesting {strip['name']} ({i+1}/{len(FL_HARVEST_AREAS)})...")
-            emit(EventType.HUNTER, "bulk_harvest", EventStatus.PENDING,
-                 detail=f"({i+1}/{len(FL_HARVEST_AREAS)}) {strip['name']}...")
-            try:
-                cached = _harvest_to_cache(bbox, db, region_name=strip["name"])
-                total += cached
-            except Exception as e:
-                failed += 1
-                logger.warning(f"Harvest failed for {strip['name']}: {e}")
-                emit(EventType.HUNTER, "bulk_harvest_area_failed", EventStatus.ERROR,
-                     detail=f"{strip['name']}: {str(e)[:100]}")
-
-            # 15s between areas — Overpass rate limits aggressively
-            time.sleep(15)
-
-        detail = f"Bulk harvest done: {total} buildings cached, {skipped} skipped, {failed} failed"
-        emit(EventType.HUNTER, "bulk_harvest", EventStatus.SUCCESS, detail=detail)
-        logger.info(detail)
-    except Exception as e:
-        logger.error(f"Bulk harvest failed: {e}")
-        emit(EventType.HUNTER, "bulk_harvest", EventStatus.ERROR,
-             detail=str(e)[:200])
-    finally:
-        db.close()
-
-
-@router.post("/api/admin/harvest")
-def trigger_bulk_harvest():
-    """Trigger bulk harvest of all FL coastal areas. Runs in background."""
-    thread = threading.Thread(target=_run_bulk_harvest, daemon=True)
+    thread = threading.Thread(target=_run, daemon=True)
     thread.start()
+    emit(EventType.SYSTEM, "download_cadastral", EventStatus.PENDING,
+         detail="Downloading from FL ArcGIS Cadastral FeatureServer...")
     return {
         "success": True,
-        "message": f"Bulk harvest started for {len(FL_HARVEST_AREAS)} areas across 11 counties",
-        "areas": [s["name"] for s in FL_HARVEST_AREAS],
+        "message": "Cadastral download started. Check Events tab for progress.",
     }
+
+
+@router.post("/api/admin/download-sunbiz")
+def download_sunbiz_bulk():
+    """Download Sunbiz quarterly corporate bulk data extract.
+
+    Filters for condo/HOA associations, parses officers and registered agents.
+    Runs in background thread. Result saved to data/ and filestore/.
+    """
+    def _run():
+        try:
+            from scripts.download_sunbiz import download_and_process
+            result = download_and_process()
+            if result.get("success"):
+                detail = f"{result.get('total_matches', 0):,} associations"
+                if result.get("csv_path"):
+                    detail += f" -> {os.path.basename(result['csv_path'])}"
+                emit(EventType.SYSTEM, "download_sunbiz", EventStatus.SUCCESS, detail=detail)
+            else:
+                emit(EventType.SYSTEM, "download_sunbiz", EventStatus.ERROR,
+                     detail=result.get("error", "Unknown error")[:200])
+        except Exception as e:
+            logger.error(f"Sunbiz bulk download failed: {e}")
+            emit(EventType.SYSTEM, "download_sunbiz", EventStatus.ERROR,
+                 detail=str(e)[:200])
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+    emit(EventType.SYSTEM, "download_sunbiz", EventStatus.PENDING,
+         detail="Downloading Sunbiz quarterly corporate extract...")
+    return {
+        "success": True,
+        "message": "Sunbiz bulk download started. Check Events tab for progress.",
+    }
+
+
+@router.post("/api/admin/refresh-data")
+def refresh_all_data():
+    """Download fresh data from all FL state sources.
+
+    Refreshes: DBPR CSVs, Sunbiz corporate extract, ArcGIS cadastral parcels.
+    Runs in background. Files saved to data/, filestore/, and S3.
+    """
+    def _run():
+        try:
+            from scripts.data_refresh import refresh_all
+            results = refresh_all()
+            total = results["total_files"]
+            failed = results["total_failed"]
+            emit(EventType.SYSTEM, "refresh_data", EventStatus.SUCCESS,
+                 detail=f"{total} files downloaded, {failed} failed")
+        except Exception as e:
+            logger.error(f"Data refresh failed: {e}")
+            emit(EventType.SYSTEM, "refresh_data", EventStatus.ERROR,
+                 detail=str(e)[:200])
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+    emit(EventType.SYSTEM, "refresh_data", EventStatus.PENDING,
+         detail="Refreshing all data sources (DBPR, Sunbiz, ArcGIS)...")
+    return {
+        "success": True,
+        "message": "Full data refresh started. DBPR CSVs + Sunbiz + ArcGIS Cadastral. Check Events tab.",
+    }
+
+
+@router.post("/api/admin/refresh-dor")
+def refresh_dor_data():
+    """Download fresh DOR NAL + SDF tax roll files for all target counties."""
+    def _run():
+        try:
+            from scripts.data_refresh import refresh_dor_nal
+            result = refresh_dor_nal()
+            files = len(result.get("files", []))
+            emit(EventType.SYSTEM, "refresh_dor", EventStatus.SUCCESS,
+                 detail=f"{files} DOR files refreshed")
+        except Exception as e:
+            logger.error(f"DOR refresh failed: {e}")
+            emit(EventType.SYSTEM, "refresh_dor", EventStatus.ERROR,
+                 detail=str(e)[:200])
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+    return {"success": True, "message": "DOR NAL/SDF refresh started."}
+
+
+@router.get("/api/admin/timebombs")
+def list_timebombs():
+    """List all scheduled timebomb events."""
+    from services.timebomb import list_pending
+    return {"timebombs": list_pending()}
+
+
+@router.post("/api/admin/timebombs/{name}/cancel")
+def cancel_timebomb(name: str):
+    """Cancel a scheduled timebomb."""
+    from services.timebomb import cancel
+    removed = cancel(name)
+    if not removed:
+        raise HTTPException(status_code=404, detail=f"Timebomb '{name}' not found")
+    return {"success": True, "message": f"Timebomb '{name}' cancelled"}
+
+
+@router.post("/api/admin/refresh-dbpr")
+def refresh_dbpr_data():
+    """Download fresh DBPR condo registry + payment history CSVs."""
+    def _run():
+        try:
+            from scripts.data_refresh import refresh_dbpr
+            result = refresh_dbpr()
+            files = len(result.get("files", []))
+            emit(EventType.SYSTEM, "refresh_dbpr", EventStatus.SUCCESS,
+                 detail=f"{files} DBPR files refreshed")
+        except Exception as e:
+            logger.error(f"DBPR refresh failed: {e}")
+            emit(EventType.SYSTEM, "refresh_dbpr", EventStatus.ERROR,
+                 detail=str(e)[:200])
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+    return {"success": True, "message": "DBPR refresh started."}
 
 
 def _run_bulk_enrich():
@@ -321,8 +343,6 @@ def trigger_bulk_enrich():
 @router.get("/api/admin/enrich/status")
 def get_enrich_status(db: Session = Depends(get_db)):
     """Get enrichment coverage stats."""
-    from database.models import OsmBuilding
-
     total_leads = db.query(Entity).filter(
         Entity.pipeline_stage.in_(["TARGET", "LEAD", "OPPORTUNITY", "CUSTOMER"])
     ).count()
@@ -339,9 +359,6 @@ def get_enrich_status(db: Session = Depends(get_db)):
     )).scalar() or 0
     has_sunbiz = db.execute(sa.text(
         "SELECT COUNT(*) FROM entities WHERE enrichment_sources ? 'sunbiz'"
-    )).scalar() or 0
-    has_overpass = db.execute(sa.text(
-        "SELECT COUNT(*) FROM entities WHERE enrichment_sources ? 'overpass'"
     )).scalar() or 0
     has_dbpr = db.execute(sa.text(
         "SELECT COUNT(*) FROM entities WHERE enrichment_sources ? 'dbpr_bulk'"
@@ -369,7 +386,6 @@ def get_enrich_status(db: Session = Depends(get_db)):
         "stage_counts": stage_counts,
         "coverage": {
             "dor_nal": has_dor_nal,
-            "overpass": has_overpass,
             "fema_flood": has_fema,
             "fdot_parcels": has_fdot,
             "property_appraiser": has_pa,
@@ -380,89 +396,27 @@ def get_enrich_status(db: Session = Depends(get_db)):
     }
 
 
-@router.get("/api/admin/harvest/status")
-def get_harvest_status(db: Session = Depends(get_db)):
-    """Get harvest cache statistics."""
-    from database.models import OsmBuilding, OsmHarvestArea
-    total_buildings = db.query(OsmBuilding).count()
-    total_areas = db.query(OsmHarvestArea).count()
-    promoted = db.query(OsmBuilding).filter(OsmBuilding.promoted_entity_id.isnot(None)).count()
-    by_county = db.execute(
-        sa.text("SELECT county, COUNT(*) as cnt FROM osm_buildings WHERE county IS NOT NULL GROUP BY county ORDER BY cnt DESC")
-    ).fetchall() if total_buildings > 0 else []
-    areas = db.query(OsmHarvestArea).order_by(OsmHarvestArea.harvested_at.desc()).all()
-    return {
-        "total_buildings_cached": total_buildings,
-        "total_areas_harvested": total_areas,
-        "buildings_promoted_to_leads": promoted,
-        "by_county": [{"county": r[0], "count": r[1]} for r in by_county],
-        "areas": [
-            {"name": a.name, "count": a.building_count, "harvested_at": a.harvested_at.isoformat() if a.harvested_at else None}
-            for a in areas
-        ],
-    }
-
-
 @router.get("/api/admin/query")
 def query_data(
     q: str = Query(""),
     table: str = Query("entities"),
     county: str = Query(""),
     stage: str = Query(""),
-    limit: int = Query(50),
+    limit: int = Query(50, ge=1, le=500),
     db: Session = Depends(get_db),
 ):
-    """Guided data query — search entities, osm_buildings, or contacts.
+    """Guided data query — search entities or contacts.
 
     Supports simple NLP-style queries like:
     - "condos in Pinellas with 7+ stories"
     - "fire resistive buildings in Miami-Dade"
     - "all contacts for Clearwater"
     """
-    from database.models import Contact, Entity, OsmBuilding
+    from database.models import Contact, Entity
 
     results = []
 
-    if table == "osm_cache":
-        query = db.query(OsmBuilding)
-        if county:
-            query = query.filter(OsmBuilding.county.ilike(f"%{county}%"))
-        if q:
-            # Parse simple NLP patterns
-            q_lower = q.lower()
-            # Stories filter
-            import re
-            stories_match = re.search(r'(\d+)\+?\s*(?:stories|floors|levels)', q_lower)
-            if stories_match:
-                min_stories = int(stories_match.group(1))
-                query = query.filter(OsmBuilding.stories >= min_stories)
-            # Construction filter
-            if "fire resistive" in q_lower:
-                query = query.filter(OsmBuilding.construction_class.ilike("%fire resistive%"))
-            elif "non-combustible" in q_lower or "non combustible" in q_lower:
-                query = query.filter(
-                    OsmBuilding.construction_class.ilike("%fire resistive%") |
-                    OsmBuilding.construction_class.ilike("%non-combustible%")
-                )
-            # Name/address search
-            name_search = re.sub(r'\d+\+?\s*(?:stories|floors|levels|fire resistive|non.combustible|masonry|frame)', '', q_lower).strip()
-            if name_search and len(name_search) > 2:
-                query = query.filter(
-                    OsmBuilding.name.ilike(f"%{name_search}%") |
-                    OsmBuilding.address.ilike(f"%{name_search}%")
-                )
-        total = query.count()
-        rows = query.order_by(OsmBuilding.stories.desc().nullslast()).limit(limit).all()
-        results = [{
-            "osm_id": r.osm_id, "name": r.name, "address": r.address,
-            "county": r.county, "building_type": r.building_type,
-            "stories": r.stories, "construction_class": r.construction_class,
-            "tiv_estimate": r.tiv_estimate, "units_estimate": r.units_estimate,
-            "promoted": r.promoted_entity_id is not None,
-        } for r in rows]
-        return {"table": "osm_cache", "total": total, "showing": len(results), "results": results}
-
-    elif table == "contacts":
+    if table == "contacts":
         query = db.query(Contact).join(Entity, Contact.entity_id == Entity.id)
         if county:
             query = query.filter(Entity.county.ilike(f"%{county}%"))
@@ -536,7 +490,7 @@ async def upload_data_file(file: UploadFile = File(...)):
     Streams to disk in chunks — handles files of any size.
     Also saves a local copy to backend/data/ for enricher access.
     """
-    filename = file.filename or "unknown.csv"
+    filename = os.path.basename(file.filename or "unknown.csv")
 
     # Stream to disk in chunks
     data_dir = os.path.join(os.path.dirname(__file__), "..", "data")
@@ -621,7 +575,6 @@ def _ensure_filestore():
     defaults = [
         "System Data",
         "System Data/DBPR",
-        "System Data/Overpass Cache",
         "Associations",
         "Associations/_templates",
         "Proposals",
@@ -682,8 +635,8 @@ def _sync_from_s3():
 # Sync from S3 on startup (restores files lost on redeploy)
 try:
     _sync_from_s3()
-except Exception:
-    pass  # Non-critical — S3 may not be configured
+except Exception as e:
+    logger.debug(f"S3 sync skipped: {e}")  # Non-critical — S3 may not be configured
 
 
 @router.get("/api/files")
@@ -749,7 +702,7 @@ async def upload_file(
         raise HTTPException(status_code=400, detail="Invalid path")
     os.makedirs(safe_dir, exist_ok=True)
 
-    filename = file.filename or "unnamed"
+    filename = os.path.basename(file.filename or "unnamed")
     filepath = os.path.join(safe_dir, filename)
 
     if total_chunks > 1:

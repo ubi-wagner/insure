@@ -28,7 +28,7 @@ class RegionStatus(str, enum.Enum):
 
 
 class PipelineStage(str, enum.Enum):
-    TARGET = "TARGET"           # Raw NAL parcel, waiting for Overpass association
+    TARGET = "TARGET"           # Raw NAL parcel, pending geocoding + enrichment
     LEAD = "LEAD"               # Associated, continuously enriching, scored cold/warm/hot
     OPPORTUNITY = "OPPORTUNITY"  # User-promoted for CRM engagement
     CUSTOMER = "CUSTOMER"        # Converted deal
@@ -124,13 +124,11 @@ class Entity(Base):
     pipeline_stage = Column(String, default="TARGET", nullable=False)
     heat_score = Column(String, nullable=True)  # cold, warm, hot
     folder_path = Column(String, nullable=True)  # Per-lead document folder in bucket
-    osm_building_id = Column(Integer, ForeignKey("osm_buildings.id"), nullable=True)
     enrichment_status = Column(String, default="idle", nullable=False)  # idle, running, complete, error
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
 
     # Relationships
     parent = relationship("Entity", remote_side="Entity.id", backref="children")
-    osm_building = relationship("OsmBuilding", foreign_keys=[osm_building_id])
     ledger_events = relationship("LeadLedger", back_populates="entity")
     assets = relationship("EntityAsset", back_populates="entity")
     contacts = relationship("Contact", back_populates="entity")
@@ -257,47 +255,3 @@ class ServiceRegistry(Base):
     version = Column(String, nullable=True)
     detail = Column(String, nullable=True)
 
-
-class OsmBuilding(Base):
-    """Cache of every building Overpass has ever returned. Keyed by osm_id.
-    Used to avoid re-querying the same buildings and enable instant local filtering."""
-    __tablename__ = "osm_buildings"
-
-    id = Column(Integer, primary_key=True, index=True)
-    osm_id = Column(Integer, nullable=False, unique=True, index=True)
-    osm_type = Column(String, nullable=False)  # way, relation
-    lat = Column(Float, nullable=False)
-    lon = Column(Float, nullable=False)
-    name = Column(String, nullable=True)
-    address = Column(String, nullable=True)
-    county = Column(String, nullable=True)
-    building_type = Column(String, nullable=True)
-    stories = Column(Integer, nullable=True)
-    construction_class = Column(String, nullable=True)
-    iso_class = Column(Integer, nullable=True)
-    tiv_estimate = Column(Float, nullable=True)
-    units_estimate = Column(Integer, nullable=True)
-    footprint_sqft = Column(Float, nullable=True)
-    tags = Column(JSONB, nullable=True)
-    raw_element = Column(JSONB, nullable=True)
-    geocoded = Column(Integer, default=0, nullable=False)
-    promoted_entity_id = Column(Integer, ForeignKey("entities.id"), nullable=True)
-    harvested_at = Column(DateTime, server_default=func.now(), nullable=False)
-    updated_at = Column(DateTime, server_default=func.now(), nullable=False)
-
-    promoted_entity = relationship("Entity", foreign_keys=[promoted_entity_id])
-
-
-class OsmHarvestArea(Base):
-    """Tracks which geographic areas have been harvested from Overpass."""
-    __tablename__ = "osm_harvest_areas"
-
-    id = Column(Integer, primary_key=True, index=True)
-    name = Column(String, nullable=True)
-    bbox_south = Column(Float, nullable=False)
-    bbox_north = Column(Float, nullable=False)
-    bbox_west = Column(Float, nullable=False)
-    bbox_east = Column(Float, nullable=False)
-    building_count = Column(Integer, default=0, nullable=False)
-    query_params = Column(JSONB, nullable=True)
-    harvested_at = Column(DateTime, server_default=func.now(), nullable=False)

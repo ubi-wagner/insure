@@ -154,7 +154,7 @@ function DataRow({ label, value, href }: { label: string; value: unknown; href?:
  * Collapsible section wrapper. Automatically hides itself when all children
  * are null / false (i.e. every DataRow returned null because its value was empty).
  */
-function DataSection({ title, children }: { title: string; children: React.ReactNode }) {
+function DataSection({ title, children }: { title: string; children?: React.ReactNode }) {
   const filtered = Array.isArray(children)
     ? children.filter((c) => c !== null && c !== undefined && c !== false)
     : children ? [children] : [];
@@ -218,8 +218,11 @@ export default function EntityDetailModal({
         body: JSON.stringify({ stage, force: true }),
       });
       if (res.ok) await reload();
+      else {
+        setError("Stage change failed (" + res.status + ")");
+      }
     } catch (err) {
-      console.error("Failed to change stage:", err);
+      setError("Failed to change stage");
     }
     setStageChanging(false);
   }
@@ -240,7 +243,7 @@ export default function EntityDetailModal({
         setShowAddContact(false);
       }
     } catch (err) {
-      console.error("Failed to add contact:", err);
+      setError("Failed to add contact");
     }
     setSavingContact(false);
   }

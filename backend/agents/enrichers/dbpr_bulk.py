@@ -170,12 +170,44 @@ def _normalize(s: str) -> str:
     return re.sub(r'[^a-z0-9\s]', '', s.lower()).strip()
 
 
-def _match_entity_to_condo(entity: Entity, records: list[dict]) -> dict | None:
-    """Find the best matching DBPR condo record for an entity."""
-    entity_name = _normalize(entity.name or "")
-    entity_addr = _normalize(entity.address or "")
+def _normalize_addr(s: str) -> str:
+    """Normalize an address for matching — strip unit/apt, abbreviate."""
+    addr = s.upper().strip()
+    # Remove unit/apt/suite suffixes
+    addr = re.sub(r'\s*(APT|UNIT|STE|SUITE|#|BLDG|NO)\s*\S*$', '', addr)
+    # Standard abbreviations
+    for full, abbr in [("STREET", "ST"), ("AVENUE", "AVE"), ("BOULEVARD", "BLVD"),
+                       ("DRIVE", "DR"), ("LANE", "LN"), ("ROAD", "RD"), ("COURT", "CT"),
+                       ("CIRCLE", "CIR"), ("HIGHWAY", "HWY"), ("PLACE", "PL"),
+                       ("NORTH", "N"), ("SOUTH", "S"), ("EAST", "E"), ("WEST", "W")]:
+        addr = re.sub(rf'\b{full}\b', abbr, addr)
+    # Extract just street number + name (first 2-3 tokens)
+    return re.sub(r'\s+', ' ', addr).strip()
 
-    if not entity_name:
+
+def _extract_street_number(addr: str) -> str:
+    """Extract the street number from an address for quick matching."""
+    match = re.match(r'(\d+)', addr)
+    return match.group(1) if match else ""
+
+
+def _match_entity_to_condo(entity: Entity, records: list[dict]) -> dict | None:
+    """Find the best matching DBPR condo record for an entity.
+
+    Strategy (in priority order):
+    1. County + street address match (most reliable for physical properties)
+    2. County + name match (for when addresses differ)
+    3. Name-only match (fallback)
+    """
+    entity_name = _normalize(entity.name or "")
+    entity_addr_raw = entity.address or ""
+    entity_addr = _normalize_addr(entity_addr_raw)
+    entity_street_num = _extract_street_number(entity_addr)
+    entity_county = (entity.county or "").lower()
+    chars = entity.characteristics or {}
+    entity_owner = _normalize(str(chars.get("dor_owner", "") or ""))
+
+    if not entity_name and not entity_addr:
         return None
 
     best_match = None
@@ -183,35 +215,61 @@ def _match_entity_to_condo(entity: Entity, records: list[dict]) -> dict | None:
 
     for record in records:
         condo_name = _normalize(record.get("Condo Name", "") or "")
-        condo_addr = _normalize(record.get("Street City State Zip", "") or "")
+        condo_addr = _normalize_addr(record.get("Street City State Zip", "") or "")
+        condo_county = (record.get("County", "") or "").lower()
+        condo_street_num = _extract_street_number(condo_addr)
 
-        if not condo_name:
-            continue
-
-        # Score based on name similarity
         score = 0
 
-        # Exact name match
-        if entity_name == condo_name:
-            score = 100
-        # Entity name contained in condo name or vice versa
-        elif entity_name in condo_name or condo_name in entity_name:
-            score = 80
-        else:
-            # Word overlap
-            entity_words = set(entity_name.split())
-            condo_words = set(condo_name.split())
-            if entity_words and condo_words:
-                overlap = len(entity_words & condo_words)
-                total = max(len(entity_words), len(condo_words))
-                if overlap > 0:
-                    score = int(60 * overlap / total)
+        # ─── Strategy 1: Address matching (most reliable) ───
+        if entity_addr and condo_addr:
+            # Same street number is a strong signal
+            if entity_street_num and condo_street_num and entity_street_num == condo_street_num:
+                # Check if street names overlap
+                entity_parts = set(entity_addr.split())
+                condo_parts = set(condo_addr.split())
+                shared = entity_parts & condo_parts
+                if len(shared) >= 2:  # Street number + at least one street name word
+                    score = 85
+                    # County match bonus
+                    if entity_county and condo_county and entity_county in condo_county:
+                        score = 95
 
-        # Boost for address match
-        if entity_addr and condo_addr and (entity_addr in condo_addr or condo_addr in entity_addr):
-            score += 20
+        # ─── Strategy 2: Name matching ───
+        if score < 80 and entity_name and condo_name:
+            name_score = 0
+            if entity_name == condo_name:
+                name_score = 100
+            elif entity_name in condo_name or condo_name in entity_name:
+                name_score = 80
+            else:
+                # Word overlap
+                entity_words = set(entity_name.split())
+                condo_words = set(condo_name.split())
+                if entity_words and condo_words:
+                    overlap = len(entity_words & condo_words)
+                    total = max(len(entity_words), len(condo_words))
+                    if overlap >= 2:
+                        name_score = int(60 * overlap / total)
 
-        if score > best_score and score >= 40:
+            # Owner name match (DOR owner → condo name)
+            if name_score < 60 and entity_owner and condo_name:
+                if entity_owner in condo_name or condo_name in entity_owner:
+                    name_score = max(name_score, 70)
+
+            # County match bonus for name matches
+            if name_score >= 40 and entity_county and condo_county:
+                if entity_county in condo_county or condo_county in entity_county:
+                    name_score += 10
+
+            score = max(score, name_score)
+
+        # ─── Address partial match bonus ───
+        if score >= 30 and score < 85 and entity_addr and condo_addr:
+            if entity_addr in condo_addr or condo_addr in entity_addr:
+                score += 15
+
+        if score > best_score and score >= 35:
             best_score = score
             best_match = record
 

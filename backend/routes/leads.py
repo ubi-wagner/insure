@@ -1,4 +1,5 @@
 import logging
+import os
 import re
 import time
 from typing import Optional, List
@@ -83,7 +84,7 @@ def _compute_heat_score(characteristics: dict) -> str:
         return "warm"
     elif score >= 5:
         return "cool"
-    return "none"
+    return "cold"
 
 
 # JSONB helper for numeric extraction
@@ -134,14 +135,16 @@ def list_leads(
     use_code: Optional[str] = Query(None),
     heat: Optional[str] = Query(None),
     on_citizens: Optional[bool] = Query(None),
+    cream_tier: Optional[str] = Query(None),
+    min_cream: Optional[int] = Query(None),
     construction: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
-    limit: int = Query(200),
-    offset: int = Query(0),
+    limit: int = Query(200, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
 ):
     valid_sorts = ("date", "value", "tiv", "units", "year_built", "stories",
-                   "coast_distance", "wind_ratio", "premium", "name")
+                   "coast_distance", "wind_ratio", "premium", "name", "cream")
     if sort_by not in valid_sorts:
         raise HTTPException(status_code=400, detail=f"Invalid sort_by. Must be one of: {list(valid_sorts)}")
 
@@ -185,6 +188,12 @@ def list_leads(
                 Entity.characteristics["on_citizens"].is_(None),
             )
         )
+
+    # Cream tier filter
+    if cream_tier:
+        query = query.filter(Entity.characteristics["cream_tier"].astext == cream_tier)
+    if min_cream is not None:
+        query = query.filter(_jsonb_int("cream_score") >= min_cream)
 
     # Market value filter (dor_market_value is stored as integer in JSONB)
     if min_value is not None:
@@ -256,6 +265,9 @@ def list_leads(
         query = query.order_by(order_col.desc().nullslast() if is_desc else order_col.asc().nullsfirst())
     elif sort_by == "coast_distance":
         query = query.order_by(Entity.latitude.desc() if is_desc else Entity.latitude.asc())
+    elif sort_by == "cream":
+        order_col = _jsonb_int("cream_score")
+        query = query.order_by(order_col.desc().nullslast() if is_desc else order_col.asc().nullsfirst())
     elif sort_by == "name":
         query = query.order_by(Entity.name.asc() if not is_desc else Entity.name.desc())
     elif sort_by in ("wind_ratio", "premium"):
@@ -294,6 +306,8 @@ def list_leads(
             "premium_parsed": premium_val,
             "tiv_parsed": tiv_val,
             "enrichment_status": entity.enrichment_status or "idle",
+            "cream_score": characteristics.get("cream_score"),
+            "cream_tier": characteristics.get("cream_tier"),
         })
 
     duration_ms = round((time.time() - start) * 1000, 1)
@@ -306,7 +320,7 @@ def list_leads(
 # ─── Bulk Stage Change ───
 
 class BulkStageRequest(BaseModel):
-    entity_ids: List[int] = []
+    entity_ids: List[int] = []  # Max 1000 per request
     stage: str
     filter_stage: Optional[str] = None
     filter_county: Optional[str] = None
@@ -328,7 +342,8 @@ def bulk_stage_change(req: BulkStageRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail=f"Invalid stage. Must be one of: {valid_stages}")
 
     if req.entity_ids:
-        # Explicit IDs
+        if len(req.entity_ids) > 1000:
+            raise HTTPException(status_code=400, detail="Max 1000 entity_ids per request")
         query = db.query(Entity).filter(Entity.id.in_(req.entity_ids))
     else:
         # Filter-based — require at least one filter to prevent updating ALL entities
@@ -400,12 +415,15 @@ def get_lead(entity_id: int, db: Session = Depends(get_db)):
     return {
         "id": entity.id,
         "parent_id": entity.parent_id,
-        "name": entity.name,
-        "address": entity.address,
-        "county": entity.county,
+        "name": entity.name or "",
+        "address": entity.address or "",
+        "county": entity.county or "",
         "latitude": entity.latitude,
         "longitude": entity.longitude,
         "pipeline_stage": entity.pipeline_stage,
+        "status": entity.pipeline_stage,  # Alias for frontend compatibility
+        "enrichment_status": entity.enrichment_status,
+        "created_at": entity.created_at.isoformat() if entity.created_at else None,
         "characteristics": characteristics,
         "emails": characteristics.get("emails"),
         "wind_ratio": wind_ratio,
@@ -465,7 +483,11 @@ def vote_lead(entity_id: int, vote: VoteRequest, db: Session = Depends(get_db)):
 
     ledger_event = LeadLedger(entity_id=entity_id, action_type=action)
     db.add(ledger_event)
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to record vote")
 
     return {"success": True, "action": action.value, "pipeline_stage": entity.pipeline_stage}
 
@@ -651,38 +673,47 @@ async def upload_document(
         raise HTTPException(status_code=400, detail=f"Invalid doc_type. Must be one of: {valid_types}")
 
     content = await file.read()
+    if len(content) > 50 * 1024 * 1024:  # 50MB max
+        raise HTTPException(status_code=413, detail="File too large (max 50MB)")
+
     text_content = ""
     try:
         text_content = content.decode("utf-8")
     except UnicodeDecodeError:
         text_content = f"[Binary file: {file.filename}, {len(content)} bytes]"
 
+    safe_filename = os.path.basename(file.filename or "unnamed")
+
     asset = EntityAsset(
         entity_id=entity_id, doc_type=doc_type,
-        extracted_text=text_content, source="user_upload", filename=file.filename,
+        extracted_text=text_content, source="user_upload", filename=safe_filename,
     )
     db.add(asset)
 
     ledger = LeadLedger(
         entity_id=entity_id, action_type="DOCUMENT_UPLOADED",
-        detail=f"Uploaded {doc_type}: {file.filename}", source="user_upload",
+        detail=f"Uploaded {doc_type}: {safe_filename}", source="user_upload",
     )
     db.add(ledger)
 
     from agents.enrichers import record_enrichment
     record_enrichment(
         entity, db, source_id="user_upload",
-        fields_updated=[f"document:{doc_type}:{file.filename}"],
-        detail=f"User uploaded {doc_type}: {file.filename}",
+        fields_updated=[f"document:{doc_type}:{safe_filename}"],
+        detail=f"User uploaded {doc_type}: {safe_filename}",
     )
 
-    chars = entity.characteristics or {}
+    chars = dict(entity.characteristics or {})
     if doc_type in ("BROCHURE", "DEC_PAGE", "LOSS_RUN"):
         chars["has_user_intel"] = True
         chars["user_doc_types"] = list(set((chars.get("user_doc_types") or []) + [doc_type]))
         entity.characteristics = chars
+
+    try:
         db.commit()
+        db.refresh(asset)
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to save document")
 
-    db.refresh(asset)
-
-    return {"success": True, "asset_id": asset.id, "doc_type": doc_type, "filename": file.filename}
+    return {"success": True, "asset_id": asset.id, "doc_type": doc_type, "filename": safe_filename}

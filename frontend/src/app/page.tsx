@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useState } from "react";
 import Link from "next/link";
 import MapView from "@/components/MapView";
 import LeadPipeline from "@/components/LeadPipeline";
@@ -25,9 +25,7 @@ export default function Dashboard() {
   const [selectedLeadId, setSelectedLeadId] = useState<number | null>(null);
   const [switchToStage, setSwitchToStage] = useState<string | null>(null);
   const [flyToTarget, setFlyToTarget] = useState<{ lat: number; lng: number } | null>(null);
-  const [huntingStatus, setHuntingStatus] = useState<string | null>(null);
   const [mobileView, setMobileView] = useState<"map" | "pipeline">("pipeline");
-  const huntPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Modal system: max 5 open, ordered by open time
   const [openModals, setOpenModals] = useState<number[]>([]);
@@ -79,37 +77,6 @@ export default function Dashboard() {
     }
   }
 
-  function startHuntPolling(regionId: number) {
-    setHuntingStatus("Discovering properties...");
-    setMobileView("pipeline");
-    if (huntPollRef.current) clearInterval(huntPollRef.current);
-    let polls = 0;
-    huntPollRef.current = setInterval(async () => {
-      polls++;
-      try {
-        const res = await fetch(`/api/proxy/regions/${regionId}`);
-        if (!res.ok) return;
-        const data = await res.json();
-        if (data.status === "COMPLETED") {
-          setHuntingStatus(data.lead_count > 0
-            ? `Found ${data.lead_count} properties`
-            : "No matching buildings in this area"
-          );
-          setRefreshKey((k: number) => k + 1);
-          if (huntPollRef.current) clearInterval(huntPollRef.current);
-          setTimeout(() => setHuntingStatus(null), 6000);
-        } else {
-          setHuntingStatus(`Discovering${data.lead_count > 0 ? ` (${data.lead_count})` : "..."}`);
-          if (polls % 2 === 0) setRefreshKey((k: number) => k + 1);
-        }
-      } catch {}
-    }, 3000);
-  }
-
-  useEffect(() => {
-    return () => { if (huntPollRef.current) clearInterval(huntPollRef.current); };
-  }, []);
-
   return (
     <div className="h-screen flex flex-col bg-gray-950 text-white">
       {/* Header */}
@@ -119,16 +86,11 @@ export default function Dashboard() {
           <span className="text-gray-600 text-xs hidden sm:inline">Pipeline</span>
         </div>
         <div className="flex items-center gap-2">
-          {huntingStatus && (
-            <div className="flex items-center gap-1.5 bg-blue-900/30 border border-blue-800/50 rounded-full px-2.5 py-1">
-              <div className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-pulse" />
-              <span className="text-blue-300 text-[11px]">{huntingStatus}</span>
-            </div>
-          )}
           {openModals.length > 0 && (
             <span className="text-gray-600 text-[10px]">{openModals.length}/{MAX_MODALS} open</span>
           )}
           <Link href="/files" className="text-gray-500 hover:text-white text-xs">Files</Link>
+          <Link href="/ref" className="text-gray-500 hover:text-white text-xs">Ref</Link>
           <Link href="/ops" className="text-gray-500 hover:text-white text-xs">Ops</Link>
         </div>
       </header>
@@ -150,7 +112,6 @@ export default function Dashboard() {
         {/* Map — hidden on mobile when pipeline is active */}
         <div className={`flex-1 relative ${mobileView === "pipeline" ? "hidden md:block" : ""}`}>
           <MapView
-            onRegionCreated={(regionId: number) => startHuntPolling(regionId)}
             leads={leads}
             hoveredLeadId={hoveredLeadId}
             selectedLeadId={selectedLeadId}

@@ -13,7 +13,6 @@ interface LeadLocation {
 }
 
 interface MapViewProps {
-  onRegionCreated: (regionId: number) => void;
   leads?: LeadLocation[];
   hoveredLeadId?: number | null;
   selectedLeadId?: number | null;

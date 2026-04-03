@@ -5,8 +5,7 @@ Stages:
   TARGET → LEAD → OPPORTUNITY → CUSTOMER → ARCHIVED
 
 Auto-advance:
-  TARGET → LEAD: Only when Overpass association is confirmed
-  (osm_building_id is set on the Entity)
+  TARGET → LEAD: When geocoding succeeds (Census batch or Nominatim fallback)
 
   Everything else is manual (user clicks Promote/Convert).
 
@@ -158,14 +157,37 @@ def compute_heat_score(entity: Entity) -> str:
     if chars.get("has_user_intel"):
         score += 15
 
-    # Sunbiz data
-    if "sunbiz" in sources:
+    # Sunbiz data — officers identified = decision makers known
+    if "sunbiz_bulk" in sources:
+        score += 5
+    if chars.get("sunbiz_registered_agent"):
+        score += 3  # Management company identified
+
+    # SIRS compliance risk — non-compliant associations are actively shopping
+    if chars.get("sirs_completed") is False:
+        score += 12  # Compliance deadline pressure
+    elif chars.get("sirs_compliance_risk") == "HIGH":
+        score += 15  # Imminent special assessments
+
+    # OIR market intelligence — hard market = more opportunity
+    market_hardness = chars.get("oir_market_hardness", "")
+    if market_hardness == "hard":
+        score += 8
+    elif market_hardness == "moderate":
+        score += 3
+
+    # Building report data (DBPR)
+    if chars.get("dbpr_current_assessment"):
+        score += 3  # Financial data available
+
+    # Premium estimate available = ready for quoting
+    if chars.get("oir_estimated_premium_range"):
         score += 5
 
     # Classify
-    if score >= 30:
+    if score >= 35:
         return "hot"
-    elif score >= 15:
+    elif score >= 18:
         return "warm"
     return "cold"
 
@@ -173,17 +195,17 @@ def compute_heat_score(entity: Entity) -> str:
 def check_target_to_lead(entity: Entity, db: Session) -> bool:
     """Check if a TARGET should auto-advance to LEAD.
 
-    Only condition: Overpass association confirmed (osm_building_id is set).
+    Only condition: entity has been geocoded (latitude is set).
     """
     if entity.pipeline_stage != "TARGET":
         return False
 
-    if entity.osm_building_id is not None:
+    if entity.latitude is not None:
         entity.pipeline_stage = "LEAD"
         entity.enrichment_status = "idle"
         db.commit()
         emit(EventType.DB_OPERATION, "auto_advance", EventStatus.SUCCESS,
-             detail=f"'{entity.name}': TARGET → LEAD (Overpass associated)",
+             detail=f"'{entity.name}': TARGET → LEAD (geocoded)",
              entity_id=entity.id)
         return True
 
@@ -197,11 +219,15 @@ def _load_enrichers():
         "property_appraiser",   # County PA GIS lookup + direct parcel links
         "dbpr_bulk",            # DBPR condo CSV (managing entity, project number)
         "dbpr_payments",        # DBPR payment history (delinquency)
+        "dbpr_sirs",            # DBPR SIRS compliance (structural reserve studies)
+        "dbpr_building",        # DBPR building reports (stories, units, assessments)
         "cam_license",          # CAM license cross-reference
-        "sunbiz",               # Sunbiz search link + scrape attempt
+        "sunbiz_bulk",          # Sunbiz bulk data (quarterly corporate extract)
         "dor_nal",              # DOR NAL cross-reference (supplemental)
         "citizens_insurance",   # Citizens insurance likelihood + swap opportunity
         "fdot_parcels",         # FDOT statewide parcel API
+        "oir_market",           # OIR market intelligence (rates, carriers, wind tiers)
+        "cream_score",          # Final conversion opportunity scoring (runs last)
     ]
     for module in modules:
         try:

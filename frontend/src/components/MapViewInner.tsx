@@ -37,22 +37,7 @@ interface LeadLocation {
   listIndex: number;
 }
 
-interface RegionFormData {
-  name: string;
-  stories: number;
-  coastDistance: number;
-  constructionFilter: string;
-}
-
-const SEARCH_PROFILES: Record<string, { label: string; stories: number; construction: string }> = {
-  coastal_highrise: { label: "Coastal High-Rise (7+ floors, fire resistive)", stories: 7, construction: "fire_resistive" },
-  midrise_value:    { label: "Mid-Rise Value (3-6 floors, any)", stories: 3, construction: "any" },
-  premium_new:      { label: "Premium New Build (10+ floors)", stories: 10, construction: "any" },
-  custom:           { label: "Custom", stories: 3, construction: "any" },
-};
-
 interface Props {
-  onRegionCreated: (regionId: number) => void;
   leads?: LeadLocation[];
   hoveredLeadId?: number | null;
   selectedLeadId?: number | null;
@@ -97,24 +82,13 @@ function createNumberedIcon(num: number, fillColor: string, borderColor: string,
 }
 
 export default function MapViewInner({
-  onRegionCreated, leads = [], hoveredLeadId, selectedLeadId, flyToTarget, onMarkerClick,
+  leads = [], hoveredLeadId, selectedLeadId, flyToTarget, onMarkerClick,
 }: Props) {
   const mapRef = useRef<HTMLDivElement>(null);
   const mapInstance = useRef<L.Map | null>(null);
   const markersRef = useRef<Map<number, L.Marker>>(new Map());
-  const regionsLayerRef = useRef<L.FeatureGroup | null>(null);
 
-  const [drawMode, setDrawMode] = useState(false);
-  const firstCornerRef = useRef<L.LatLng | null>(null);
-  const previewRectRef = useRef<L.Rectangle | null>(null);
-
-  const [pendingBounds, setPendingBounds] = useState<{ north: number; south: number; east: number; west: number } | null>(null);
-  const [showForm, setShowForm] = useState(false);
-  const [formData, setFormData] = useState<RegionFormData>({ name: "", stories: 7, coastDistance: 5, constructionFilter: "fire_resistive" });
-  const [searchProfile, setSearchProfile] = useState("coastal_highrise");
   const [searchQuery, setSearchQuery] = useState("");
-  const [submitError, setSubmitError] = useState<string | null>(null);
-  const [submitting, setSubmitting] = useState(false);
 
   // ─── Init map with saved position ───
   useEffect(() => {
@@ -144,10 +118,6 @@ export default function MapViewInner({
       saveView([c.lat, c.lng], map.getZoom());
     });
 
-    const regionsLayer = new L.FeatureGroup();
-    map.addLayer(regionsLayer);
-    regionsLayerRef.current = regionsLayer;
-
     mapInstance.current = map;
 
     return () => {
@@ -155,63 +125,6 @@ export default function MapViewInner({
       mapInstance.current = null;
     };
   }, []);
-
-  // ─── Two-click rectangle drawing ───
-  useEffect(() => {
-    const map = mapInstance.current;
-    if (!map) return;
-
-    function handleClick(e: L.LeafletMouseEvent) {
-      if (!firstCornerRef.current) {
-        firstCornerRef.current = e.latlng;
-        map!.getContainer().style.cursor = "crosshair";
-      } else {
-        const bounds = L.latLngBounds(firstCornerRef.current, e.latlng);
-        if (previewRectRef.current) {
-          map!.removeLayer(previewRectRef.current);
-          previewRectRef.current = null;
-        }
-        const rect = L.rectangle(bounds, { color: "#3b82f6", weight: 2, fillOpacity: 0.15 });
-        regionsLayerRef.current?.addLayer(rect);
-        setPendingBounds({
-          north: bounds.getNorth(), south: bounds.getSouth(),
-          east: bounds.getEast(), west: bounds.getWest(),
-        });
-        firstCornerRef.current = null;
-        map!.getContainer().style.cursor = "";
-        setDrawMode(false);
-        setShowForm(true);
-      }
-    }
-
-    function handleMouseMove(e: L.LeafletMouseEvent) {
-      if (!firstCornerRef.current) return;
-      const bounds = L.latLngBounds(firstCornerRef.current, e.latlng);
-      if (previewRectRef.current) {
-        previewRectRef.current.setBounds(bounds);
-      } else {
-        previewRectRef.current = L.rectangle(bounds, {
-          color: "#3b82f6", weight: 1, fillOpacity: 0.1, dashArray: "5,5",
-        }).addTo(map!);
-      }
-    }
-
-    if (drawMode) {
-      map.getContainer().style.cursor = "crosshair";
-      map.dragging.disable();
-      map.on("click", handleClick);
-      map.on("mousemove", handleMouseMove);
-    } else {
-      map.getContainer().style.cursor = "";
-      map.dragging.enable();
-      map.off("click", handleClick);
-      map.off("mousemove", handleMouseMove);
-      if (previewRectRef.current) { map.removeLayer(previewRectRef.current); previewRectRef.current = null; }
-      firstCornerRef.current = null;
-    }
-
-    return () => { map.off("click", handleClick); map.off("mousemove", handleMouseMove); };
-  }, [drawMode]);
 
   // ─── Lead markers (numbered, typed, colored) ───
   useEffect(() => {
@@ -273,55 +186,12 @@ export default function MapViewInner({
         `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(searchQuery + ", Florida")}&limit=1`,
         { headers: { "User-Agent": "insure-lead-gen" } }
       );
+      if (!res.ok) return;
       const data = await res.json();
       if (data.length > 0) {
         mapInstance.current.setView([parseFloat(data[0].lat), parseFloat(data[0].lon)], 14);
       }
     } catch (err) { console.error("Search failed:", err); }
-  }
-
-  // ─── Region submit ───
-  async function handleSubmitRegion(e: React.FormEvent) {
-    e.preventDefault();
-    if (!pendingBounds) return;
-    setSubmitError(null);
-    setSubmitting(true);
-    try {
-      const res = await fetch(`/api/proxy/regions`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: formData.name, bounding_box: pendingBounds,
-          parameters: {
-            stories: formData.stories,
-            coast_distance: formData.coastDistance,
-            construction_filter: formData.constructionFilter,
-            search_profile: searchProfile,
-          },
-        }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setShowForm(false);
-        setFormData({ name: "", stories: 7, coastDistance: 5, constructionFilter: "fire_resistive" });
-        setSearchProfile("coastal_highrise");
-        setPendingBounds(null);
-        onRegionCreated(data.id);
-      } else {
-        const errData = await res.json().catch(() => ({}));
-        setSubmitError(errData.detail || `Failed (${res.status})`);
-      }
-    } catch (err) { setSubmitError("Unable to connect to API"); }
-    setSubmitting(false);
-  }
-
-  function handleCancelRegion() {
-    if (regionsLayerRef.current) {
-      const layers = regionsLayerRef.current.getLayers();
-      if (layers.length > 0) regionsLayerRef.current.removeLayer(layers[layers.length - 1]);
-    }
-    setPendingBounds(null);
-    setShowForm(false);
   }
 
   return (
@@ -336,10 +206,6 @@ export default function MapViewInner({
 
       {/* Map tools */}
       <div className="absolute top-3 right-3 z-[1000] flex flex-col gap-1.5">
-        <button onClick={() => setDrawMode(!drawMode)}
-          className={`px-3 py-2 rounded text-sm font-medium shadow-lg ${drawMode ? "bg-blue-600 text-white ring-2 ring-blue-400" : "bg-gray-900/90 text-gray-300 hover:bg-gray-800 border border-gray-700"}`}>
-          {drawMode ? "Click 2 corners..." : "Draw Region"}
-        </button>
         <button onClick={() => mapInstance.current?.zoomIn()}
           className="bg-gray-900/90 border border-gray-700 text-gray-300 hover:bg-gray-800 px-3 py-1.5 rounded text-sm shadow-lg">+</button>
         <button onClick={() => mapInstance.current?.zoomOut()}
@@ -362,82 +228,6 @@ export default function MapViewInner({
 
       {/* Map */}
       <div ref={mapRef} className="w-full h-full" />
-
-      {/* Region form */}
-      {showForm && (
-        <div className="absolute inset-0 bg-black/50 flex items-center justify-center z-[1001]">
-          <form onSubmit={handleSubmitRegion} className="bg-gray-900 p-4 md:p-6 rounded-xl border border-gray-700 w-[calc(100%-2rem)] max-w-96 mx-4">
-            <h3 className="text-lg font-bold mb-4">New Hunt Region</h3>
-            {pendingBounds && (
-              <p className="text-gray-500 text-xs mb-3">
-                {pendingBounds.south.toFixed(4)}°N – {pendingBounds.north.toFixed(4)}°N,{" "}
-                {Math.abs(pendingBounds.west).toFixed(4)}°W – {Math.abs(pendingBounds.east).toFixed(4)}°W
-              </p>
-            )}
-
-            {/* Search profile */}
-            <div className="mb-3">
-              <label className="block text-gray-400 text-sm mb-1">Search Profile</label>
-              <select value={searchProfile}
-                onChange={(e) => {
-                  const p = SEARCH_PROFILES[e.target.value];
-                  setSearchProfile(e.target.value);
-                  if (e.target.value !== "custom") {
-                    setFormData({ ...formData, stories: p.stories, constructionFilter: p.construction });
-                  }
-                }}
-                className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-white text-sm">
-                {Object.entries(SEARCH_PROFILES).map(([k, v]) => (
-                  <option key={k} value={k}>{v.label}</option>
-                ))}
-              </select>
-            </div>
-
-            <div className="mb-3">
-              <label className="block text-gray-400 text-sm mb-1">Region Name</label>
-              <input type="text" required value={formData.name}
-                onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-white text-sm" placeholder="e.g. Clearwater Beach Condos" />
-            </div>
-
-            <div className="grid grid-cols-2 gap-3 mb-3">
-              <div>
-                <label className="block text-gray-400 text-sm mb-1">Min Stories</label>
-                <input type="number" min={1} value={formData.stories}
-                  onChange={(e) => { setFormData({ ...formData, stories: parseInt(e.target.value) }); setSearchProfile("custom"); }}
-                  className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-white text-sm" />
-              </div>
-              <div>
-                <label className="block text-gray-400 text-sm mb-1">Max Coast Dist (mi)</label>
-                <input type="number" min={0} step={0.1} value={formData.coastDistance}
-                  onChange={(e) => setFormData({ ...formData, coastDistance: parseFloat(e.target.value) })}
-                  className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-white text-sm" />
-              </div>
-            </div>
-
-            <div className="mb-4">
-              <label className="block text-gray-400 text-sm mb-1">Construction Type</label>
-              <select value={formData.constructionFilter}
-                onChange={(e) => { setFormData({ ...formData, constructionFilter: e.target.value }); setSearchProfile("custom"); }}
-                className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-white text-sm">
-                <option value="any">Any Construction</option>
-                <option value="fire_resistive">Fire Resistive Only</option>
-                <option value="non_combustible">Non-Combustible+</option>
-                <option value="masonry">Masonry+</option>
-              </select>
-            </div>
-            {submitError && <p className="text-red-400 text-xs mb-3">{submitError}</p>}
-            <div className="flex gap-2">
-              <button type="submit" disabled={submitting}
-                className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-semibold py-2 rounded text-sm">
-                {submitting ? "Creating..." : "Start Hunt"}
-              </button>
-              <button type="button" onClick={handleCancelRegion}
-                className="flex-1 bg-gray-700 hover:bg-gray-600 text-white font-semibold py-2 rounded text-sm">Cancel</button>
-            </div>
-          </form>
-        </div>
-      )}
     </div>
   );
 }

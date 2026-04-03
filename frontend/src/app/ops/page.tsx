@@ -188,7 +188,7 @@ export default function OpsPage() {
     setSeedResult(null);
     try {
       const res = await fetch(`/api/proxy/admin/seed-county/${countyNo}`, { method: "POST" });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({ error: res.statusText }));
       if (!res.ok || data.error) {
         setSeedResult(`Error: ${data.error || res.statusText}`);
       } else {
@@ -207,7 +207,7 @@ export default function OpsPage() {
     setSeedResult(null);
     try {
       const res = await fetch("/api/proxy/admin/seed-all", { method: "POST" });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({ error: res.statusText }));
       if (!res.ok || data.error) {
         setSeedResult(`Error: ${data.error || res.statusText}`);
       } else {
@@ -227,7 +227,7 @@ export default function OpsPage() {
     setSeedResult(null);
     try {
       const res = await fetch("/api/proxy/admin/reset", { method: "POST" });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({ error: res.statusText }));
       if (res.ok) {
         setSeedResult(`Database reset complete. ${data.message || "Ready for seeding."}`);
       } else {
@@ -323,7 +323,7 @@ export default function OpsPage() {
   // ─── Helpers ───
 
   const totalEntities = enrichStatus?.stage_counts
-    ? Object.values(enrichStatus.stage_counts).reduce((a, b) => a + b, 0)
+    ? Object.values(enrichStatus.stage_counts).reduce((a: number, b: number) => a + b, 0)
     : enrichStatus?.total_leads || 0;
 
   const tabs: { key: ActiveTab; label: string; badge?: number }[] = [
@@ -433,7 +433,8 @@ export default function OpsPage() {
               </div>
               {enrichStatus && (
                 <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-5 gap-3">
-                  {Object.entries(enrichStatus.coverage || {}).map(([source, count]) => {
+                  {Object.entries(enrichStatus.coverage || {}).map(([source, rawCount]) => {
+                    const count = Number(rawCount) || 0;
                     const pct = enrichStatus.total_leads > 0
                       ? Math.round((count / enrichStatus.total_leads) * 100) : 0;
                     return (
@@ -561,6 +562,45 @@ export default function OpsPage() {
                 <button onClick={fetchCounties}
                   className="bg-gray-800 hover:bg-gray-700 text-gray-400 text-xs px-3 py-2 rounded">
                   Refresh
+                </button>
+                <button onClick={async () => {
+                  setSeedResult(null);
+                  try {
+                    const res = await fetch("/api/proxy/admin/download-cadastral", { method: "POST" });
+                    const data = await res.json().catch(() => ({ error: res.statusText }));
+                    setSeedResult(data.message || "Cadastral download started");
+                  } catch (err) {
+                    setSeedResult(`Error: ${err}`);
+                  }
+                }}
+                  className="bg-purple-600 hover:bg-purple-700 text-white text-xs px-3 py-2 rounded font-medium">
+                  Pull ArcGIS
+                </button>
+                <button onClick={async () => {
+                  setSeedResult(null);
+                  try {
+                    const res = await fetch("/api/proxy/admin/download-sunbiz", { method: "POST" });
+                    const data = await res.json().catch(() => ({ error: res.statusText }));
+                    setSeedResult(data.message || "Sunbiz download started");
+                  } catch (err) {
+                    setSeedResult(`Error: ${err}`);
+                  }
+                }}
+                  className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs px-3 py-2 rounded font-medium">
+                  Pull Sunbiz
+                </button>
+                <button onClick={async () => {
+                  setSeedResult(null);
+                  try {
+                    const res = await fetch("/api/proxy/admin/refresh-data", { method: "POST" });
+                    const data = await res.json().catch(() => ({ error: res.statusText }));
+                    setSeedResult(data.message || "Data refresh started");
+                  } catch (err) {
+                    setSeedResult(`Error: ${err}`);
+                  }
+                }}
+                  className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs px-3 py-2 rounded font-medium">
+                  Refresh All Data
                 </button>
               </div>
             </div>
@@ -723,7 +763,6 @@ export default function OpsPage() {
                 <select value={queryTable} onChange={(e) => setQueryTable(e.target.value)}
                   className="bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-white">
                   <option value="entities">Entities</option>
-                  <option value="osm_cache">OSM Cache</option>
                   <option value="contacts">Contacts</option>
                 </select>
                 <select value={queryCounty} onChange={(e) => setQueryCounty(e.target.value)}
@@ -747,9 +786,7 @@ export default function OpsPage() {
               </div>
               <input type="text" value={queryText} onChange={(e) => setQueryText(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && runQuery()}
-                placeholder={queryTable === "osm_cache"
-                  ? 'e.g. "7+ stories fire resistive" or "clearwater"'
-                  : 'Search by name, address, or owner...'}
+                placeholder="Search by name, address, or owner..."
                 className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-white placeholder-gray-600" />
             </div>
 

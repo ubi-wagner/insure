@@ -64,10 +64,9 @@ TARGET_USE_CODES = {
 # Also include if they have enough units (for non-target use codes)
 MIN_UNITS_FOR_OTHER = 10
 
-# Minimum thresholds to filter out non-starters on ingest
-# Properties below these aren't worth pursuing for commercial insurance
-MIN_MARKET_VALUE = 500_000      # $500K minimum market value
-MIN_UNITS_TARGET = 4            # At least 4 units for condos/multi-family
+# Minimum thresholds — focused on commercial insurance opportunities
+MIN_MARKET_VALUE = 10_000_000    # $10M minimum market value
+MIN_UNITS_TARGET = 10            # At least 10 units for condos/multi-family
 
 
 def _find_nal_file(county_no: str) -> str | None:
