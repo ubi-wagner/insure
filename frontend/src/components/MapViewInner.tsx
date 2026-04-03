@@ -222,10 +222,10 @@ export default function MapViewInner({
     markersRef.current.clear();
 
     for (const lead of leads) {
-      if (!lead.latitude || !lead.longitude) continue;
+      if (lead.latitude == null || lead.longitude == null) continue;
 
       const fill = HEAT_FILL[lead.heat_score] || HEAT_FILL.none;
-      const stage = STAGE_STYLES[lead.status] || STAGE_STYLES.NEW;
+      const stage = STAGE_STYLES[lead.status] || STAGE_STYLES.TARGET;
       const isSelected = lead.id === selectedLeadId;
 
       const icon = createNumberedIcon(lead.listIndex, fill, stage.border, isSelected);
@@ -247,7 +247,7 @@ export default function MapViewInner({
       const lead = leads.find(l => l.id === id);
       if (!lead) return;
       const fill = HEAT_FILL[lead.heat_score] || HEAT_FILL.none;
-      const stage = STAGE_STYLES[lead.status] || STAGE_STYLES.NEW;
+      const stage = STAGE_STYLES[lead.status] || STAGE_STYLES.TARGET;
       const isHovered = id === hoveredLeadId;
       const isSelected = id === selectedLeadId;
 

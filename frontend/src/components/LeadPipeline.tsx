@@ -159,12 +159,12 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
       const res = await fetch(`/api/proxy/leads?${params}`);
       if (res.ok) {
         const data: ApiResponse = await res.json();
-        setLeads(data.results);
-        setTotal(data.total);
+        setLeads(data.results ?? []);
+        setTotal(data.total ?? 0);
 
         // Send map data
         onLeadsLoaded?.(data.results
-          .filter(l => l.latitude && l.longitude)
+          .filter(l => l.latitude != null && l.longitude != null)
           .map((l, i) => ({
             id: l.id, name: l.name, latitude: l.latitude,
             longitude: l.longitude, heat_score: l.heat_score || "cold",
@@ -238,7 +238,7 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
       });
       if (res.ok) {
         const data = await res.json();
-        setBulkMsg(`${data.changed} moved to ${targetStage}`);
+        setBulkMsg(`${data.changed ?? 0} moved to ${targetStage}`);
         setSelected(new Set());
         setSelectMode(false);
         await fetchLeads();
@@ -256,8 +256,8 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
       if (county) body.filter_county = county;
       if (minValue) body.filter_min_value = parseFloat(minValue);
       if (maxValue) body.filter_max_value = parseFloat(maxValue);
-      if (minUnits) body.filter_min_units = parseInt(minUnits);
-      if (minStories) body.filter_min_stories = parseInt(minStories);
+      if (minUnits) body.filter_min_units = parseInt(minUnits, 10);
+      if (minStories) body.filter_min_stories = parseInt(minStories, 10);
       if (useCode) body.filter_use_code = useCode;
       if (heatFilter) body.filter_heat = heatFilter;
       if (citizensOnly) body.filter_on_citizens = true;
@@ -269,7 +269,7 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
       });
       if (res.ok) {
         const data = await res.json();
-        setBulkMsg(`${data.changed} moved to ${targetStage}`);
+        setBulkMsg(`${data.changed ?? 0} moved to ${targetStage}`);
         await fetchLeads();
         fetchStageCounts();
       }
@@ -291,7 +291,7 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
   }
 
   function fmt(val: number | null | unknown): string {
-    const n = typeof val === "number" ? val : parseFloat(String(val || ""));
+    const n = typeof val === "number" ? val : parseFloat(String(val ?? ""));
     if (isNaN(n)) return "";
     if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(1)}M`;
     if (n >= 1_000) return `$${(n / 1_000).toFixed(0)}K`;
@@ -506,7 +506,7 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
                   <h3
                     className="font-medium text-sm text-white truncate flex-1 cursor-pointer hover:text-blue-300"
                     onClick={() => {
-                      if (lead.latitude && lead.longitude) {
+                      if (lead.latitude != null && lead.longitude != null) {
                         onFlyTo?.(lead.latitude, lead.longitude, lead.id);
                       }
                     }}>

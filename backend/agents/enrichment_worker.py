@@ -47,6 +47,8 @@ def run_enrichment_cycle(db: Session) -> int:
             completed = run_lead_enrichment(entity, db)
             if completed:
                 enriched += 1
+            # Brief pause between leads to avoid hammering external APIs
+            time.sleep(0.5)
         except Exception as e:
             logger.error(f"Enrichment failed for entity {entity.id}: {e}")
             try:

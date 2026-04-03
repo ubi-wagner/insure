@@ -46,8 +46,8 @@ interface LeadDetail {
   name: string;
   address: string;
   county: string;
-  latitude: number;
-  longitude: number;
+  latitude: number | null;
+  longitude: number | null;
   pipeline_stage: string;
   characteristics: Record<string, unknown>;
   emails: Record<string, { subject: string; body: string }> | null;
@@ -76,6 +76,11 @@ const STAGE_COLORS: Record<string, string> = {
   OPPORTUNITY: "bg-blue-900", CUSTOMER: "bg-green-800", ARCHIVED: "bg-red-900",
 };
 
+function safeNum(val: unknown): string {
+  const n = Number(val);
+  return isNaN(n) ? "\u2014" : n.toLocaleString();
+}
+
 function fmt(val: number | null | undefined): string {
   if (val === null || val === undefined) return "\u2014";
   return "$" + val.toLocaleString("en-US", { maximumFractionDigits: 0 });
@@ -97,6 +102,8 @@ export default function LeadDetailPage() {
   const [savingContact, setSavingContact] = useState(false);
 
   useEffect(() => {
+    setError(null);
+    setLead(null);
     fetch(`/api/proxy/leads/${id}`)
       .then((r) => r.ok ? r.json() : Promise.reject(`${r.status}`))
       .then(setLead)
@@ -152,7 +159,7 @@ export default function LeadDetailPage() {
         body: JSON.stringify({ stage: newStage, force }),
       });
       if (!res.ok && res.status === 422) {
-        const data = await res.json();
+        const data = await res.json().catch(() => ({}));
         setStageError(data.detail?.message || "Not ready for this stage");
       } else if (res.ok) {
         const updated = await fetch(`/api/proxy/leads/${id}`);
@@ -211,7 +218,7 @@ export default function LeadDetailPage() {
               <span className={`text-[10px] md:text-xs px-2 py-0.5 rounded-full text-white ${HEAT_STYLES[lead.heat_score] || HEAT_STYLES.none}`}>
                 {lead.heat_score}
               </span>
-              <span className={`text-[10px] md:text-xs px-2 py-0.5 rounded-full text-white ${STAGE_COLORS[lead.pipeline_stage] || STAGE_COLORS.NEW}`}>
+              <span className={`text-[10px] md:text-xs px-2 py-0.5 rounded-full text-white ${STAGE_COLORS[lead.pipeline_stage] || "bg-gray-700"}`}>
                 {lead.pipeline_stage}
               </span>
             </div>
@@ -228,7 +235,7 @@ export default function LeadDetailPage() {
           <div><span className="text-gray-500">Premium: </span><span className="font-semibold">{fmt(lead.premium_parsed)}</span></div>
           <div><span className="text-gray-500">Wind: </span>
             <span className={`font-semibold ${lead.heat_score === "hot" ? "text-red-400" : ""}`}>
-              {lead.wind_ratio !== null ? `${lead.wind_ratio.toFixed(2)}%` : "\u2014"}
+              {lead.wind_ratio != null ? `${lead.wind_ratio.toFixed(2)}%` : "\u2014"}
             </span>
           </div>
           <div className="ml-auto flex items-center gap-2">
@@ -243,7 +250,7 @@ export default function LeadDetailPage() {
             </select>
           </div>
         </div>
-        {lead.children.length > 0 && (
+        {(lead.children?.length ?? 0) > 0 && (
           <div className="mt-2 flex gap-2 items-center">
             <span className="text-gray-500 text-xs">Sub-entities:</span>
             {(lead.children || []).map((ch) => (
@@ -367,13 +374,13 @@ export default function LeadDetailPage() {
                     {!!chars.footprint_sqft && (
                       <div>
                         <p className="text-gray-500 text-xs">Footprint</p>
-                        <p className="text-white text-sm font-medium mt-1">{Number(chars.footprint_sqft).toLocaleString()} sqft</p>
+                        <p className="text-white text-sm font-medium mt-1">{safeNum(chars.footprint_sqft)} sqft</p>
                       </div>
                     )}
                     {!!chars.tiv_estimate && (
                       <div>
                         <p className="text-gray-500 text-xs">Est. TIV</p>
-                        <p className="text-white text-sm font-semibold mt-1">${Number(chars.tiv_estimate).toLocaleString()}</p>
+                        <p className="text-white text-sm font-semibold mt-1">${safeNum(chars.tiv_estimate)}</p>
                       </div>
                     )}
                   </div>
@@ -437,7 +444,7 @@ export default function LeadDetailPage() {
                     {!!chars.pa_assessed_value && (
                       <div>
                         <p className="text-gray-500 text-xs">Assessed Value</p>
-                        <p className="text-white text-sm font-medium mt-1">${Number(chars.pa_assessed_value).toLocaleString()}</p>
+                        <p className="text-white text-sm font-medium mt-1">${safeNum(chars.pa_assessed_value)}</p>
                       </div>
                     )}
                     {!!chars.pa_year_built && (
@@ -449,7 +456,7 @@ export default function LeadDetailPage() {
                     {!!chars.pa_building_sqft && (
                       <div>
                         <p className="text-gray-500 text-xs">Building Sqft</p>
-                        <p className="text-white text-sm font-medium mt-1">{Number(chars.pa_building_sqft).toLocaleString()}</p>
+                        <p className="text-white text-sm font-medium mt-1">{safeNum(chars.pa_building_sqft)}</p>
                       </div>
                     )}
                     {!!chars.pa_parcel_id && (
@@ -486,13 +493,13 @@ export default function LeadDetailPage() {
                     {!!chars.dor_market_value && (
                       <div>
                         <p className="text-gray-500 text-xs">Market Value</p>
-                        <p className="text-white text-sm font-semibold mt-1">${Number(chars.dor_market_value).toLocaleString()}</p>
+                        <p className="text-white text-sm font-semibold mt-1">${safeNum(chars.dor_market_value)}</p>
                       </div>
                     )}
                     {!!chars.dor_land_value && (
                       <div>
                         <p className="text-gray-500 text-xs">Land Value</p>
-                        <p className="text-white text-sm mt-1">${Number(chars.dor_land_value).toLocaleString()}</p>
+                        <p className="text-white text-sm mt-1">${safeNum(chars.dor_land_value)}</p>
                       </div>
                     )}
                     {!!chars.dor_construction_class && (
@@ -510,7 +517,7 @@ export default function LeadDetailPage() {
                     {!!chars.dor_living_sqft && (
                       <div>
                         <p className="text-gray-500 text-xs">Living Area</p>
-                        <p className="text-white text-sm mt-1">{Number(chars.dor_living_sqft).toLocaleString()} sqft</p>
+                        <p className="text-white text-sm mt-1">{safeNum(chars.dor_living_sqft)} sqft</p>
                       </div>
                     )}
                     {!!chars.dor_num_units && (
@@ -529,7 +536,7 @@ export default function LeadDetailPage() {
                       <div>
                         <p className="text-gray-500 text-xs">Last Sale</p>
                         <p className="text-white text-sm mt-1">
-                          ${Number(chars.dor_last_sale_price).toLocaleString()}
+                          ${safeNum(chars.dor_last_sale_price)}
                           {!!chars.dor_last_sale_date && <span className="text-gray-500 text-xs ml-1">({String(chars.dor_last_sale_date)})</span>}
                         </p>
                       </div>
@@ -728,7 +735,7 @@ export default function LeadDetailPage() {
                     <div key={key} className="bg-gray-900 border border-gray-800 rounded-lg p-3">
                       <p className="text-gray-500 text-xs capitalize">{key.replace(/_/g, " ")}</p>
                       <p className="text-white text-sm mt-1">
-                        {Array.isArray(val) ? (val as string[]).join(", ") : String(val || "\u2014")}
+                        {Array.isArray(val) ? val.map(String).join(", ") : String(val || "\u2014")}
                       </p>
                     </div>
                   ))}
@@ -743,7 +750,11 @@ export default function LeadDetailPage() {
               <h2 className="text-sm font-semibold text-gray-300 mb-3">Location</h2>
               <div className="bg-gray-900 border border-gray-800 rounded-lg p-4 text-sm">
                 <p>{lead.address}</p>
-                <p className="text-gray-500 mt-1">{lead.latitude.toFixed(6)}, {lead.longitude.toFixed(6)}</p>
+                <p className="text-gray-500 mt-1">
+                  {lead.latitude != null && lead.longitude != null
+                    ? `${lead.latitude.toFixed(6)}, ${lead.longitude.toFixed(6)}`
+                    : "No coordinates"}
+                </p>
               </div>
             </div>
           </div>

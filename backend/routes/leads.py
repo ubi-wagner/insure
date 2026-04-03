@@ -284,7 +284,7 @@ def list_leads(
             "latitude": entity.latitude,
             "longitude": entity.longitude,
             "characteristics": characteristics,
-            "created_at": entity.created_at.isoformat(),
+            "created_at": entity.created_at.isoformat() if entity.created_at else None,
             "status": entity.pipeline_stage or "TARGET",
             "pipeline_stage": entity.pipeline_stage,
             "parent_id": entity.parent_id,
@@ -331,7 +331,12 @@ def bulk_stage_change(req: BulkStageRequest, db: Session = Depends(get_db)):
         # Explicit IDs
         query = db.query(Entity).filter(Entity.id.in_(req.entity_ids))
     else:
-        # Filter-based
+        # Filter-based — require at least one filter to prevent updating ALL entities
+        has_filter = any([req.filter_stage, req.filter_county, req.filter_min_value is not None,
+                         req.filter_max_value is not None, req.filter_min_stories is not None,
+                         req.filter_min_units is not None, req.filter_use_code])
+        if not has_filter:
+            raise HTTPException(status_code=400, detail="Must provide entity_ids or at least one filter")
         query = db.query(Entity)
         if req.filter_stage:
             query = query.filter(Entity.pipeline_stage == req.filter_stage)
@@ -377,7 +382,7 @@ def get_lead(entity_id: int, db: Session = Depends(get_db)):
     assets = db.query(EntityAsset).filter(EntityAsset.entity_id == entity_id).all()
     policies = db.query(Policy).filter(Policy.entity_id == entity_id).order_by(Policy.is_active.desc()).all()
     engagements_list = db.query(Engagement).filter(Engagement.entity_id == entity_id).order_by(Engagement.created_at.desc()).all()
-    contacts = entity.contacts
+    contacts = entity.contacts or []
     children = entity.children or []
     characteristics = entity.characteristics or {}
 
@@ -425,7 +430,7 @@ def get_lead(entity_id: int, db: Session = Depends(get_db)):
                 "sent_at": eng.sent_at.isoformat() if eng.sent_at else None,
                 "responded_at": eng.responded_at.isoformat() if eng.responded_at else None,
                 "follow_up_at": eng.follow_up_at.isoformat() if eng.follow_up_at else None,
-                "created_at": eng.created_at.isoformat(),
+                "created_at": eng.created_at.isoformat() if eng.created_at else None,
             }
             for eng in engagements_list
         ],
@@ -498,7 +503,7 @@ def create_engagement(entity_id: int, req: CreateEngagementRequest, db: Session 
 def _compute_readiness(entity: Entity, db: Session) -> dict:
     chars = entity.characteristics or {}
     sources = entity.enrichment_sources or {}
-    contacts = entity.contacts
+    contacts = entity.contacts or []
     has_contacts = len(contacts) > 0
     has_primary_contact = any(c.is_primary for c in contacts)
     has_contact_email = any(c.email for c in contacts)

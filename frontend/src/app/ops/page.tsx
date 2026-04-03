@@ -433,7 +433,7 @@ export default function OpsPage() {
               </div>
               {enrichStatus && (
                 <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-5 gap-3">
-                  {Object.entries(enrichStatus.coverage).map(([source, count]) => {
+                  {Object.entries(enrichStatus.coverage || {}).map(([source, count]) => {
                     const pct = enrichStatus.total_leads > 0
                       ? Math.round((count / enrichStatus.total_leads) * 100) : 0;
                     return (
@@ -457,7 +457,7 @@ export default function OpsPage() {
                   })}
                   <div className="bg-gray-900 border border-red-900/50 rounded-lg p-3">
                     <p className="text-gray-500 text-[10px] uppercase tracking-wider mb-1">No Enrichment</p>
-                    <p className="text-lg font-bold text-red-400">{enrichStatus.no_enrichment.toLocaleString()}</p>
+                    <p className="text-lg font-bold text-red-400">{(enrichStatus.no_enrichment ?? 0).toLocaleString()}</p>
                     <div className="h-1 bg-gray-800 rounded-full mt-2 overflow-hidden">
                       <div className="h-full rounded-full bg-red-500"
                         style={{ width: `${enrichStatus.total_leads > 0 ? Math.max(Math.round((enrichStatus.no_enrichment / enrichStatus.total_leads) * 100), 2) : 0}%` }} />
@@ -586,7 +586,7 @@ export default function OpsPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {counties.counties.map((c) => (
+                      {(counties.counties || []).map((c) => (
                         <tr key={c.county_no} className="border-b border-gray-800/50 hover:bg-gray-800/30">
                           <td className="px-4 py-2.5 text-white font-medium">{c.county_name}</td>
                           <td className="px-4 py-2.5 text-gray-500 font-mono text-xs hidden sm:table-cell">{c.county_no}</td>
@@ -604,7 +604,7 @@ export default function OpsPage() {
                               <span className="text-gray-600 text-xs">-</span>
                             )}
                           </td>
-                          <td className="px-4 py-2.5 text-right text-white font-medium">{c.lead_count.toLocaleString()}</td>
+                          <td className="px-4 py-2.5 text-right text-white font-medium">{(c.lead_count ?? 0).toLocaleString()}</td>
                           <td className="px-4 py-2.5 text-right">
                             {c.ready && (
                               <button onClick={() => seedCounty(c.county_no)}
