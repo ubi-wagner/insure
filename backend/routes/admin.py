@@ -131,6 +131,34 @@ def seed_all_counties(db: Session = Depends(get_db)):
     }
 
 
+@router.post("/api/admin/download-cadastral")
+def download_cadastral():
+    """Download commercial parcels from FL ArcGIS Cadastral FeatureServer.
+
+    Filters: DOR_UC 004/005/006/008/039, JV >= $10M, 11 coastal counties.
+    Runs in background thread. Result saved to data/ and filestore/.
+    """
+    def _run():
+        try:
+            from scripts.download_cadastral import download_all_counties
+            path = download_all_counties()
+            emit(EventType.SYSTEM, "download_cadastral", EventStatus.SUCCESS,
+                 detail=f"Downloaded to {os.path.basename(path)}" if path else "No parcels found")
+        except Exception as e:
+            logger.error(f"Cadastral download failed: {e}")
+            emit(EventType.SYSTEM, "download_cadastral", EventStatus.ERROR,
+                 detail=str(e)[:200])
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+    emit(EventType.SYSTEM, "download_cadastral", EventStatus.PENDING,
+         detail="Downloading from FL ArcGIS Cadastral FeatureServer...")
+    return {
+        "success": True,
+        "message": "Cadastral download started. Check Events tab for progress.",
+    }
+
+
 # Full county harvest areas — covers entire county footprints
 # Split into grid tiles (~0.15° ≈ 10 miles) to keep Overpass queries manageable
 # Counties ordered south → north along both coasts
