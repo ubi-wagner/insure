@@ -17,9 +17,11 @@ Also tries to match against Overpass cached buildings if available.
 import csv
 import io
 import logging
+import os
 import re
 import time
 import threading
+import uuid
 
 import httpx
 from sqlalchemy.orm import Session
@@ -27,6 +29,8 @@ from sqlalchemy.orm import Session
 from database import SessionLocal
 from database.models import Entity, OsmBuilding
 from services.event_bus import EventStatus, EventType, emit
+
+FILE_STORE_ROOT = os.path.join(os.path.dirname(__file__), "..", "filestore")
 
 logger = logging.getLogger(__name__)
 
@@ -183,6 +187,7 @@ def _complete_overpass_association(entity: Entity, building: OsmBuilding, db: Se
 
         entity.pipeline_stage = "LEAD"
         entity.enrichment_status = "idle"
+        _create_entity_folder(entity)
         db.commit()
 
         emit(EventType.HUNTER, "associate", EventStatus.SUCCESS,
@@ -193,6 +198,21 @@ def _complete_overpass_association(entity: Entity, building: OsmBuilding, db: Se
         db.rollback()
         logger.error(f"Overpass association failed for entity {entity.id}: {e}")
         return False
+
+
+def _create_entity_folder(entity: Entity) -> str:
+    """Create a UUID-based folder structure for the entity's artifacts."""
+    folder_id = str(uuid.uuid4())[:8]
+    county_slug = (entity.county or "unknown").replace(" ", "_").replace("-", "_")
+    folder_name = f"{county_slug}/{folder_id}"
+    folder_path = os.path.join(FILE_STORE_ROOT, "Associations", folder_name)
+
+    # Create subfolders for different artifact types
+    for sub in ["enrichment", "documents", "correspondence", "analysis"]:
+        os.makedirs(os.path.join(folder_path, sub), exist_ok=True)
+
+    entity.folder_path = f"Associations/{folder_name}"
+    return entity.folder_path
 
 
 def _promote_geocoded(entity: Entity, lat: float, lon: float, db: Session, source: str = "census") -> bool:
@@ -207,6 +227,7 @@ def _promote_geocoded(entity: Entity, lat: float, lon: float, db: Session, sourc
 
         entity.pipeline_stage = "LEAD"
         entity.enrichment_status = "idle"
+        _create_entity_folder(entity)
         db.commit()
         return True
     except Exception as e:

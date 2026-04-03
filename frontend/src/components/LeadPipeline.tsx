@@ -49,11 +49,21 @@ const TARGET_COUNTIES = [
 const SORT_OPTIONS = [
   { value: "value-desc", label: "Value (High-Low)" },
   { value: "value-asc", label: "Value (Low-High)" },
+  { value: "stories-desc", label: "Stories (Most)" },
   { value: "units-desc", label: "Units (Most)" },
-  { value: "year_built-desc", label: "Newest" },
-  { value: "year_built-asc", label: "Oldest" },
+  { value: "year_built-desc", label: "Newest Built" },
+  { value: "year_built-asc", label: "Oldest Built" },
   { value: "name-asc", label: "Name A-Z" },
   { value: "date-desc", label: "Newest Added" },
+];
+
+const USE_CODE_OPTIONS = [
+  { value: "", label: "All Types" },
+  { value: "004", label: "004 - Condominium" },
+  { value: "005", label: "005 - Co-op" },
+  { value: "006", label: "006 - Retirement Home" },
+  { value: "008", label: "008 - Multi-Family 10+" },
+  { value: "039", label: "039 - Hotel/Motel" },
 ];
 
 interface PipelineProps {
@@ -61,11 +71,12 @@ interface PipelineProps {
   onLeadsLoaded?: (leads: { id: number; name: string; latitude: number; longitude: number; heat_score: string; status: string; listIndex: number }[]) => void;
   onLeadHover?: (id: number | null) => void;
   selectedLeadId?: number | null;
+  switchToStage?: string | null;
   onFlyTo?: (lat: number, lng: number, id: number) => void;
   onOpenDetails?: (id: number) => void;
 }
 
-export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, selectedLeadId, onFlyTo, onOpenDetails }: PipelineProps) {
+export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, selectedLeadId, switchToStage, onFlyTo, onOpenDetails }: PipelineProps) {
   const [leads, setLeads] = useState<Lead[]>([]);
   const [total, setTotal] = useState(0);
   const [fetchError, setFetchError] = useState<string | null>(null);
@@ -82,6 +93,10 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
   const [minValue, setMinValue] = useState("");
   const [maxValue, setMaxValue] = useState("");
   const [minUnits, setMinUnits] = useState("");
+  const [minStories, setMinStories] = useState("");
+  const [useCode, setUseCode] = useState("");
+  const [heatFilter, setHeatFilter] = useState("");
+  const [citizensOnly, setCitizensOnly] = useState(false);
   const [showFilters, setShowFilters] = useState(false);
 
   // Pagination
@@ -98,13 +113,24 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
 
   const scrollRef = useRef<HTMLDivElement>(null);
 
+  // Auto-switch stage tab when map marker is clicked on a different stage
+  useEffect(() => {
+    if (switchToStage && switchToStage !== activeStage) {
+      setActiveStage(switchToStage);
+    }
+  }, [switchToStage]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Scroll to selected card when map marker is clicked
   useEffect(() => {
     if (selectedLeadId) {
-      const el = document.getElementById(`lead-card-${selectedLeadId}`);
-      if (el) {
-        el.scrollIntoView({ behavior: "smooth", block: "center" });
-      }
+      // Small delay to allow stage switch + data fetch to render the card
+      const timer = setTimeout(() => {
+        const el = document.getElementById(`lead-card-${selectedLeadId}`);
+        if (el) {
+          el.scrollIntoView({ behavior: "smooth", block: "center" });
+        }
+      }, 300);
+      return () => clearTimeout(timer);
     }
   }, [selectedLeadId]);
 
@@ -125,6 +151,10 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
       if (minValue) params.set("min_value", minValue);
       if (maxValue) params.set("max_value", maxValue);
       if (minUnits) params.set("min_units", minUnits);
+      if (minStories) params.set("min_stories", minStories);
+      if (useCode) params.set("use_code", useCode);
+      if (heatFilter) params.set("heat", heatFilter);
+      if (citizensOnly) params.set("on_citizens", "true");
 
       const res = await fetch(`/api/proxy/leads?${params}`);
       if (res.ok) {
@@ -147,7 +177,7 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
       setFetchError("Unable to connect");
     }
     setLoading(false);
-  }, [activeStage, search, county, sortKey, page, minValue, maxValue, minUnits, onLeadsLoaded]);
+  }, [activeStage, search, county, sortKey, page, minValue, maxValue, minUnits, minStories, useCode, heatFilter, citizensOnly, onLeadsLoaded]);
 
   // Fetch stage counts for the tab badges
   const fetchStageCounts = useCallback(async () => {
@@ -169,7 +199,7 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
   }, [fetchStageCounts, refreshKey]);
 
   // Reset page when filters change
-  useEffect(() => { setPage(0); }, [activeStage, search, county, sortKey, minValue, maxValue, minUnits]);
+  useEffect(() => { setPage(0); }, [activeStage, search, county, sortKey, minValue, maxValue, minUnits, minStories, useCode, heatFilter, citizensOnly]);
 
   // Clear selection when stage changes
   useEffect(() => { setSelected(new Set()); setSelectMode(false); setBulkMsg(null); }, [activeStage]);
@@ -227,6 +257,10 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
       if (minValue) body.filter_min_value = parseFloat(minValue);
       if (maxValue) body.filter_max_value = parseFloat(maxValue);
       if (minUnits) body.filter_min_units = parseInt(minUnits);
+      if (minStories) body.filter_min_stories = parseInt(minStories);
+      if (useCode) body.filter_use_code = useCode;
+      if (heatFilter) body.filter_heat = heatFilter;
+      if (citizensOnly) body.filter_on_citizens = true;
 
       const res = await fetch("/api/proxy/leads/bulk-stage", {
         method: "POST",
@@ -298,8 +332,8 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
             className="flex-1 bg-gray-900 border border-gray-800 rounded px-2.5 py-1.5 text-sm text-white placeholder-gray-600 focus:border-blue-600 focus:outline-none"
           />
           <button onClick={() => setShowFilters(!showFilters)}
-            className={`px-2.5 py-1.5 rounded text-xs border ${showFilters ? "border-blue-600 bg-blue-950 text-blue-300" : "border-gray-800 bg-gray-900 text-gray-500"}`}>
-            Filters
+            className={`px-2.5 py-1.5 rounded text-xs border ${showFilters || useCode || heatFilter || minStories || citizensOnly ? "border-blue-600 bg-blue-950 text-blue-300" : "border-gray-800 bg-gray-900 text-gray-500"}`}>
+            Filters{(useCode || heatFilter || minStories || citizensOnly || minValue || maxValue || minUnits) ? ` (${[useCode, heatFilter, minStories, citizensOnly && "Citizens", minValue && "min$", maxValue && "max$", minUnits && "units"].filter(Boolean).length})` : ""}
           </button>
         </div>
 
@@ -320,6 +354,25 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
           <div className="bg-gray-900 border border-gray-800 rounded-lg p-2.5 space-y-2">
             <div className="flex gap-2">
               <div className="flex-1">
+                <label className="text-[10px] text-gray-500 block mb-0.5">Use Code</label>
+                <select value={useCode} onChange={(e) => setUseCode(e.target.value)}
+                  className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-white">
+                  {USE_CODE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                </select>
+              </div>
+              <div className="flex-1">
+                <label className="text-[10px] text-gray-500 block mb-0.5">Heat Score</label>
+                <select value={heatFilter} onChange={(e) => setHeatFilter(e.target.value)}
+                  className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-white">
+                  <option value="">All</option>
+                  <option value="hot">Hot</option>
+                  <option value="warm">Warm</option>
+                  <option value="cold">Cold</option>
+                </select>
+              </div>
+            </div>
+            <div className="flex gap-2">
+              <div className="flex-1">
                 <label className="text-[10px] text-gray-500 block mb-0.5">Min Value ($)</label>
                 <input type="number" value={minValue} onChange={(e) => setMinValue(e.target.value)}
                   placeholder="e.g. 15000000"
@@ -334,18 +387,29 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
             </div>
             <div className="flex gap-2">
               <div className="flex-1">
+                <label className="text-[10px] text-gray-500 block mb-0.5">Min Stories</label>
+                <input type="number" value={minStories} onChange={(e) => setMinStories(e.target.value)}
+                  placeholder="e.g. 7"
+                  className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-white" />
+              </div>
+              <div className="flex-1">
                 <label className="text-[10px] text-gray-500 block mb-0.5">Min Units</label>
                 <input type="number" value={minUnits} onChange={(e) => setMinUnits(e.target.value)}
                   placeholder="e.g. 10"
                   className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-white" />
               </div>
-              <div className="flex-1">
-                <label className="text-[10px] text-gray-500 block mb-0.5">&nbsp;</label>
-                <button onClick={() => { setMinValue(""); setMaxValue(""); setMinUnits(""); }}
-                  className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-400 hover:text-white">
-                  Clear Filters
-                </button>
-              </div>
+            </div>
+            <div className="flex gap-2 items-center">
+              <label className="flex items-center gap-1.5 text-xs text-gray-400 cursor-pointer">
+                <input type="checkbox" checked={citizensOnly} onChange={(e) => setCitizensOnly(e.target.checked)}
+                  className="rounded bg-gray-800 border-gray-600 text-blue-600" />
+                Citizens Insurance Only
+              </label>
+              <div className="flex-1" />
+              <button onClick={() => { setMinValue(""); setMaxValue(""); setMinUnits(""); setMinStories(""); setUseCode(""); setHeatFilter(""); setCitizensOnly(false); }}
+                className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-400 hover:text-white">
+                Clear All
+              </button>
             </div>
           </div>
         )}

@@ -1,10 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
 import Link from "next/link";
 import MapView from "@/components/MapView";
 import LeadPipeline from "@/components/LeadPipeline";
+import EntityDetailModal from "@/components/EntityDetailModal";
 
 interface LeadLocation {
   id: number;
@@ -16,16 +16,49 @@ interface LeadLocation {
   listIndex: number;
 }
 
+const MAX_MODALS = 5;
+
 export default function Dashboard() {
   const [refreshKey, setRefreshKey] = useState(0);
   const [leads, setLeads] = useState<LeadLocation[]>([]);
   const [hoveredLeadId, setHoveredLeadId] = useState<number | null>(null);
   const [selectedLeadId, setSelectedLeadId] = useState<number | null>(null);
+  const [switchToStage, setSwitchToStage] = useState<string | null>(null);
   const [flyToTarget, setFlyToTarget] = useState<{ lat: number; lng: number } | null>(null);
   const [huntingStatus, setHuntingStatus] = useState<string | null>(null);
   const [mobileView, setMobileView] = useState<"map" | "pipeline">("pipeline");
   const huntPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const router = useRouter();
+
+  // Modal system: max 5 open, ordered by open time
+  const [openModals, setOpenModals] = useState<number[]>([]);
+  const [activeModal, setActiveModal] = useState<number | null>(null);
+
+  function openEntityModal(id: number) {
+    setOpenModals((prev) => {
+      // Don't duplicate
+      if (prev.includes(id)) {
+        setActiveModal(id);
+        return prev;
+      }
+      let next = [...prev, id];
+      // If over limit, close the oldest
+      if (next.length > MAX_MODALS) {
+        next = next.slice(1);
+      }
+      setActiveModal(id);
+      return next;
+    });
+  }
+
+  function closeModal(id: number) {
+    setOpenModals((prev) => {
+      const next = prev.filter((m) => m !== id);
+      if (activeModal === id) {
+        setActiveModal(next.length > 0 ? next[next.length - 1] : null);
+      }
+      return next;
+    });
+  }
 
   const handleLeadsLoaded = useCallback((loadedLeads: LeadLocation[]) => {
     setLeads(loadedLeads);
@@ -34,8 +67,15 @@ export default function Dashboard() {
   function handleMarkerClick(id: number) {
     setSelectedLeadId(id);
     const lead = leads.find((l: LeadLocation) => l.id === id);
-    if (lead?.latitude && lead?.longitude) {
-      setFlyToTarget({ lat: lead.latitude, lng: lead.longitude });
+    if (lead) {
+      if (lead.latitude && lead.longitude) {
+        setFlyToTarget({ lat: lead.latitude, lng: lead.longitude });
+      }
+      // Auto-switch pipeline to the clicked entity's stage
+      if (lead.status) {
+        setSwitchToStage(lead.status);
+      }
+      setMobileView("pipeline");
     }
   }
 
@@ -85,6 +125,9 @@ export default function Dashboard() {
               <span className="text-blue-300 text-[11px]">{huntingStatus}</span>
             </div>
           )}
+          {openModals.length > 0 && (
+            <span className="text-gray-600 text-[10px]">{openModals.length}/{MAX_MODALS} open</span>
+          )}
           <Link href="/files" className="text-gray-500 hover:text-white text-xs">Files</Link>
           <Link href="/ops" className="text-gray-500 hover:text-white text-xs">Ops</Link>
         </div>
@@ -124,16 +167,48 @@ export default function Dashboard() {
               onLeadsLoaded={handleLeadsLoaded}
               onLeadHover={setHoveredLeadId}
               selectedLeadId={selectedLeadId}
+              switchToStage={switchToStage}
               onFlyTo={(lat: number, lng: number, id: number) => {
                 setFlyToTarget({ lat, lng });
                 setSelectedLeadId(id);
                 setMobileView("map");
               }}
-              onOpenDetails={(id: number) => router.push(`/lead/${id}`)}
+              onOpenDetails={(id: number) => openEntityModal(id)}
             />
           </div>
         </div>
       </main>
+
+      {/* Entity Detail Modals — stacked, max 5 */}
+      {openModals.map((id) => (
+        <EntityDetailModal
+          key={id}
+          entityId={id}
+          isActive={activeModal === id}
+          onClose={() => closeModal(id)}
+          onFlyTo={(lat, lng) => {
+            setFlyToTarget({ lat, lng });
+            setSelectedLeadId(id);
+            setMobileView("map");
+          }}
+        />
+      ))}
+
+      {/* Modal tabs bar — shows when modals are open */}
+      {openModals.length > 0 && (
+        <div className="fixed bottom-0 left-0 right-0 sm:right-[460px] bg-gray-900 border-t border-gray-800 flex items-center px-2 py-1 z-[60] gap-1 overflow-x-auto">
+          {openModals.map((id) => {
+            const lead = leads.find((l) => l.id === id);
+            return (
+              <button key={id} onClick={() => setActiveModal(id)}
+                className={`flex items-center gap-1 px-2 py-1 rounded text-[11px] shrink-0 max-w-[160px] ${activeModal === id ? "bg-blue-900/50 text-blue-300 border border-blue-700" : "bg-gray-800 text-gray-500 border border-gray-700 hover:text-gray-300"}`}>
+                <span className="truncate">{lead?.name || `#${id}`}</span>
+                <span onClick={(e) => { e.stopPropagation(); closeModal(id); }} className="text-gray-600 hover:text-red-400 ml-0.5">&times;</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

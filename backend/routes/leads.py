@@ -133,6 +133,7 @@ def list_leads(
     min_year: Optional[int] = Query(None),
     use_code: Optional[str] = Query(None),
     heat: Optional[str] = Query(None),
+    on_citizens: Optional[bool] = Query(None),
     construction: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
     limit: int = Query(200),
@@ -173,6 +174,17 @@ def list_leads(
     # DOR use code filter
     if use_code:
         query = query.filter(Entity.characteristics["dor_use_code"].astext == use_code)
+
+    # Citizens insurance filter
+    if on_citizens is True:
+        query = query.filter(Entity.characteristics["on_citizens"].astext == "true")
+    elif on_citizens is False:
+        query = query.filter(
+            or_(
+                Entity.characteristics["on_citizens"].astext != "true",
+                Entity.characteristics["on_citizens"].is_(None),
+            )
+        )
 
     # Market value filter (dor_market_value is stored as integer in JSONB)
     if min_value is not None:
