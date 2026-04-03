@@ -91,31 +91,35 @@ def _batch_geocode_census(entities: list[Entity]) -> dict[int, tuple[float, floa
         return {}
 
     results = {}
-    try:
-        with httpx.Client(timeout=120) as client:
-            resp = client.post(
-                CENSUS_BATCH_URL,
-                data={"benchmark": "Public_AR_Current", "vintage": "Current_Current"},
-                files={"addressFile": ("addresses.csv", csv_content, "text/csv")},
-            )
-            resp.raise_for_status()
+    for attempt in range(3):
+        try:
+            with httpx.Client(timeout=120) as client:
+                resp = client.post(
+                    CENSUS_BATCH_URL,
+                    data={"benchmark": "Public_AR_Current", "vintage": "Current_Current"},
+                    files={"addressFile": ("addresses.csv", csv_content, "text/csv")},
+                )
+                resp.raise_for_status()
 
-            # Parse response CSV
-            # Format: ID, Input Address, Match, Match Type, Matched Address, Coordinates, TIGER ID, Side
-            reader = csv.reader(io.StringIO(resp.text))
-            for row in reader:
-                if len(row) < 6:
-                    continue
-                entity_id = int(row[0].strip('" '))
-                match_status = row[2].strip('" ').lower()
-                if match_status in ("match", "exact"):
-                    coords_str = row[5].strip('" ')
-                    if "," in coords_str:
-                        # Census returns lon,lat (not lat,lon)
-                        lon, lat = coords_str.split(",")
-                        results[entity_id] = (float(lat.strip()), float(lon.strip()))
-    except Exception as e:
-        logger.error(f"Census batch geocode failed: {e}")
+                # Parse response CSV
+                # Format: ID, Input Address, Match, Match Type, Matched Address, Coordinates, TIGER ID, Side
+                reader = csv.reader(io.StringIO(resp.text))
+                for row in reader:
+                    if len(row) < 6:
+                        continue
+                    entity_id = int(row[0].strip('" '))
+                    match_status = row[2].strip('" ').lower()
+                    if match_status in ("match", "exact"):
+                        coords_str = row[5].strip('" ')
+                        if "," in coords_str:
+                            # Census returns lon,lat (not lat,lon)
+                            lon, lat = coords_str.split(",")
+                            results[entity_id] = (float(lat.strip()), float(lon.strip()))
+            break  # Success — exit retry loop
+        except Exception as e:
+            logger.warning(f"Census batch geocode attempt {attempt + 1}/3 failed: {e}")
+            if attempt < 2:
+                time.sleep(2 ** (attempt + 1))  # 2s, 4s backoff
 
     return results
 
