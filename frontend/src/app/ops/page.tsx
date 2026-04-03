@@ -634,6 +634,39 @@ export default function OpsPage() {
         {tab === "query" && (
           <div className="space-y-4">
             <h2 className="text-sm font-semibold text-gray-300 mb-3">Data Explorer</h2>
+
+            {/* Canned queries */}
+            <div className="flex flex-wrap gap-1.5">
+              {[
+                { label: "All Condos (004)", table: "entities", q: "", county: "", stage: "TARGET", extra: "&use_code=004" },
+                { label: "LEADs by Value", table: "entities", q: "", county: "", stage: "LEAD", extra: "&sort_by=value&sort_dir=desc" },
+                { label: "Citizens Properties", table: "entities", q: "", county: "", stage: "", extra: "&on_citizens=true" },
+                { label: "7+ Stories", table: "entities", q: "7+ stories", county: "", stage: "", extra: "" },
+                { label: "Pasco Condos", table: "entities", q: "", county: "Pasco", stage: "", extra: "&use_code=004" },
+                { label: "All Contacts", table: "contacts", q: "", county: "", stage: "", extra: "" },
+                { label: "Hot Leads", table: "entities", q: "", county: "", stage: "LEAD", extra: "&heat=hot" },
+              ].map((cq) => (
+                <button key={cq.label} onClick={() => {
+                  setQueryTable(cq.table);
+                  setQueryText(cq.q);
+                  setQueryCounty(cq.county);
+                  setQueryStage(cq.stage);
+                  // Trigger query after state settles
+                  setTimeout(() => {
+                    const params = new URLSearchParams({ table: cq.table, limit: "100" });
+                    if (cq.q) params.set("q", cq.q);
+                    if (cq.county) params.set("county", cq.county);
+                    if (cq.stage) params.set("stage", cq.stage);
+                    const url = `/api/proxy/admin/query?${params}${cq.extra}`;
+                    fetch(url).then(r => r.ok ? r.json() : null).then(d => d && setQueryResults(d));
+                  }, 50);
+                }}
+                  className="bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-400 hover:text-white text-[11px] px-2.5 py-1.5 rounded">
+                  {cq.label}
+                </button>
+              ))}
+            </div>
+
             <div className="bg-gray-900 border border-gray-800 rounded-lg p-4 space-y-3">
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                 <select value={queryTable} onChange={(e) => setQueryTable(e.target.value)}
