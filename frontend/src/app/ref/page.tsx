@@ -43,40 +43,73 @@ interface RefSection {
 
 const SECTIONS: RefSection[] = [
   {
-    title: "FL Department of Revenue — Property Tax",
-    description: "Primary source for NAL tax roll data, DOR use codes, and county attribution.",
+    title: "FL Department of Revenue — Property Tax (NAL)",
+    description: "Primary source for NAL tax roll data, DOR use codes, and county attribution. This is our seed data.",
     links: [
       { label: "DOR Property Tax Oversight Home", url: "https://floridarevenue.com/property/Pages/Home.aspx" },
       { label: "NAL + SDF Data Portal (download tax rolls)", url: "https://floridarevenue.com/property/Pages/DataPortal_RequestAssessmentRollGISData.aspx", note: "Annual NAL files per county — our primary seed data" },
       { label: "DOR Reference — FIPS codes + field definitions", url: "https://fgio.maps.arcgis.com/home/item.html?id=55e830fd6c8948baae1601fbfc33a3b2", note: "County codes, DOR_UC definitions, NAL column reference" },
-      { label: "DOR Use Code Descriptions", url: "https://floridarevenue.com/property/Documents/dorlookupcodes.pdf" },
+      { label: "DOR Use Code Descriptions (PDF)", url: "https://floridarevenue.com/property/Documents/dorlookupcodes.pdf" },
+      { label: "Tangible Personal Property (DR-405)", url: "https://floridarevenue.com/property/Pages/Taxpayers_TangiblePersonalProperty.aspx", note: "TPP filings — confidential under FL 193.074, not public" },
     ],
   },
   {
     title: "ArcGIS — FL Statewide Cadastral (Parcels + Geometry)",
-    description: "10.8M parcels with NAL data joined to polygon geometry. Updated August 2025.",
+    description: "10.8M parcels with NAL data joined to polygon geometry. Same data as NAL but with parcel boundaries. Updated August 2025.",
     links: [
       { label: "FL Statewide Parcels (Overview)", url: "https://www.arcgis.com/home/item.html?id=efa909d6b1c841d298b0a649e7f71cf2" },
-      { label: "FeatureServer REST Endpoint", url: "https://services9.arcgis.com/Gh9awoU677aKree0/arcgis/rest/services/Florida_Statewide_Cadastral/FeatureServer/0", note: "Query API — our cadastral downloader uses this" },
+      { label: "FeatureServer REST Endpoint (Layer 0)", url: "https://services9.arcgis.com/Gh9awoU677aKree0/arcgis/rest/services/Florida_Statewide_Cadastral/FeatureServer/0", note: "Query API — our cadastral downloader uses this" },
       { label: "FL Geospatial Open Data Portal", url: "https://geodata.floridagio.gov/", note: "Hub for all FL GIS data" },
       { label: "FL Statewide Parcel Map (simplified)", url: "https://geodata.floridagio.gov/datasets/FGIO::florida-statewide-parcel-map" },
     ],
   },
   {
-    title: "DBPR — Division of Condominiums",
-    description: "Condo association registry, CAM licenses, financial filings, and payment history.",
+    title: "Sunbiz — Division of Corporations (Ownership & Officers)",
+    description: "Every FL condo association, HOA, and LLC must file annual reports. Officers, registered agents (often the management company), principal address, and filing status are public record. BULK DATA AVAILABLE.",
     links: [
-      { label: "DBPR Condo/Co-op Search", url: "https://www.myfloridalicense.com/dataextract.asp?SID=&strt=", note: "CSV extracts: Condo_CW, Condo_MD, condo_CE, Condo_NF, condo_conv, coopmailing" },
-      { label: "DBPR License Verification", url: "https://www.myfloridalicense.com/wl11.asp", note: "CAM license lookup" },
-      { label: "DBPR Payment History Extracts", url: "https://www2.myfloridalicense.com/sto/file_download/extracts/", note: "paymenthist_8002A-S files — delinquency data" },
+      { label: "Sunbiz Corporation Search", url: "https://search.sunbiz.org/Inquiry/CorporationSearch/SearchByName", note: "Search by association name → officers + registered agent" },
+      { label: "Sunbiz BULK DATA Downloads", url: "https://dos.fl.gov/sunbiz/other-services/data-downloads/", note: "QUARTERLY full extracts + daily updates — ASCII fixed-length files" },
+      { label: "Quarterly Data Files", url: "https://dos.fl.gov/sunbiz/other-services/data-downloads/quarterly-data/", note: "Generated Jan/Apr/Jul/Oct — all active corps. Large files (1GB+)" },
+      { label: "Daily Data Files", url: "https://dos.fl.gov/sunbiz/other-services/data-downloads/daily-data/", note: "Daily incremental changes — new filings, amendments, dissolutions" },
+      { label: "Corporate File Format Definitions", url: "https://dos.fl.gov/sunbiz/other-services/data-downloads/corporate-data-file/", note: "Fixed-length 1440 chars, up to 6 officers per record" },
+      { label: "Data Usage Guide", url: "https://dos.fl.gov/sunbiz/other-services/data-downloads/data-usage-guide/" },
+      { label: "Annual Report Filing (reference)", url: "https://dos.fl.gov/sunbiz/manage-business/efile/annual-report/", note: "LLCs: $138.75/yr, due Jan 1 - May 1, late fee $400 after May 1" },
     ],
   },
   {
-    title: "Sunbiz — Division of Corporations",
-    description: "Association/HOA corporate filings, officers, registered agents.",
+    title: "DBPR — Condo Registry, SIRS & Building Reports",
+    description: "Division of Condominiums, Timeshares & Mobile Homes. SIRS database (structural integrity reserve studies), milestone inspections, building reports, and financial filing status. New online portal as of July 2025.",
     links: [
-      { label: "Sunbiz Corporation Search", url: "https://search.sunbiz.org/Inquiry/CorporationSearch/SearchByName", note: "Search by association name to find officers + registered agent" },
-      { label: "Sunbiz Annual Reports", url: "https://dos.fl.gov/sunbiz/manage-business/efile/annual-report/" },
+      { label: "DBPR Condo Information Hub", url: "https://condos.myfloridalicense.com/", note: "New portal — inspections, SIRS, timeline, FAQs" },
+      { label: "SIRS Reporting Database", url: "https://www2.myfloridalicense.com/condos-timeshares-mobile-homes/condominiums-and-cooperatives-sirs-reporting/", note: "Searchable list of associations that completed SIRS — structural reserve data" },
+      { label: "Building Reports Portal", url: "https://www2.myfloridalicense.com/condos-timeshares-mobile-homes/building-report/", note: "Per-building reporting — stories, units, association contacts" },
+      { label: "Milestone Inspection Info", url: "https://condos.myfloridalicense.com/inspections/", note: "Buildings 3+ stories, 25+ years old — mandatory structural inspection" },
+      { label: "Timeline of Compliance Deadlines", url: "https://condos.myfloridalicense.com/timeline/", note: "SIRS due Dec 31, 2025. Milestone inspections due Dec 31, 2026" },
+      { label: "FAQs", url: "https://condos.myfloridalicense.com/faqs/" },
+      { label: "Public Records Request", url: "https://www2.myfloridalicense.com/condos-timeshares-mobile-homes/public-records/", note: "Request specific condo association records" },
+      { label: "CSV Data Extracts", url: "https://www.myfloridalicense.com/dataextract.asp?SID=&strt=", note: "Condo_CW, Condo_MD, condo_CE, Condo_NF, condo_conv, coopmailing" },
+      { label: "Payment History Extracts", url: "https://www2.myfloridalicense.com/sto/file_download/extracts/", note: "paymenthist_8002A-S — delinquency data by project number" },
+    ],
+  },
+  {
+    title: "FL Statutes — Condo Association Requirements",
+    description: "Legal requirements that create the data we harvest. Every condo/co-op must comply — this is why the data exists.",
+    links: [
+      { label: "Ch. 718 — Condominiums (full chapter)", url: "https://www.leg.state.fl.us/statutes/index.cfm?App_mode=display_statute&URL=0700-0799/0718/0718.html" },
+      { label: "§718.111 — Association duties, insurance, records", url: "https://m.flsenate.gov/statutes/718.111", note: "Insurance: must carry 100% replacement cost. Financial reports by revenue tier. Records must be available to owners." },
+      { label: "§718.112 — Budgets, reserves, assessments", url: "https://www.leg.state.fl.us/statutes/index.cfm?App_mode=Display_Statute&URL=0700-0799/0718/Sections/0718.112.html", note: "Reserve fund requirements, SIRS items cannot be waived" },
+      { label: "Ch. 719 — Cooperatives", url: "https://www.leg.state.fl.us/statutes/index.cfm?App_mode=display_statute&URL=0700-0799/0719/0719.html" },
+      { label: "Ch. 720 — HOAs", url: "https://www.leg.state.fl.us/statutes/index.cfm?App_mode=display_statute&URL=0700-0799/0720/0720.html" },
+    ],
+  },
+  {
+    title: "Financial Reporting Thresholds (§718.111(13))",
+    description: "Associations MUST file financial reports. The tier determines the level of scrutiny — larger associations = audited financials.",
+    links: [
+      { label: "< $150K revenue: Cash receipts/expenditures report", url: "http://www.flcondoassociationadvisor.com/florida-statute-718-11113-everything-need-know-florida-condominium-association-year-end-financial-reporting-requirement/", note: "Basic cash report only" },
+      { label: "$150K-$300K: Compiled financial statements", url: "https://www.stroemercpa.com/reporting_requirements.php", note: "CPA-compiled but not audited" },
+      { label: "$300K-$500K: Reviewed financial statements", url: "https://www.add.cpa/post/year-end-financial-reporting-requirements-for-condos-and-hoas-in-florida", note: "CPA review — limited assurance" },
+      { label: "$500K+ revenue: FULL AUDIT required", url: "https://beckerlawyers.com/changes-to-condominium-laws-regarding-financial-reports-and-official-records-news-press/", note: "Independent CPA audit — our $10M+ targets are all here" },
     ],
   },
   {
@@ -89,26 +122,29 @@ const SECTIONS: RefSection[] = [
     ],
   },
   {
-    title: "Wind Data — UF GeoPlan Center",
-    description: "Wind speed design maps, wind-borne debris regions — critical for wind insurance rating.",
+    title: "Wind Data — UF GeoPlan + OIR",
+    description: "Wind speed design maps, wind-borne debris regions, and wind mitigation inspection standards. Critical for wind insurance rating.",
     links: [
       { label: "UF GeoPlan Wind Speed Project", url: "https://www.geoplan.ufl.edu/portfolio/wind-speed/", note: "Wind design speed maps for FL Building Code" },
       { label: "FL Wind Speed GIS Data History (PDF)", url: "https://fgdl.org/content/pdfs/Florida_Wind_Speed_FGDL_GIS_Data_History_20240722.pdf" },
       { label: "ASCE 7 Hazard Tool", url: "https://asce7hazardtool.online/", note: "Official wind speed lookup by coordinates" },
-      { label: "FL Building Code Wind Maps (2007 reference)", url: "https://adhoc.geoplan.ufl.edu/downloads/kate/windspeed_2007/FBC_2007_Wind_Speed_Map_Book.pdf" },
+      { label: "OIR Wind Mitigation Resources", url: "https://floir.gov/consumers/wind-mitigation-resources", note: "FL Office of Insurance Regulation — mitigation discount info" },
+      { label: "Uniform Mitigation Verification Form (OIR-B1-1802)", url: "https://www.citizensfla.com/documents/20702/31330/Uniform+Mitigation+Verification+Inspection+Form+OIR-B1-1802/3ff6a375-1088-482b-8496-5b325ed6453b", note: "Standard form — valid 5 years. Roof, openings, wall construction, etc." },
+      { label: "CFO Wind Mitigation Info", url: "https://myfloridacfo.com/division/consumers/storm/mitigation-notices-inspections-and-forms" },
     ],
   },
   {
     title: "Citizens Property Insurance",
-    description: "Florida's insurer of last resort — properties on Citizens are swap opportunities.",
+    description: "FL insurer of last resort. Properties on Citizens = swap opportunities for private market. Exposure data is public.",
     links: [
-      { label: "Citizens Policy Search", url: "https://www.citizensfla.com/", note: "Check if property is on Citizens" },
-      { label: "Citizens Data (Rate Filings + Exposure)", url: "https://www.citizensfla.com/data", note: "County exposure data, depopulation reports" },
+      { label: "Citizens Homepage", url: "https://www.citizensfla.com/" },
+      { label: "Citizens Data Portal (exposure, rates, depop)", url: "https://www.citizensfla.com/data", note: "County exposure data, rate filings, depopulation reports" },
+      { label: "Wind Mitigation Inspection Info", url: "https://www.citizensfla.com/your-wind-inspection", note: "Required for Citizens policyholders — discount opportunity" },
     ],
   },
   {
-    title: "FDOT — Parcel Data (Alternate Source)",
-    description: "FL DOT maintains its own parcel data with additional transportation-related fields.",
+    title: "FDOT — Parcel Data (Alternate GIS Source)",
+    description: "FL DOT maintains separate parcel data per county with additional fields.",
     links: [
       { label: "FDOT Parcels FeatureServer", url: "https://gis.fdot.gov/arcgis/rest/services/Parcels/FeatureServer", note: "Per-county layers — our FDOT enricher uses this" },
       { label: "FDOT Parcels MapServer", url: "https://gis.fdot.gov/arcgis/rest/services/Parcels/MapServer" },
@@ -116,10 +152,19 @@ const SECTIONS: RefSection[] = [
   },
   {
     title: "US Census Geocoder",
-    description: "Batch geocoding service — converts addresses to coordinates.",
+    description: "Batch geocoding — converts addresses to coordinates. 10K addresses per batch request.",
     links: [
       { label: "Census Geocoder (batch)", url: "https://geocoding.geo.census.gov/geocoder/locations/addressbatch", note: "Our associator uses this for TARGET→LEAD geocoding" },
-      { label: "Census Geocoder (single)", url: "https://geocoding.geo.census.gov/geocoder/locations/onelineaddress" },
+      { label: "Census Geocoder (single address)", url: "https://geocoding.geo.census.gov/geocoder/locations/onelineaddress" },
+    ],
+  },
+  {
+    title: "Insurance Regulatory — OIR & FLOIR",
+    description: "FL Office of Insurance Regulation — rate filings, company data, market reports.",
+    links: [
+      { label: "OIR Rate Filings Search", url: "https://floir.gov/office/data-analytics/rate-filings", note: "Search carrier rate filings — shows premium trends by line" },
+      { label: "OIR Company Search", url: "https://floir.gov/office/data-analytics/company-search", note: "Lookup carrier license status, financial data, complaints" },
+      { label: "OIR Annual Reports & Data", url: "https://floir.gov/office/data-analytics", note: "Market share reports, loss ratios, exposure data" },
     ],
   },
 ];
