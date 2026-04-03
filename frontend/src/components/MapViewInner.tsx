@@ -37,22 +37,7 @@ interface LeadLocation {
   listIndex: number;
 }
 
-interface RegionFormData {
-  name: string;
-  stories: number;
-  coastDistance: number;
-  constructionFilter: string;
-}
-
-const SEARCH_PROFILES: Record<string, { label: string; stories: number; construction: string }> = {
-  coastal_highrise: { label: "Coastal High-Rise (7+ floors, fire resistive)", stories: 7, construction: "fire_resistive" },
-  midrise_value:    { label: "Mid-Rise Value (3-6 floors, any)", stories: 3, construction: "any" },
-  premium_new:      { label: "Premium New Build (10+ floors)", stories: 10, construction: "any" },
-  custom:           { label: "Custom", stories: 3, construction: "any" },
-};
-
 interface Props {
-  onRegionCreated: (regionId: number) => void;
   leads?: LeadLocation[];
   hoveredLeadId?: number | null;
   selectedLeadId?: number | null;
@@ -97,24 +82,13 @@ function createNumberedIcon(num: number, fillColor: string, borderColor: string,
 }
 
 export default function MapViewInner({
-  onRegionCreated, leads = [], hoveredLeadId, selectedLeadId, flyToTarget, onMarkerClick,
+  leads = [], hoveredLeadId, selectedLeadId, flyToTarget, onMarkerClick,
 }: Props) {
   const mapRef = useRef<HTMLDivElement>(null);
   const mapInstance = useRef<L.Map | null>(null);
   const markersRef = useRef<Map<number, L.Marker>>(new Map());
-  const regionsLayerRef = useRef<L.FeatureGroup | null>(null);
 
-  const [drawMode, setDrawMode] = useState(false);
-  const firstCornerRef = useRef<L.LatLng | null>(null);
-  const previewRectRef = useRef<L.Rectangle | null>(null);
-
-  const [pendingBounds, setPendingBounds] = useState<{ north: number; south: number; east: number; west: number } | null>(null);
-  const [showForm, setShowForm] = useState(false);
-  const [formData, setFormData] = useState<RegionFormData>({ name: "", stories: 7, coastDistance: 5, constructionFilter: "fire_resistive" });
-  const [searchProfile, setSearchProfile] = useState("coastal_highrise");
   const [searchQuery, setSearchQuery] = useState("");
-  const [submitError, setSubmitError] = useState<string | null>(null);
-  const [submitting, setSubmitting] = useState(false);
 
   // ─── Init map with saved position ───
   useEffect(() => {
@@ -144,10 +118,6 @@ export default function MapViewInner({
       saveView([c.lat, c.lng], map.getZoom());
     });
 
-    const regionsLayer = new L.FeatureGroup();
-    map.addLayer(regionsLayer);
-    regionsLayerRef.current = regionsLayer;
-
     mapInstance.current = map;
 
     return () => {
@@ -155,63 +125,6 @@ export default function MapViewInner({
       mapInstance.current = null;
     };
   }, []);
-
-  // ─── Two-click rectangle drawing ───
-  useEffect(() => {
-    const map = mapInstance.current;
-    if (!map) return;
-
-    function handleClick(e: L.LeafletMouseEvent) {
-      if (!firstCornerRef.current) {
-        firstCornerRef.current = e.latlng;
-        map!.getContainer().style.cursor = "crosshair";
-      } else {
-        const bounds = L.latLngBounds(firstCornerRef.current, e.latlng);
-        if (previewRectRef.current) {
-          map!.removeLayer(previewRectRef.current);
-          previewRectRef.current = null;
-        }
-        const rect = L.rectangle(bounds, { color: "#3b82f6", weight: 2, fillOpacity: 0.15 });
-        regionsLayerRef.current?.addLayer(rect);
-        setPendingBounds({
-          north: bounds.getNorth(), south: bounds.getSouth(),
-          east: bounds.getEast(), west: bounds.getWest(),
-        });
-        firstCornerRef.current = null;
-        map!.getContainer().style.cursor = "";
-        setDrawMode(false);
-        setShowForm(true);
-      }
-    }
-
-    function handleMouseMove(e: L.LeafletMouseEvent) {
-      if (!firstCornerRef.current) return;
-      const bounds = L.latLngBounds(firstCornerRef.current, e.latlng);
-      if (previewRectRef.current) {
-        previewRectRef.current.setBounds(bounds);
-      } else {
-        previewRectRef.current = L.rectangle(bounds, {
-          color: "#3b82f6", weight: 1, fillOpacity: 0.1, dashArray: "5,5",
-        }).addTo(map!);
-      }
-    }
-
-    if (drawMode) {
-      map.getContainer().style.cursor = "crosshair";
-      map.dragging.disable();
-      map.on("click", handleClick);
-      map.on("mousemove", handleMouseMove);
-    } else {
-      map.getContainer().style.cursor = "";
-      map.dragging.enable();
-      map.off("click", handleClick);
-      map.off("mousemove", handleMouseMove);
-      if (previewRectRef.current) { map.removeLayer(previewRectRef.current); previewRectRef.current = null; }
-      firstCornerRef.current = null;
-    }
-
-    return () => { map.off("click", handleClick); map.off("mousemove", handleMouseMove); };
-  }, [drawMode]);
 
   // ─── Lead markers (numbered, typed, colored) ───
   useEffect(() => {
@@ -280,50 +193,6 @@ export default function MapViewInner({
     } catch (err) { console.error("Search failed:", err); }
   }
 
-  // ─── Region submit ───
-  async function handleSubmitRegion(e: React.FormEvent) {
-    e.preventDefault();
-    if (!pendingBounds) return;
-    setSubmitError(null);
-    setSubmitting(true);
-    try {
-      const res = await fetch(`/api/proxy/regions`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: formData.name, bounding_box: pendingBounds,
-          parameters: {
-            stories: formData.stories,
-            coast_distance: formData.coastDistance,
-            construction_filter: formData.constructionFilter,
-            search_profile: searchProfile,
-          },
-        }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setShowForm(false);
-        setFormData({ name: "", stories: 7, coastDistance: 5, constructionFilter: "fire_resistive" });
-        setSearchProfile("coastal_highrise");
-        setPendingBounds(null);
-        onRegionCreated(data.id);
-      } else {
-        const errData = await res.json().catch(() => ({}));
-        setSubmitError(errData.detail || `Failed (${res.status})`);
-      }
-    } catch (err) { setSubmitError("Unable to connect to API"); }
-    setSubmitting(false);
-  }
-
-  function handleCancelRegion() {
-    if (regionsLayerRef.current) {
-      const layers = regionsLayerRef.current.getLayers();
-      if (layers.length > 0) regionsLayerRef.current.removeLayer(layers[layers.length - 1]);
-    }
-    setPendingBounds(null);
-    setShowForm(false);
-  }
-
   return (
     <div className="relative w-full h-full">
       {/* Search bar */}
@@ -336,10 +205,6 @@ export default function MapViewInner({
 
       {/* Map tools */}
       <div className="absolute top-3 right-3 z-[1000] flex flex-col gap-1.5">
-        <button onClick={() => setDrawMode(!drawMode)}
-          className={`px-3 py-2 rounded text-sm font-medium shadow-lg ${drawMode ? "bg-blue-600 text-white ring-2 ring-blue-400" : "bg-gray-900/90 text-gray-300 hover:bg-gray-800 border border-gray-700"}`}>
-          {drawMode ? "Click 2 corners..." : "Draw Region"}
-        </button>
         <button onClick={() => mapInstance.current?.zoomIn()}
           className="bg-gray-900/90 border border-gray-700 text-gray-300 hover:bg-gray-800 px-3 py-1.5 rounded text-sm shadow-lg">+</button>
         <button onClick={() => mapInstance.current?.zoomOut()}
