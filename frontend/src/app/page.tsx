@@ -109,7 +109,7 @@ export default function Dashboard() {
       {/* Split layout — side by side on desktop, tabbed on mobile */}
       <main className="flex-1 flex overflow-hidden">
         {/* Map — hidden on mobile when pipeline is active */}
-        <div className={`flex-1 relative ${mobileView === "pipeline" ? "hidden md:block" : ""}`}>
+        <div className={`flex-1 relative pr-[30px] ${mobileView === "pipeline" ? "hidden md:block" : ""}`}>
           <MapView
             leads={leads}
             hoveredLeadId={hoveredLeadId}
