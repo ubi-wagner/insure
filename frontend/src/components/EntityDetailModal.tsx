@@ -34,6 +34,9 @@ interface EntityDetailModalProps {
   entityId: number;
   onClose: () => void;
   isActive: boolean;
+  stackIndex?: number;
+  totalOpen?: number;
+  onActivate?: () => void;
   onFlyTo?: (lat: number, lng: number) => void;
 }
 
@@ -175,6 +178,9 @@ export default function EntityDetailModal({
   entityId,
   onClose,
   isActive,
+  stackIndex = 0,
+  totalOpen = 1,
+  onActivate,
   onFlyTo,
 }: EntityDetailModalProps) {
   const [lead, setLead] = useState<LeadDetail | null>(null);
@@ -265,11 +271,20 @@ export default function EntityDetailModal({
   /*  Render                                                           */
   /* ---------------------------------------------------------------- */
 
+  // Stacking: each non-active modal shifts left by 28px per position from the active one
+  const offsetPx = isActive ? 0 : (totalOpen - 1 - stackIndex) * 28;
+  const zIndex = isActive ? 52 : 41 + stackIndex;
+
   return (
     <div
-      className={`fixed inset-y-0 right-0 w-full sm:w-[480px] ${
-        isActive ? "z-50" : "z-40 opacity-95"
-      } flex flex-col bg-gray-950 border-l border-gray-800 shadow-2xl shadow-black/60 transition-all duration-200`}
+      onClick={() => { if (!isActive) onActivate?.(); }}
+      style={{
+        transform: `translateX(${isActive ? 0 : -offsetPx}px)`,
+        zIndex,
+      }}
+      className={`fixed inset-y-0 right-0 w-full sm:w-[460px] flex flex-col bg-gray-950 border-l border-gray-800 shadow-2xl shadow-black/60 transition-all duration-300 ease-out ${
+        isActive ? "opacity-100" : "opacity-90 hover:opacity-95 cursor-pointer"
+      }`}
     >
       {/* ---- Header ---- */}
       <div className="bg-gray-900 border-b border-gray-800 px-4 py-3 shrink-0">
