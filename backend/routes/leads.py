@@ -135,6 +135,8 @@ def list_leads(
     use_code: Optional[str] = Query(None),
     heat: Optional[str] = Query(None),
     on_citizens: Optional[bool] = Query(None),
+    cream_tier: Optional[str] = Query(None),
+    min_cream: Optional[int] = Query(None),
     construction: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
     limit: int = Query(200, ge=1, le=1000),
@@ -142,7 +144,7 @@ def list_leads(
     db: Session = Depends(get_db),
 ):
     valid_sorts = ("date", "value", "tiv", "units", "year_built", "stories",
-                   "coast_distance", "wind_ratio", "premium", "name")
+                   "coast_distance", "wind_ratio", "premium", "name", "cream")
     if sort_by not in valid_sorts:
         raise HTTPException(status_code=400, detail=f"Invalid sort_by. Must be one of: {list(valid_sorts)}")
 
@@ -186,6 +188,12 @@ def list_leads(
                 Entity.characteristics["on_citizens"].is_(None),
             )
         )
+
+    # Cream tier filter
+    if cream_tier:
+        query = query.filter(Entity.characteristics["cream_tier"].astext == cream_tier)
+    if min_cream is not None:
+        query = query.filter(_jsonb_int("cream_score") >= min_cream)
 
     # Market value filter (dor_market_value is stored as integer in JSONB)
     if min_value is not None:
@@ -257,6 +265,9 @@ def list_leads(
         query = query.order_by(order_col.desc().nullslast() if is_desc else order_col.asc().nullsfirst())
     elif sort_by == "coast_distance":
         query = query.order_by(Entity.latitude.desc() if is_desc else Entity.latitude.asc())
+    elif sort_by == "cream":
+        order_col = _jsonb_int("cream_score")
+        query = query.order_by(order_col.desc().nullslast() if is_desc else order_col.asc().nullsfirst())
     elif sort_by == "name":
         query = query.order_by(Entity.name.asc() if not is_desc else Entity.name.desc())
     elif sort_by in ("wind_ratio", "premium"):
@@ -295,6 +306,8 @@ def list_leads(
             "premium_parsed": premium_val,
             "tiv_parsed": tiv_val,
             "enrichment_status": entity.enrichment_status or "idle",
+            "cream_score": characteristics.get("cream_score"),
+            "cream_tier": characteristics.get("cream_tier"),
         })
 
     duration_ms = round((time.time() - start) * 1000, 1)

@@ -227,6 +227,7 @@ def _load_enrichers():
         "citizens_insurance",   # Citizens insurance likelihood + swap opportunity
         "fdot_parcels",         # FDOT statewide parcel API
         "oir_market",           # OIR market intelligence (rates, carriers, wind tiers)
+        "cream_score",          # Final conversion opportunity scoring (runs last)
     ]
     for module in modules:
         try:
