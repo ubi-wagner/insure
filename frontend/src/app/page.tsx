@@ -69,11 +69,10 @@ export default function Dashboard() {
       if (lead.latitude != null && lead.longitude != null) {
         setFlyToTarget({ lat: lead.latitude, lng: lead.longitude });
       }
-      // Auto-switch pipeline to the clicked entity's stage
       if (lead.status) {
         setSwitchToStage(lead.status);
       }
-      setMobileView("pipeline");
+      openEntityModal(id);
     }
   }
 
@@ -140,12 +139,23 @@ export default function Dashboard() {
         </div>
       </main>
 
-      {/* Entity Detail Modals — stacked, max 5 */}
-      {openModals.map((id) => (
+      {/* Backdrop overlay — dims background when modals are open */}
+      {openModals.length > 0 && (
+        <div
+          className="fixed inset-0 bg-black/40 z-40 transition-opacity duration-300"
+          onClick={() => { if (activeModal != null) closeModal(activeModal); }}
+        />
+      )}
+
+      {/* Entity Detail Modals — stacked with visual offset, max 5 */}
+      {openModals.map((id, idx) => (
         <EntityDetailModal
           key={id}
           entityId={id}
           isActive={activeModal === id}
+          stackIndex={idx}
+          totalOpen={openModals.length}
+          onActivate={() => setActiveModal(id)}
           onClose={() => closeModal(id)}
           onFlyTo={(lat, lng) => {
             setFlyToTarget({ lat, lng });
@@ -155,19 +165,32 @@ export default function Dashboard() {
         />
       ))}
 
-      {/* Modal tabs bar — shows when modals are open */}
+      {/* Modal tab bar — fixed at bottom, positioned to the left of modals */}
       {openModals.length > 0 && (
-        <div className="fixed bottom-0 left-0 right-0 sm:right-[460px] bg-gray-900 border-t border-gray-800 flex items-center px-2 py-1 z-[60] gap-1 overflow-x-auto">
+        <div className="fixed bottom-0 left-0 right-0 sm:right-[470px] bg-gray-900/95 backdrop-blur-sm border-t border-gray-800 flex items-center px-2 py-1.5 z-[60] gap-1 overflow-x-auto">
           {openModals.map((id) => {
             const lead = leads.find((l) => l.id === id);
             return (
               <button key={id} onClick={() => setActiveModal(id)}
-                className={`flex items-center gap-1 px-2 py-1 rounded text-[11px] shrink-0 max-w-[160px] ${activeModal === id ? "bg-blue-900/50 text-blue-300 border border-blue-700" : "bg-gray-800 text-gray-500 border border-gray-700 hover:text-gray-300"}`}>
-                <span className="truncate">{lead?.name || `#${id}`}</span>
-                <span onClick={(e) => { e.stopPropagation(); closeModal(id); }} className="text-gray-600 hover:text-red-400 ml-0.5">&times;</span>
+                className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-[11px] shrink-0 max-w-[180px] transition-colors ${
+                  activeModal === id
+                    ? "bg-blue-900/60 text-blue-300 border border-blue-600 shadow-sm shadow-blue-900/30"
+                    : "bg-gray-800/80 text-gray-500 border border-gray-700 hover:text-gray-300 hover:border-gray-600"
+                }`}>
+                <span className="truncate">{lead?.name ?? `#${id}`}</span>
+                <span onClick={(e) => { e.stopPropagation(); closeModal(id); }}
+                  className="text-gray-600 hover:text-red-400 ml-0.5 text-sm leading-none">&times;</span>
               </button>
             );
           })}
+          {openModals.length > 1 && (
+            <button
+              onClick={() => { setOpenModals([]); setActiveModal(null); }}
+              className="text-gray-600 hover:text-red-400 text-[10px] px-2 py-1 shrink-0 ml-auto"
+            >
+              Close all
+            </button>
+          )}
         </div>
       )}
     </div>
