@@ -28,13 +28,13 @@ def reset_database(db: Session = Depends(get_db)):
     """DESTRUCTIVE: Wipe all entity data and start fresh.
 
     Clears: entities, contacts, policies, engagements, entity_assets,
-    lead_ledger, osm_buildings, osm_harvest_areas, regions.
+    lead_ledger, regions.
     Keeps: service_registry, broker_profiles.
     """
     try:
         # Order matters — children before parents, disable FK checks
         db.execute(sa.text("SET CONSTRAINTS ALL DEFERRED"))
-        db.execute(sa.text("TRUNCATE engagements, policies, entity_assets, contacts, lead_ledger, osm_buildings, osm_harvest_areas, regions_of_interest, entities CASCADE"))
+        db.execute(sa.text("TRUNCATE engagements, policies, entity_assets, contacts, lead_ledger, regions_of_interest, entities CASCADE"))
         db.commit()
         logger.info("Database reset complete")
         emit(EventType.SYSTEM, "reset", EventStatus.SUCCESS, detail="All entity data cleared")
