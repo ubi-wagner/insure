@@ -68,7 +68,7 @@ export default function Dashboard() {
     setSelectedLeadId(id);
     const lead = leads.find((l: LeadLocation) => l.id === id);
     if (lead) {
-      if (lead.latitude && lead.longitude) {
+      if (lead.latitude != null && lead.longitude != null) {
         setFlyToTarget({ lat: lead.latitude, lng: lead.longitude });
       }
       // Auto-switch pipeline to the clicked entity's stage

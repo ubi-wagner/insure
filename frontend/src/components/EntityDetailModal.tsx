@@ -12,8 +12,8 @@ interface LeadDetail {
   name: string;
   address: string;
   county: string;
-  latitude: number;
-  longitude: number;
+  latitude: number | null;
+  longitude: number | null;
   pipeline_stage: string;
   characteristics: Record<string, unknown>;
   emails: Record<string, { subject: string; body: string }> | null;
@@ -117,8 +117,15 @@ const KNOWN_FIELDS = new Set([
 /* ------------------------------------------------------------------ */
 
 function fmt(val: number | null | undefined): string {
-  if (val === null || val === undefined) return "\u2014";
+  if (val === null || val === undefined || isNaN(val)) return "\u2014";
   return "$" + val.toLocaleString("en-US", { maximumFractionDigits: 0 });
+}
+
+/** Safe number display for JSONB unknown values */
+function safeNum(val: unknown): string {
+  if (val === null || val === undefined) return "\u2014";
+  const n = Number(val);
+  return isNaN(n) ? String(val) : n.toLocaleString();
 }
 
 /* ------------------------------------------------------------------ */
@@ -310,7 +317,7 @@ export default function EntityDetailModal({
             {/* Stage selector + metrics */}
             <div className="flex items-center gap-3 mt-1.5 flex-wrap">
               <span className="text-xs text-gray-500">
-                TIV: <span className="text-white font-medium">{fmt(lead.tiv_parsed || (chars.tiv_estimate as number | null))}</span>
+                TIV: <span className="text-white font-medium">{fmt(lead.tiv_parsed ?? (typeof chars.tiv_estimate === "number" ? chars.tiv_estimate : null))}</span>
               </span>
               {chars.dor_market_value != null && (
                 <span className="text-xs text-gray-500">
@@ -339,7 +346,7 @@ export default function EntityDetailModal({
         <div className="flex border-b border-gray-800 shrink-0">
           {([
             { key: "overview" as TabName, label: "Overview" },
-            { key: "contacts" as TabName, label: `Contacts (${lead.contacts.length})` },
+            { key: "contacts" as TabName, label: `Contacts (${(lead.contacts || []).length})` },
             { key: "sources" as TabName, label: `Sources (${Object.keys(lead.enrichment_sources || {}).length})` },
           ]).map((t) => (
             <button
@@ -367,14 +374,14 @@ export default function EntityDetailModal({
           <>
             {/* Building Profile */}
             <DataSection title="Building Profile">
-              <DataRow label="Construction" value={chars.construction_class || chars.dor_construction_class} />
+              <DataRow label="Construction" value={chars.construction_class ?? chars.dor_construction_class} />
               <DataRow label="Stories" value={chars.stories} />
               <DataRow label="Building Type" value={chars.building_type} />
-              <DataRow label="Year Built" value={chars.year_built || chars.dor_year_built} />
-              <DataRow label="Units" value={chars.units_estimate || chars.dor_num_units} />
-              <DataRow label="Living Area" value={chars.dor_living_sqft ? `${Number(chars.dor_living_sqft).toLocaleString()} sqft` : null} />
-              <DataRow label="Footprint" value={chars.footprint_sqft ? `${Number(chars.footprint_sqft).toLocaleString()} sqft` : null} />
-              <DataRow label="Est. TIV" value={chars.tiv_estimate ? `$${Number(chars.tiv_estimate).toLocaleString()}` : null} />
+              <DataRow label="Year Built" value={chars.year_built ?? chars.dor_year_built} />
+              <DataRow label="Units" value={chars.units_estimate ?? chars.dor_num_units} />
+              <DataRow label="Living Area" value={chars.dor_living_sqft ? `${safeNum(chars.dor_living_sqft)} sqft` : null} />
+              <DataRow label="Footprint" value={chars.footprint_sqft ? `${safeNum(chars.footprint_sqft)} sqft` : null} />
+              <DataRow label="Est. TIV" value={chars.tiv_estimate ? `$${safeNum(chars.tiv_estimate)}` : null} />
             </DataSection>
 
             {/* Flood & Risk */}
@@ -386,33 +393,33 @@ export default function EntityDetailModal({
               } />
               <DataRow label="Risk Level" value={chars.flood_risk} />
               <DataRow label="Base Elevation" value={chars.flood_base_elev_ft ? `${chars.flood_base_elev_ft} ft` : null} />
-              <DataRow label="FEMA Map" value={chars.fema_map_url ? "View on FEMA MSC" : null} href={chars.fema_map_url as string} />
+              <DataRow label="FEMA Map" value={chars.fema_map_url ? "View on FEMA MSC" : null} href={typeof chars.fema_map_url === "string" ? chars.fema_map_url : undefined} />
             </DataSection>
 
             {/* Property Appraiser */}
             <DataSection title="Property Appraiser">
-              <DataRow label="Lookup" value={chars.pa_lookup_url ? "View on PA Site" : null} href={chars.pa_lookup_url as string} />
+              <DataRow label="Lookup" value={chars.pa_lookup_url ? "View on PA Site" : null} href={typeof chars.pa_lookup_url === "string" ? chars.pa_lookup_url : undefined} />
               <DataRow label="Owner" value={chars.pa_owner} />
-              <DataRow label="Assessed Value" value={chars.pa_assessed_value ? `$${Number(chars.pa_assessed_value).toLocaleString()}` : null} />
+              <DataRow label="Assessed Value" value={chars.pa_assessed_value ? `$${safeNum(chars.pa_assessed_value)}` : null} />
               <DataRow label="Parcel ID" value={chars.pa_parcel_id} />
               <DataRow label="Year Built (PA)" value={chars.pa_year_built} />
-              <DataRow label="Building Sqft" value={chars.pa_building_sqft ? Number(chars.pa_building_sqft).toLocaleString() : null} />
+              <DataRow label="Building Sqft" value={chars.pa_building_sqft ? safeNum(chars.pa_building_sqft) : null} />
             </DataSection>
 
             {/* DOR Tax Roll */}
             <DataSection title="DOR Tax Roll">
               <DataRow label="Owner" value={chars.dor_owner} />
               <DataRow label="Owner Address" value={chars.dor_owner_address} />
-              <DataRow label="Market Value" value={chars.dor_market_value ? `$${Number(chars.dor_market_value).toLocaleString()}` : null} />
-              <DataRow label="Land Value" value={chars.dor_land_value ? `$${Number(chars.dor_land_value).toLocaleString()}` : null} />
+              <DataRow label="Market Value" value={chars.dor_market_value ? `$${safeNum(chars.dor_market_value)}` : null} />
+              <DataRow label="Land Value" value={chars.dor_land_value ? `$${safeNum(chars.dor_land_value)}` : null} />
               <DataRow label="Use Type" value={chars.dor_use_description} />
               <DataRow label="Units" value={chars.dor_num_units} />
               <DataRow label="Buildings" value={chars.dor_num_buildings} />
-              <DataRow label="Living Area" value={chars.dor_living_sqft ? `${Number(chars.dor_living_sqft).toLocaleString()} sqft` : null} />
-              <DataRow label="Land Sqft" value={chars.dor_land_sqft ? `${Number(chars.dor_land_sqft).toLocaleString()} sqft` : null} />
+              <DataRow label="Living Area" value={chars.dor_living_sqft ? `${safeNum(chars.dor_living_sqft)} sqft` : null} />
+              <DataRow label="Land Sqft" value={chars.dor_land_sqft ? `${safeNum(chars.dor_land_sqft)} sqft` : null} />
               <DataRow label="Last Sale" value={
                 chars.dor_last_sale_price
-                  ? `$${Number(chars.dor_last_sale_price).toLocaleString()}${chars.dor_last_sale_date ? ` (${String(chars.dor_last_sale_date)})` : ""}`
+                  ? `$${safeNum(chars.dor_last_sale_price)}${chars.dor_last_sale_date ? ` (${String(chars.dor_last_sale_date)})` : ""}`
                   : null
               } />
               <DataRow label="Parcel ID" value={chars.dor_parcel_id} />
@@ -458,7 +465,7 @@ export default function EntityDetailModal({
               <DataRow
                 label="Lookup"
                 value={(chars.sunbiz_detail_url || chars.sunbiz_search_url) ? "View on Sunbiz" : null}
-                href={(chars.sunbiz_detail_url || chars.sunbiz_search_url) as string}
+                href={String(chars.sunbiz_detail_url || chars.sunbiz_search_url || "")}
               />
             </DataSection>
 
@@ -474,7 +481,7 @@ export default function EntityDetailModal({
               <DataRow label="Risk Factors" value={
                 chars.citizens_risk_factors
                   ? (Array.isArray(chars.citizens_risk_factors)
-                      ? (chars.citizens_risk_factors as string[]).join(", ")
+                      ? (Array.isArray(chars.citizens_risk_factors) ? chars.citizens_risk_factors.map(String).join(", ") : String(chars.citizens_risk_factors))
                       : String(chars.citizens_risk_factors))
                   : null
               } />
@@ -492,7 +499,7 @@ export default function EntityDetailModal({
                       label={key.replace(/_/g, " ")}
                       value={
                         Array.isArray(val)
-                          ? (val as string[]).join(", ")
+                          ? val.map(String).join(", ")
                           : (val ?? null)
                       }
                     />
@@ -502,8 +509,8 @@ export default function EntityDetailModal({
             })()}
 
             {/* Policies summary (compact) */}
-            {lead.policies.length > 0 && (
-              <DataSection title={`Policies (${lead.policies.length})`}>
+            {(lead.policies || []).length > 0 && (
+              <DataSection title={`Policies (${(lead.policies || []).length})`}>
                 {lead.policies.map((p) => (
                   <div key={p.id} className="py-1.5 border-b border-gray-800/50 last:border-0">
                     <div className="flex justify-between">
@@ -536,7 +543,7 @@ export default function EntityDetailModal({
         {/* ============================================================ */}
         {lead && tab === "contacts" && (
           <div className="space-y-2">
-            {lead.contacts.length === 0 && !showAddContact && (
+            {(lead.contacts || []).length === 0 && !showAddContact && (
               <p className="text-gray-600 text-xs">No contacts on record.</p>
             )}
 

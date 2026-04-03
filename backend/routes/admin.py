@@ -397,7 +397,7 @@ def get_harvest_status(db: Session = Depends(get_db)):
         "buildings_promoted_to_leads": promoted,
         "by_county": [{"county": r[0], "count": r[1]} for r in by_county],
         "areas": [
-            {"name": a.name, "count": a.building_count, "harvested_at": a.harvested_at.isoformat()}
+            {"name": a.name, "count": a.building_count, "harvested_at": a.harvested_at.isoformat() if a.harvested_at else None}
             for a in areas
         ],
     }
@@ -499,7 +499,7 @@ def query_data(
             "county": e.county, "pipeline_stage": e.pipeline_stage,
             "characteristics_keys": list((e.characteristics or {}).keys()),
             "sources": list((e.enrichment_sources or {}).keys()),
-            "created_at": e.created_at.isoformat(),
+            "created_at": e.created_at.isoformat() if e.created_at else None,
         } for e in rows]
         return {"table": "entities", "total": total, "showing": len(results), "results": results}
 
@@ -689,7 +689,7 @@ except Exception:
 @router.get("/api/files")
 def list_files(path: str = Query("")):
     """List files and folders at a given path."""
-    safe_path = os.path.normpath(os.path.join(FILE_STORE_ROOT, path))
+    safe_path = os.path.abspath(os.path.join(FILE_STORE_ROOT, path))
     if not safe_path.startswith(os.path.abspath(FILE_STORE_ROOT)):
         raise HTTPException(status_code=400, detail="Invalid path")
 
@@ -728,7 +728,7 @@ def list_files(path: str = Query("")):
 @router.post("/api/files/folder")
 def create_folder(name: str = Query(...), path: str = Query("")):
     """Create a new folder."""
-    safe_path = os.path.normpath(os.path.join(FILE_STORE_ROOT, path, name))
+    safe_path = os.path.abspath(os.path.join(FILE_STORE_ROOT, path, name))
     if not safe_path.startswith(os.path.abspath(FILE_STORE_ROOT)):
         raise HTTPException(status_code=400, detail="Invalid path")
     os.makedirs(safe_path, exist_ok=True)
@@ -804,7 +804,7 @@ async def upload_file(
 def download_file(path: str = Query(...)):
     """Download a file."""
     from fastapi.responses import FileResponse
-    safe_path = os.path.normpath(os.path.join(FILE_STORE_ROOT, path))
+    safe_path = os.path.abspath(os.path.join(FILE_STORE_ROOT, path))
     if not safe_path.startswith(os.path.abspath(FILE_STORE_ROOT)):
         raise HTTPException(status_code=400, detail="Invalid path")
     if not os.path.isfile(safe_path):
@@ -829,7 +829,7 @@ def download_file(path: str = Query(...)):
 def delete_file(path: str = Query(...)):
     """Delete a file or empty folder."""
     import shutil
-    safe_path = os.path.normpath(os.path.join(FILE_STORE_ROOT, path))
+    safe_path = os.path.abspath(os.path.join(FILE_STORE_ROOT, path))
     if not safe_path.startswith(os.path.abspath(FILE_STORE_ROOT)):
         raise HTTPException(status_code=400, detail="Invalid path")
     if not os.path.exists(safe_path):
@@ -855,7 +855,7 @@ def delete_file(path: str = Query(...)):
 @router.post("/api/files/rename")
 def rename_file(path: str = Query(...), new_name: str = Query(...)):
     """Rename a file or folder."""
-    safe_path = os.path.normpath(os.path.join(FILE_STORE_ROOT, path))
+    safe_path = os.path.abspath(os.path.join(FILE_STORE_ROOT, path))
     if not safe_path.startswith(os.path.abspath(FILE_STORE_ROOT)):
         raise HTTPException(status_code=400, detail="Invalid path")
     if not os.path.exists(safe_path):
