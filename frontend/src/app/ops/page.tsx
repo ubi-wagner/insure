@@ -72,6 +72,50 @@ const STATUS_DOT: Record<string, string> = {
   starting: "bg-blue-400",
 };
 
+function StageDrillDown({ stage, onClose }: { stage: string; onClose: () => void }) {
+  const [items, setItems] = useState<{ id: number; name: string; address: string; county: string; heat_score: string }[]>([]);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    setLoading(true);
+    fetch(`/api/proxy/leads?status_filter=${stage}&limit=20&sort_by=value&sort_dir=desc`)
+      .then((r) => r.ok ? r.json() : null)
+      .then((data) => {
+        if (data) {
+          setItems(data.results || []);
+          setTotal(data.total || 0);
+        }
+        setLoading(false);
+      })
+      .catch(() => setLoading(false));
+  }, [stage]);
+
+  const heatDot: Record<string, string> = { hot: "bg-red-500", warm: "bg-orange-500", cold: "bg-blue-500" };
+
+  return (
+    <div className="bg-gray-900 border border-gray-800 rounded-lg mt-3 overflow-hidden">
+      <div className="flex items-center justify-between px-3 py-2 border-b border-gray-800">
+        <span className="text-xs font-medium text-gray-300">Top {stage}s by Value ({total.toLocaleString()} total)</span>
+        <button onClick={onClose} className="text-gray-500 hover:text-white text-sm">&times;</button>
+      </div>
+      {loading ? (
+        <p className="text-gray-600 text-xs px-3 py-2">Loading...</p>
+      ) : (
+        <div className="max-h-[300px] overflow-y-auto">
+          {items.map((item) => (
+            <div key={item.id} className="flex items-center gap-2 px-3 py-1.5 border-b border-gray-800/50 hover:bg-gray-800/30 text-xs">
+              <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${heatDot[item.heat_score] || "bg-gray-600"}`} />
+              <span className="text-white font-medium truncate flex-1">{item.name}</span>
+              <span className="text-gray-500 truncate max-w-[120px]">{item.county}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function OpsPage() {
   const [tab, setTab] = useState<ActiveTab>("pipeline");
   const [counties, setCounties] = useState<{
@@ -94,6 +138,7 @@ export default function OpsPage() {
   const [queryStage, setQueryStage] = useState("");
   const [queryResults, setQueryResults] = useState<QueryResult | null>(null);
   const [querying, setQuerying] = useState(false);
+  const [expandedStage, setExpandedStage] = useState<string | null>(null);
 
   // Events state
   const [events, setEvents] = useState<EventItem[]>([]);
@@ -341,8 +386,10 @@ export default function OpsPage() {
               <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
                 {PIPELINE_STAGES.map((stage) => {
                   const count = enrichStatus?.stage_counts?.[stage] ?? 0;
+                  const isExpanded = expandedStage === stage;
                   return (
-                    <div key={stage} className={`${STAGE_BG[stage]} border ${STAGE_COLORS[stage].split(" ")[0]} rounded-lg p-4 text-center`}>
+                    <button key={stage} onClick={() => setExpandedStage(isExpanded ? null : stage)}
+                      className={`${STAGE_BG[stage]} border ${STAGE_COLORS[stage].split(" ")[0]} rounded-lg p-4 text-center hover:ring-1 hover:ring-white/20 transition-all ${isExpanded ? "ring-2 ring-white/30" : ""}`}>
                       <p className="text-2xl md:text-3xl font-bold text-white">{count.toLocaleString()}</p>
                       <p className={`text-xs mt-1 font-medium ${STAGE_COLORS[stage].split(" ")[1]}`}>
                         {stage === "TARGET" ? "Targets" :
@@ -350,10 +397,14 @@ export default function OpsPage() {
                          stage === "OPPORTUNITY" ? "Opportunities" :
                          stage === "CUSTOMER" ? "Customers" : "Archived"}
                       </p>
-                    </div>
+                    </button>
                   );
                 })}
               </div>
+              {/* Drill-down list for clicked stage */}
+              {expandedStage && (
+                <StageDrillDown stage={expandedStage} onClose={() => setExpandedStage(null)} />
+              )}
               {/* Flow arrows (desktop) */}
               <div className="hidden sm:flex items-center justify-between px-8 mt-1 text-gray-600 text-[10px]">
                 <span>NAL Seed</span>

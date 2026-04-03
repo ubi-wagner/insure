@@ -71,11 +71,12 @@ interface PipelineProps {
   onLeadsLoaded?: (leads: { id: number; name: string; latitude: number; longitude: number; heat_score: string; status: string; listIndex: number }[]) => void;
   onLeadHover?: (id: number | null) => void;
   selectedLeadId?: number | null;
+  switchToStage?: string | null;
   onFlyTo?: (lat: number, lng: number, id: number) => void;
   onOpenDetails?: (id: number) => void;
 }
 
-export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, selectedLeadId, onFlyTo, onOpenDetails }: PipelineProps) {
+export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, selectedLeadId, switchToStage, onFlyTo, onOpenDetails }: PipelineProps) {
   const [leads, setLeads] = useState<Lead[]>([]);
   const [total, setTotal] = useState(0);
   const [fetchError, setFetchError] = useState<string | null>(null);
@@ -112,13 +113,24 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
 
   const scrollRef = useRef<HTMLDivElement>(null);
 
+  // Auto-switch stage tab when map marker is clicked on a different stage
+  useEffect(() => {
+    if (switchToStage && switchToStage !== activeStage) {
+      setActiveStage(switchToStage);
+    }
+  }, [switchToStage]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Scroll to selected card when map marker is clicked
   useEffect(() => {
     if (selectedLeadId) {
-      const el = document.getElementById(`lead-card-${selectedLeadId}`);
-      if (el) {
-        el.scrollIntoView({ behavior: "smooth", block: "center" });
-      }
+      // Small delay to allow stage switch + data fetch to render the card
+      const timer = setTimeout(() => {
+        const el = document.getElementById(`lead-card-${selectedLeadId}`);
+        if (el) {
+          el.scrollIntoView({ behavior: "smooth", block: "center" });
+        }
+      }, 300);
+      return () => clearTimeout(timer);
     }
   }, [selectedLeadId]);
 

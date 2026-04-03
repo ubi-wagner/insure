@@ -11,12 +11,10 @@ const STORAGE_KEY = "insure_map_view";
 
 // Pipeline stage → border color
 const STAGE_STYLES: Record<string, { border: string }> = {
-  NEW:         { border: "#6b7280" }, // gray
-  CANDIDATE:   { border: "#a855f7" }, // purple
-  TARGET:      { border: "#f59e0b" }, // amber
-  OPPORTUNITY: { border: "#3b82f6" }, // blue
+  TARGET:      { border: "#6b7280" }, // gray
+  LEAD:        { border: "#06b6d4" }, // cyan
+  OPPORTUNITY: { border: "#f59e0b" }, // amber
   CUSTOMER:    { border: "#22c55e" }, // green
-  CHURNED:     { border: "#9ca3af" }, // light gray
   ARCHIVED:    { border: "#450a0a" }, // dark red
 };
 
@@ -24,7 +22,8 @@ const STAGE_STYLES: Record<string, { border: string }> = {
 const HEAT_FILL: Record<string, string> = {
   hot:  "#ef4444",  // red
   warm: "#f97316",  // orange
-  cool: "#3b82f6",  // blue
+  cold: "#3b82f6",  // blue (also matches "cool")
+  cool: "#3b82f6",  // alias
   none: "#6b7280",  // gray
 };
 
@@ -356,10 +355,9 @@ export default function MapViewInner({
         <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-gray-500" /> New</div>
         <p className="text-gray-500 font-semibold mt-1.5 mb-1">Border = Stage</p>
         <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full border-2 border-green-500" /> Customer</div>
-        <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full border-2 border-blue-500" /> Opportunity</div>
-        <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full border-2 border-amber-500" /> Target</div>
-        <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full border-2 border-purple-500" /> Candidate</div>
-        <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full border-2 border-gray-500" /> New</div>
+        <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full border-2 border-amber-500" /> Opportunity</div>
+        <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full border-2 border-cyan-500" /> Lead</div>
+        <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full border-2 border-gray-500" /> Target</div>
       </div>
 
       {/* Map */}

@@ -23,6 +23,7 @@ export default function Dashboard() {
   const [leads, setLeads] = useState<LeadLocation[]>([]);
   const [hoveredLeadId, setHoveredLeadId] = useState<number | null>(null);
   const [selectedLeadId, setSelectedLeadId] = useState<number | null>(null);
+  const [switchToStage, setSwitchToStage] = useState<string | null>(null);
   const [flyToTarget, setFlyToTarget] = useState<{ lat: number; lng: number } | null>(null);
   const [huntingStatus, setHuntingStatus] = useState<string | null>(null);
   const [mobileView, setMobileView] = useState<"map" | "pipeline">("pipeline");
@@ -66,8 +67,15 @@ export default function Dashboard() {
   function handleMarkerClick(id: number) {
     setSelectedLeadId(id);
     const lead = leads.find((l: LeadLocation) => l.id === id);
-    if (lead?.latitude && lead?.longitude) {
-      setFlyToTarget({ lat: lead.latitude, lng: lead.longitude });
+    if (lead) {
+      if (lead.latitude && lead.longitude) {
+        setFlyToTarget({ lat: lead.latitude, lng: lead.longitude });
+      }
+      // Auto-switch pipeline to the clicked entity's stage
+      if (lead.status) {
+        setSwitchToStage(lead.status);
+      }
+      setMobileView("pipeline");
     }
   }
 
@@ -159,6 +167,7 @@ export default function Dashboard() {
               onLeadsLoaded={handleLeadsLoaded}
               onLeadHover={setHoveredLeadId}
               selectedLeadId={selectedLeadId}
+              switchToStage={switchToStage}
               onFlyTo={(lat: number, lng: number, id: number) => {
                 setFlyToTarget({ lat, lng });
                 setSelectedLeadId(id);
