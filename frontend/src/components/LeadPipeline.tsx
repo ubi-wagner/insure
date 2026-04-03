@@ -175,7 +175,7 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
 
         // Send map data
         onLeadsLoaded?.(data.results
-          .filter(l => l.latitude != null && l.longitude != null)
+          .filter((l): l is Lead & { latitude: number; longitude: number } => l.latitude != null && l.longitude != null)
           .map((l, i) => ({
             id: l.id, name: l.name, latitude: l.latitude,
             longitude: l.longitude, heat_score: l.heat_score || "cold",

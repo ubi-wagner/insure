@@ -503,7 +503,7 @@ export default function EntityDetailModal({
                       value={
                         Array.isArray(val)
                           ? val.map(String).join(", ")
-                          : (val ?? null)
+                          : val != null ? val : null
                       }
                     />
                   ))}
@@ -650,7 +650,9 @@ export default function EntityDetailModal({
             {Object.keys(lead.enrichment_sources || {}).length === 0 ? (
               <p className="text-gray-600 text-xs">No enrichment sources yet.</p>
             ) : (
-              Object.entries(lead.enrichment_sources).map(([src, info]) => (
+              Object.entries(lead.enrichment_sources || {}).map(([src, infoRaw]) => {
+                const info = infoRaw as { timestamp?: string; fields_updated?: string[]; url?: string | null };
+                return (
                 <div key={src} className="bg-gray-900 border border-gray-800 rounded-lg p-3">
                   <div className="flex items-center justify-between mb-1.5">
                     <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${SOURCE_BADGE_COLORS[src] || "bg-gray-800 text-gray-400"}`}>
@@ -668,15 +670,15 @@ export default function EntityDetailModal({
                         : ""}
                     </span>
                   </div>
-                  {(info.fields_updated || []).length > 0 && (
+                  {(info.fields_updated ?? []).length > 0 && (
                     <div className="flex flex-wrap gap-1">
-                      {info.fields_updated.slice(0, 12).map((f: string) => (
+                      {(info.fields_updated ?? []).slice(0, 12).map((f: string) => (
                         <span key={f} className="bg-gray-800 text-gray-500 text-[9px] px-1 py-0.5 rounded">
                           {f.replace(/_/g, " ")}
                         </span>
                       ))}
-                      {info.fields_updated.length > 12 && (
-                        <span className="text-gray-600 text-[9px]">+{info.fields_updated.length - 12} more</span>
+                      {(info.fields_updated ?? []).length > 12 && (
+                        <span className="text-gray-600 text-[9px]">+{(info.fields_updated ?? []).length - 12} more</span>
                       )}
                     </div>
                   )}
@@ -687,7 +689,8 @@ export default function EntityDetailModal({
                     </a>
                   )}
                 </div>
-              ))
+                );
+              })
             )}
           </div>
         )}
