@@ -197,33 +197,74 @@ def download_all_counties() -> str:
         logger.warning("No parcels downloaded!")
         return ""
 
-    # Save to CSV
     base_dir = os.path.dirname(os.path.dirname(__file__))
     data_dir = os.path.join(base_dir, "data")
     os.makedirs(data_dir, exist_ok=True)
 
     timestamp = datetime.now().strftime("%Y%m%d")
-    filename = f"fl_coastal_commercial_{timestamp}.csv"
-    csv_path = os.path.join(data_dir, filename)
-
     fieldnames = list(all_rows[0].keys())
+
+    # Save combined CSV
+    combined_filename = f"fl_coastal_commercial_{timestamp}.csv"
+    csv_path = os.path.join(data_dir, combined_filename)
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(all_rows)
+    logger.info(f"Saved combined CSV: {csv_path} ({len(all_rows)} parcels)")
 
-    logger.info(f"Saved {len(all_rows)} parcels to {csv_path}")
+    # Save per-county CSVs in filestore/System Data/DOR/ alongside NAL files
+    dor_dir = os.path.join(base_dir, "filestore", "System Data", "DOR")
+    os.makedirs(dor_dir, exist_ok=True)
+    for county_no, county_name in TARGET_COUNTIES.items():
+        county_rows = [r for r in all_rows if str(r.get("co_no")) == county_no]
+        if not county_rows:
+            continue
+        county_file = f"CADASTRAL{county_no}_{timestamp}.csv"
+        county_path = os.path.join(dor_dir, county_file)
+        with open(county_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(county_rows)
+        logger.info(f"  {county_name}: {len(county_rows)} parcels → {county_file}")
 
-    # Also save to filestore for file manager access
-    filestore_dir = os.path.join(base_dir, "filestore", "System Data", "ArcGIS")
-    os.makedirs(filestore_dir, exist_ok=True)
-    filestore_path = os.path.join(filestore_dir, filename)
-
+    # Also save combined to filestore/System Data/ArcGIS/
+    arcgis_dir = os.path.join(base_dir, "filestore", "System Data", "ArcGIS")
+    os.makedirs(arcgis_dir, exist_ok=True)
     import shutil
-    shutil.copy2(csv_path, filestore_path)
-    logger.info(f"Copied to filestore: {filestore_path}")
+    shutil.copy2(csv_path, os.path.join(arcgis_dir, combined_filename))
+
+    # Upload to S3 for persistence across deploys
+    _upload_to_s3(csv_path, f"files/System Data/ArcGIS/{combined_filename}")
+    for county_no in TARGET_COUNTIES:
+        county_file = f"CADASTRAL{county_no}_{timestamp}.csv"
+        county_path = os.path.join(dor_dir, county_file)
+        if os.path.exists(county_path):
+            _upload_to_s3(county_path, f"files/System Data/DOR/{county_file}")
 
     return csv_path
+
+
+def _upload_to_s3(local_path: str, s3_key: str):
+    """Upload a file to S3 bucket for persistence."""
+    try:
+        import boto3
+        endpoint = os.getenv("AWS_ENDPOINT_URL_S3") or os.getenv("AWS_ENDPOINT_URL")
+        access_key = os.getenv("AWS_ACCESS_KEY_ID")
+        secret_key = os.getenv("AWS_SECRET_ACCESS_KEY")
+        bucket = os.getenv("AWS_S3_BUCKET_NAME") or os.getenv("AWS_BUCKET_NAME") or "default"
+
+        if not all([endpoint, access_key, secret_key]):
+            return
+
+        client = boto3.client("s3", endpoint_url=endpoint,
+                              aws_access_key_id=access_key,
+                              aws_secret_access_key=secret_key,
+                              region_name="auto")
+        client.upload_file(local_path, bucket, s3_key)
+        logger.info(f"Uploaded to S3: {s3_key}")
+    except Exception as e:
+        logger.warning(f"S3 upload failed for {s3_key}: {e}")
 
 
 if __name__ == "__main__":

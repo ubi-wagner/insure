@@ -562,6 +562,19 @@ export default function OpsPage() {
                   className="bg-gray-800 hover:bg-gray-700 text-gray-400 text-xs px-3 py-2 rounded">
                   Refresh
                 </button>
+                <button onClick={async () => {
+                  setSeedResult(null);
+                  try {
+                    const res = await fetch("/api/proxy/admin/download-cadastral", { method: "POST" });
+                    const data = await res.json();
+                    setSeedResult(data.message || "Cadastral download started");
+                  } catch (err) {
+                    setSeedResult(`Error: ${err}`);
+                  }
+                }}
+                  className="bg-purple-600 hover:bg-purple-700 text-white text-xs px-3 py-2 rounded font-medium">
+                  Pull ArcGIS
+                </button>
               </div>
             </div>
 
