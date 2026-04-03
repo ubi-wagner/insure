@@ -159,7 +159,7 @@ def compute_heat_score(entity: Entity) -> str:
         score += 15
 
     # Sunbiz data — officers identified = decision makers known
-    if "sunbiz" in sources or "sunbiz_bulk" in sources:
+    if "sunbiz_bulk" in sources:
         score += 5
     if chars.get("sunbiz_registered_agent"):
         score += 3  # Management company identified
@@ -223,7 +223,6 @@ def _load_enrichers():
         "dbpr_sirs",            # DBPR SIRS compliance (structural reserve studies)
         "dbpr_building",        # DBPR building reports (stories, units, assessments)
         "cam_license",          # CAM license cross-reference
-        "sunbiz",               # Sunbiz web search (fallback — may get 403)
         "sunbiz_bulk",          # Sunbiz bulk data (quarterly corporate extract)
         "dor_nal",              # DOR NAL cross-reference (supplemental)
         "citizens_insurance",   # Citizens insurance likelihood + swap opportunity

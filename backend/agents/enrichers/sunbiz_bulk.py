@@ -232,18 +232,7 @@ def _build_detail_url(doc_number: str) -> str:
 
 @register_enricher("sunbiz_bulk", requires=[])
 def enrich_sunbiz_bulk(entity: Entity, db: Session) -> bool:
-    """Match entity against Sunbiz bulk corporate data.
-
-    Skips if the web-scraper sunbiz enricher already ran successfully.
-    """
-    # Skip if the web scraper already got real data (not just a search URL)
-    existing_sources = entity.enrichment_sources or {}
-    if "sunbiz" in existing_sources:
-        chars = entity.characteristics or {}
-        if chars.get("sunbiz_doc_number"):
-            logger.debug(f"Skipping sunbiz_bulk for {entity.id} — sunbiz scraper already populated doc number")
-            return False
-
+    """Match entity against Sunbiz bulk corporate data (quarterly extract)."""
     # Load cached data
     index = _get_cache()
     if not index:
