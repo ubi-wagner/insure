@@ -297,7 +297,7 @@ export default function EntityDetailModal({
             <div className="flex items-center gap-3 text-[11px] text-gray-500">
               <span className="truncate">{lead.address}</span>
               {lead.county && <span className="shrink-0">{lead.county}</span>}
-              {lead.latitude !== 0 && lead.longitude !== 0 && onFlyTo && (
+              {lead.latitude != null && lead.longitude != null && lead.latitude !== 0 && onFlyTo && (
                 <button
                   onClick={() => onFlyTo(lead.latitude, lead.longitude)}
                   className="text-blue-400 hover:underline shrink-0"
@@ -523,9 +523,9 @@ export default function EntityDetailModal({
             )}
 
             {/* Location */}
-            {lead.latitude !== 0 && (
+            {lead.latitude != null && lead.latitude !== 0 && (
               <DataSection title="Location">
-                <DataRow label="Coordinates" value={`${lead.latitude.toFixed(5)}, ${lead.longitude.toFixed(5)}`} />
+                <DataRow label="Coordinates" value={lead.latitude && lead.longitude ? `${lead.latitude.toFixed(5)}, ${lead.longitude.toFixed(5)}` : null} />
               </DataSection>
             )}
           </>
