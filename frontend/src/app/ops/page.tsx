@@ -188,7 +188,7 @@ export default function OpsPage() {
     setSeedResult(null);
     try {
       const res = await fetch(`/api/proxy/admin/seed-county/${countyNo}`, { method: "POST" });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({ error: res.statusText }));
       if (!res.ok || data.error) {
         setSeedResult(`Error: ${data.error || res.statusText}`);
       } else {
@@ -207,7 +207,7 @@ export default function OpsPage() {
     setSeedResult(null);
     try {
       const res = await fetch("/api/proxy/admin/seed-all", { method: "POST" });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({ error: res.statusText }));
       if (!res.ok || data.error) {
         setSeedResult(`Error: ${data.error || res.statusText}`);
       } else {
@@ -227,7 +227,7 @@ export default function OpsPage() {
     setSeedResult(null);
     try {
       const res = await fetch("/api/proxy/admin/reset", { method: "POST" });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({ error: res.statusText }));
       if (res.ok) {
         setSeedResult(`Database reset complete. ${data.message || "Ready for seeding."}`);
       } else {
@@ -567,7 +567,7 @@ export default function OpsPage() {
                   setSeedResult(null);
                   try {
                     const res = await fetch("/api/proxy/admin/download-cadastral", { method: "POST" });
-                    const data = await res.json();
+                    const data = await res.json().catch(() => ({ error: res.statusText }));
                     setSeedResult(data.message || "Cadastral download started");
                   } catch (err) {
                     setSeedResult(`Error: ${err}`);
@@ -580,7 +580,7 @@ export default function OpsPage() {
                   setSeedResult(null);
                   try {
                     const res = await fetch("/api/proxy/admin/download-sunbiz", { method: "POST" });
-                    const data = await res.json();
+                    const data = await res.json().catch(() => ({ error: res.statusText }));
                     setSeedResult(data.message || "Sunbiz download started");
                   } catch (err) {
                     setSeedResult(`Error: ${err}`);
@@ -593,7 +593,7 @@ export default function OpsPage() {
                   setSeedResult(null);
                   try {
                     const res = await fetch("/api/proxy/admin/refresh-data", { method: "POST" });
-                    const data = await res.json();
+                    const data = await res.json().catch(() => ({ error: res.statusText }));
                     setSeedResult(data.message || "Data refresh started");
                   } catch (err) {
                     setSeedResult(`Error: ${err}`);

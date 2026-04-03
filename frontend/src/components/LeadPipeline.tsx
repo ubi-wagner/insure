@@ -7,14 +7,14 @@ interface Lead {
   name: string;
   address: string;
   county: string;
-  latitude: number;
-  longitude: number;
+  latitude: number | null;
+  longitude: number | null;
   characteristics: Record<string, unknown> | null;
-  created_at: string;
+  created_at: string | null;
   status: string;
   pipeline_stage: string;
   wind_ratio: number | null;
-  heat_score: string;
+  heat_score: string | null;
   premium_parsed: number | null;
   tiv_parsed: number | null;
   enrichment_status?: string;
@@ -221,7 +221,9 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
       }
       await fetchLeads();
       fetchStageCounts();
-    } catch {}
+    } catch {
+      setFetchError("Action failed — try again");
+    }
     setActionId(null);
   }
 
@@ -243,6 +245,8 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
         setSelectMode(false);
         await fetchLeads();
         fetchStageCounts();
+      } else {
+        setBulkMsg("Action failed — " + res.status);
       }
     } catch {
       setBulkMsg("Bulk action failed");
@@ -272,6 +276,8 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
         setBulkMsg(`${data.changed ?? 0} moved to ${targetStage}`);
         await fetchLeads();
         fetchStageCounts();
+      } else {
+        setBulkMsg("Action failed — " + res.status);
       }
     } catch {
       setBulkMsg("Bulk action failed");
@@ -595,8 +601,8 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
                   )}
 
                   {/* Map button */}
-                  {lead.latitude != null && (
-                    <button onClick={() => onFlyTo?.(lead.latitude, lead.longitude, lead.id)}
+                  {lead.latitude != null && lead.longitude != null && (
+                    <button onClick={() => onFlyTo?.(lead.latitude!, lead.longitude!, lead.id)}
                       className="bg-gray-800 hover:bg-gray-700 text-gray-500 text-xs py-1.5 px-2 rounded" title="Fly to on map">
                       Map
                     </button>

@@ -186,6 +186,7 @@ export default function MapViewInner({
         `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(searchQuery + ", Florida")}&limit=1`,
         { headers: { "User-Agent": "insure-lead-gen" } }
       );
+      if (!res.ok) return;
       const data = await res.json();
       if (data.length > 0) {
         mapInstance.current.setView([parseFloat(data[0].lat), parseFloat(data[0].lon)], 14);

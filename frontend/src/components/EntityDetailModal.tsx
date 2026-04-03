@@ -218,8 +218,11 @@ export default function EntityDetailModal({
         body: JSON.stringify({ stage, force: true }),
       });
       if (res.ok) await reload();
+      else {
+        setError("Stage change failed (" + res.status + ")");
+      }
     } catch (err) {
-      console.error("Failed to change stage:", err);
+      setError("Failed to change stage");
     }
     setStageChanging(false);
   }
@@ -240,7 +243,7 @@ export default function EntityDetailModal({
         setShowAddContact(false);
       }
     } catch (err) {
-      console.error("Failed to add contact:", err);
+      setError("Failed to add contact");
     }
     setSavingContact(false);
   }
