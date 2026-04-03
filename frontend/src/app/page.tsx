@@ -129,6 +129,7 @@ export default function Dashboard() {
             <span className="text-gray-600 text-[10px]">{openModals.length}/{MAX_MODALS} open</span>
           )}
           <Link href="/files" className="text-gray-500 hover:text-white text-xs">Files</Link>
+          <Link href="/ref" className="text-gray-500 hover:text-white text-xs">Ref</Link>
           <Link href="/ops" className="text-gray-500 hover:text-white text-xs">Ops</Link>
         </div>
       </header>
