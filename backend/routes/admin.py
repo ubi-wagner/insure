@@ -223,6 +223,43 @@ def refresh_all_data():
     }
 
 
+@router.post("/api/admin/refresh-dor")
+def refresh_dor_data():
+    """Download fresh DOR NAL + SDF tax roll files for all target counties."""
+    def _run():
+        try:
+            from scripts.data_refresh import refresh_dor_nal
+            result = refresh_dor_nal()
+            files = len(result.get("files", []))
+            emit(EventType.SYSTEM, "refresh_dor", EventStatus.SUCCESS,
+                 detail=f"{files} DOR files refreshed")
+        except Exception as e:
+            logger.error(f"DOR refresh failed: {e}")
+            emit(EventType.SYSTEM, "refresh_dor", EventStatus.ERROR,
+                 detail=str(e)[:200])
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+    return {"success": True, "message": "DOR NAL/SDF refresh started."}
+
+
+@router.get("/api/admin/timebombs")
+def list_timebombs():
+    """List all scheduled timebomb events."""
+    from services.timebomb import list_pending
+    return {"timebombs": list_pending()}
+
+
+@router.post("/api/admin/timebombs/{name}/cancel")
+def cancel_timebomb(name: str):
+    """Cancel a scheduled timebomb."""
+    from services.timebomb import cancel
+    removed = cancel(name)
+    if not removed:
+        raise HTTPException(status_code=404, detail=f"Timebomb '{name}' not found")
+    return {"success": True, "message": f"Timebomb '{name}' cancelled"}
+
+
 @router.post("/api/admin/refresh-dbpr")
 def refresh_dbpr_data():
     """Download fresh DBPR condo registry + payment history CSVs."""

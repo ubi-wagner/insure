@@ -105,6 +105,17 @@ async def lifespan(app: FastAPI):
     hb_thread = threading.Thread(target=_heartbeat_loop, daemon=True)
     hb_thread.start()
 
+    # Start timebomb scheduler (data refresh triggers)
+    try:
+        from services.timebomb import start_timebomb_checker, setup_default_schedules
+        setup_default_schedules()
+        start_timebomb_checker()
+        logger.info("Timebomb scheduler started")
+        emit(EventType.SYSTEM, "timebomb_start", EventStatus.SUCCESS,
+             detail="Data refresh schedules configured")
+    except Exception as e:
+        logger.error(f"Failed to start timebomb scheduler: {e}")
+
     emit(EventType.SYSTEM, "startup", EventStatus.SUCCESS, detail="Application ready")
     yield
     emit(EventType.SYSTEM, "shutdown", EventStatus.SUCCESS, detail="Application shutting down")

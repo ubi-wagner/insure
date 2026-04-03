@@ -2,13 +2,15 @@
 Automated Data Refresh System
 
 Periodically downloads fresh data from FL state sources:
-1. Sunbiz quarterly corporate extract (SFTP — public access)
-2. DBPR condo registry CSVs (direct HTTP download)
-3. DBPR payment history CSVs (direct HTTP download)
-4. ArcGIS Cadastral parcels (REST API query)
+1. DOR NAL tax roll files (direct HTTP from data portal)
+2. DOR SDF sale files (direct HTTP from data portal)
+3. DBPR condo registry CSVs (direct HTTP download)
+4. DBPR payment history CSVs (direct HTTP download)
+5. Sunbiz quarterly corporate extract (SFTP — public access)
+6. ArcGIS Cadastral parcels (REST API query)
 
 Can be triggered manually via POST /api/admin/refresh-data
-or scheduled to run weekly/monthly.
+or automatically via timebomb events (scheduled triggers).
 
 All downloaded files are:
 - Saved to backend/data/ for enricher access
@@ -37,6 +39,121 @@ def _ensure_dirs():
     for sub in ["Sunbiz", "DBPR", "DOR", "ArcGIS"]:
         os.makedirs(os.path.join(FILESTORE_DIR, sub), exist_ok=True)
     os.makedirs(DATA_DIR, exist_ok=True)
+
+
+# ─────────────────────────────────────────────────────────
+# 0. DOR NAL + SDF Tax Roll Files
+# ─────────────────────────────────────────────────────────
+
+# Direct download URLs from FL DOR Data Portal
+# Pattern: floridarevenue.com/property/dataportal/Documents/PTO Data Portal/
+#          Tax Roll Data Files/NAL/{year}F/{CountyName} {code} Final NAL {year}.zip
+DOR_BASE = "https://floridarevenue.com/property/dataportal/Documents/PTO%20Data%20Portal/Tax%20Roll%20Data%20Files"
+
+TARGET_COUNTIES_DOR = {
+    "16": "Broward",
+    "18": "Charlotte",
+    "21": "Collier",
+    "23": "Miami-Dade",
+    "39": "Hillsborough",
+    "46": "Lee",
+    "51": "Manatee",
+    "60": "Palm Beach",
+    "61": "Pasco",
+    "62": "Pinellas",
+    "68": "Sarasota",
+}
+
+# Current tax roll year
+DOR_YEAR = "2025"
+
+
+def _try_nal_url(county_name: str, county_no: str, year: str, roll_type: str = "NAL") -> str | None:
+    """Try multiple URL patterns for DOR data files.
+
+    FL DOR uses inconsistent naming: sometimes spaces, sometimes %20,
+    sometimes 'Final', sometimes 'Prelim', sometimes just the county name.
+    """
+    encoded_name = county_name.replace(" ", "%20").replace("-", "-")
+    # URL patterns to try (most common first)
+    patterns = [
+        f"{DOR_BASE}/{roll_type}/{year}F/{encoded_name}%20{county_no}%20Final%20{roll_type}%20{year}.zip",
+        f"{DOR_BASE}/{roll_type}/{year}F/{encoded_name}+{county_no}+Final+{roll_type}+{year}.zip",
+        f"{DOR_BASE}/{roll_type}/{year}P/{encoded_name}%20{county_no}%20Prelim%20{roll_type}%20{year}.zip",
+    ]
+
+    for url in patterns:
+        try:
+            with httpx.Client(timeout=15, follow_redirects=True) as client:
+                resp = client.head(url)
+                if resp.status_code == 200:
+                    return url
+        except Exception:
+            pass
+    return None
+
+
+def refresh_dor_nal() -> dict:
+    """Download DOR NAL + SDF files for all target counties."""
+    import zipfile
+
+    _ensure_dirs()
+    result = {"source": "dor_nal", "status": "pending", "files": [], "failed": []}
+    dor_dir = os.path.join(FILESTORE_DIR, "DOR")
+
+    for county_no, county_name in TARGET_COUNTIES_DOR.items():
+        for roll_type in ["NAL", "SDF"]:
+            # Check if we already have this file
+            existing = [f for f in os.listdir(dor_dir)
+                        if f.upper().startswith(f"{roll_type}{county_no}") and f.endswith(".csv")]
+            if existing:
+                logger.debug(f"Already have {roll_type} for {county_name}: {existing[0]}")
+                continue
+
+            url = _try_nal_url(county_name, county_no, DOR_YEAR, roll_type)
+            if not url:
+                logger.info(f"No {roll_type} URL found for {county_name} ({county_no})")
+                result["failed"].append(f"{roll_type}{county_no}")
+                continue
+
+            # Download zip
+            zip_path = os.path.join(DATA_DIR, f"{roll_type}{county_no}_{DOR_YEAR}.zip")
+            if _download_file(url, zip_path, f"DOR {roll_type} {county_name}"):
+                # Extract CSV from zip
+                try:
+                    with zipfile.ZipFile(zip_path, "r") as zf:
+                        csv_files = [n for n in zf.namelist() if n.lower().endswith(".csv")]
+                        if csv_files:
+                            extracted = zf.extract(csv_files[0], DATA_DIR)
+                            # Rename to standard format
+                            standard_name = f"{roll_type}{county_no}F{DOR_YEAR}01.csv"
+                            final_path = os.path.join(DATA_DIR, standard_name)
+                            if os.path.exists(final_path):
+                                os.remove(final_path)
+                            os.rename(extracted, final_path)
+
+                            # Copy to filestore + S3
+                            shutil.copy2(final_path, os.path.join(dor_dir, standard_name))
+                            _upload_to_s3(final_path, f"files/System Data/DOR/{standard_name}")
+                            result["files"].append(standard_name)
+                            logger.info(f"  Extracted {standard_name} ({os.path.getsize(final_path):,} bytes)")
+                        else:
+                            logger.warning(f"No CSV in zip for {roll_type} {county_name}")
+                            result["failed"].append(f"{roll_type}{county_no}")
+                except zipfile.BadZipFile:
+                    logger.error(f"Bad zip file for {roll_type} {county_name}")
+                    result["failed"].append(f"{roll_type}{county_no}")
+                finally:
+                    # Clean up zip
+                    if os.path.exists(zip_path):
+                        os.remove(zip_path)
+            else:
+                result["failed"].append(f"{roll_type}{county_no}")
+
+            time.sleep(1)  # Rate limit
+
+    result["status"] = "success" if result["files"] else ("partial" if result["failed"] else "success")
+    return result
 
 
 def _upload_to_s3(local_path: str, s3_key: str):
@@ -259,7 +376,11 @@ def refresh_all() -> dict:
     logger.info("Starting full data refresh...")
     results = {}
 
-    # DBPR first (fastest, most reliable)
+    # DOR NAL + SDF files
+    logger.info("Refreshing DOR NAL/SDF data...")
+    results["dor_nal"] = refresh_dor_nal()
+
+    # DBPR (fastest, most reliable)
     logger.info("Refreshing DBPR data...")
     results["dbpr"] = refresh_dbpr()
 
