@@ -11,14 +11,12 @@ On successful geocode:
 - Advances pipeline_stage from TARGET → LEAD
 - Sets enrichment_status to "idle" so enrichment worker picks it up
 
-Also tries to match against Overpass cached buildings if available.
 """
 
 import csv
 import io
 import logging
 import os
-import re
 import time
 import threading
 import uuid
@@ -27,7 +25,7 @@ import httpx
 from sqlalchemy.orm import Session
 
 from database import SessionLocal
-from database.models import Entity, OsmBuilding
+from database.models import Entity
 from services.event_bus import EventStatus, EventType, emit
 
 FILE_STORE_ROOT = os.path.join(os.path.dirname(__file__), "..", "filestore")
@@ -39,27 +37,6 @@ BATCH_SIZE = 1000  # targets to process per cycle (Census handles 10K)
 CENSUS_BATCH_URL = "https://geocoding.geo.census.gov/geocoder/locations/addressbatch"
 
 
-def _normalize_address(addr: str) -> str:
-    """Normalize address for Overpass matching."""
-    if not addr:
-        return ""
-    addr = addr.upper().strip()
-    addr = re.sub(r'\s*(APT|UNIT|STE|SUITE|#)\s*\S*$', '', addr)
-    addr = re.sub(r'\bSTREET\b', 'ST', addr)
-    addr = re.sub(r'\bAVENUE\b', 'AVE', addr)
-    addr = re.sub(r'\bBOULEVARD\b', 'BLVD', addr)
-    addr = re.sub(r'\bDRIVE\b', 'DR', addr)
-    addr = re.sub(r'\bLANE\b', 'LN', addr)
-    addr = re.sub(r'\bROAD\b', 'RD', addr)
-    addr = re.sub(r'\bCOURT\b', 'CT', addr)
-    addr = re.sub(r'\bCIRCLE\b', 'CIR', addr)
-    addr = re.sub(r'\bHIGHWAY\b', 'HWY', addr)
-    addr = re.sub(r'\bNORTH\b', 'N', addr)
-    addr = re.sub(r'\bSOUTH\b', 'S', addr)
-    addr = re.sub(r'\bEAST\b', 'E', addr)
-    addr = re.sub(r'\bWEST\b', 'W', addr)
-    addr = re.sub(r'\s+', ' ', addr).strip()
-    return addr
 
 
 def _parse_address_parts(entity: Entity) -> tuple[str, str, str, str]:
@@ -124,85 +101,6 @@ def _batch_geocode_census(entities: list[Entity]) -> dict[int, tuple[float, floa
     return results
 
 
-def _try_overpass_match(entity: Entity, db: Session) -> bool:
-    """Try to match entity against Overpass cached buildings."""
-    entity_addr = _normalize_address(entity.address or "")
-    entity_name = (entity.name or "").upper().strip()
-    county = entity.county
-
-    if not entity_addr and not entity_name:
-        return False
-
-    query = db.query(OsmBuilding).filter(
-        OsmBuilding.promoted_entity_id.is_(None),
-    )
-    if county:
-        query = query.filter(OsmBuilding.county == county)
-
-    buildings = query.limit(5000).all()
-    if not buildings:
-        return False
-
-    for building in buildings:
-        # Address match
-        if entity_addr:
-            bldg_addr = _normalize_address(building.address or "")
-            if bldg_addr and entity_addr == bldg_addr:
-                return _complete_overpass_association(entity, building, db, "address_exact")
-            if bldg_addr:
-                ep = entity_addr.split()
-                bp = bldg_addr.split()
-                if len(ep) >= 2 and len(bp) >= 2 and ep[0] == bp[0] and ep[1] == bp[1]:
-                    return _complete_overpass_association(entity, building, db, "address_partial")
-
-        # Name match
-        if entity_name:
-            bldg_name = (building.name or "").upper().strip()
-            if bldg_name and len(bldg_name) >= 5:
-                if entity_name == bldg_name:
-                    return _complete_overpass_association(entity, building, db, "name_exact")
-                if len(entity_name) > 5 and (entity_name in bldg_name or bldg_name in entity_name):
-                    return _complete_overpass_association(entity, building, db, "name_contains")
-
-    return False
-
-
-def _complete_overpass_association(entity: Entity, building: OsmBuilding, db: Session, match_type: str) -> bool:
-    """Complete association with an Overpass building."""
-    try:
-        entity.osm_building_id = building.id
-        building.promoted_entity_id = entity.id
-        entity.latitude = building.lat
-        entity.longitude = building.lon
-
-        chars = dict(entity.characteristics or {})
-        if building.stories and not chars.get("stories"):
-            chars["stories"] = building.stories
-        if building.building_type and not chars.get("building_type"):
-            chars["building_type"] = building.building_type
-        if building.construction_class and not chars.get("osm_construction_class"):
-            chars["osm_construction_class"] = building.construction_class
-        if building.footprint_sqft and not chars.get("footprint_sqft"):
-            chars["footprint_sqft"] = building.footprint_sqft
-        if building.osm_id:
-            chars["osm_id"] = building.osm_id
-        chars["osm_match_type"] = match_type
-        entity.characteristics = chars
-
-        entity.pipeline_stage = "LEAD"
-        entity.enrichment_status = "idle"
-        _create_entity_folder(entity)
-        db.commit()
-
-        emit(EventType.HUNTER, "associate", EventStatus.SUCCESS,
-             detail=f"'{entity.name}' matched to OSM {building.osm_id} ({match_type})",
-             entity_id=entity.id)
-        return True
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Overpass association failed for entity {entity.id}: {e}")
-        return False
-
 
 def _create_entity_folder(entity: Entity) -> str:
     """Create a UUID-based folder structure for the entity's artifacts."""
@@ -252,26 +150,11 @@ def run_association_cycle(db: Session) -> int:
 
     matched = 0
 
-    # First try Overpass matching if cache has data
-    osm_count = db.query(OsmBuilding).count()
-    overpass_matched = []
-    if osm_count > 0:
-        for entity in targets:
-            if _try_overpass_match(entity, db):
-                matched += 1
-                overpass_matched.append(entity.id)
-
-    # Filter out Overpass-matched entities
-    remaining = [e for e in targets if e.id not in overpass_matched and e.pipeline_stage == "TARGET"]
-
-    if not remaining:
-        return matched
-
-    # Batch geocode the rest via Census
-    geocode_results = _batch_geocode_census(remaining)
+    # Batch geocode via Census
+    geocode_results = _batch_geocode_census(targets)
 
     if geocode_results:
-        for entity in remaining:
+        for entity in targets:
             if entity.id in geocode_results:
                 lat, lon = geocode_results[entity.id]
                 if _promote_geocoded(entity, lat, lon, db, "census"):
@@ -280,7 +163,7 @@ def run_association_cycle(db: Session) -> int:
     # For any that Census missed, try Nominatim (limited to a few per cycle)
     nominatim_attempts = 0
     nominatim_limit = 10  # Only do a few Nominatim lookups per cycle
-    for entity in remaining:
+    for entity in targets:
         if entity.pipeline_stage != "TARGET" or entity.latitude is not None:
             continue
         if nominatim_attempts >= nominatim_limit:

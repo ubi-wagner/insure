@@ -762,7 +762,6 @@ export default function OpsPage() {
                 <select value={queryTable} onChange={(e) => setQueryTable(e.target.value)}
                   className="bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-white">
                   <option value="entities">Entities</option>
-                  <option value="osm_cache">OSM Cache</option>
                   <option value="contacts">Contacts</option>
                 </select>
                 <select value={queryCounty} onChange={(e) => setQueryCounty(e.target.value)}
@@ -786,9 +785,7 @@ export default function OpsPage() {
               </div>
               <input type="text" value={queryText} onChange={(e) => setQueryText(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && runQuery()}
-                placeholder={queryTable === "osm_cache"
-                  ? 'e.g. "7+ stories fire resistive" or "clearwater"'
-                  : 'Search by name, address, or owner...'}
+                placeholder="Search by name, address, or owner..."
                 className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-white placeholder-gray-600" />
             </div>
 

@@ -5,8 +5,7 @@ Stages:
   TARGET → LEAD → OPPORTUNITY → CUSTOMER → ARCHIVED
 
 Auto-advance:
-  TARGET → LEAD: Only when Overpass association is confirmed
-  (osm_building_id is set on the Entity)
+  TARGET → LEAD: When geocoding succeeds (Census batch or Nominatim fallback)
 
   Everything else is manual (user clicks Promote/Convert).
 
@@ -196,17 +195,17 @@ def compute_heat_score(entity: Entity) -> str:
 def check_target_to_lead(entity: Entity, db: Session) -> bool:
     """Check if a TARGET should auto-advance to LEAD.
 
-    Only condition: Overpass association confirmed (osm_building_id is set).
+    Only condition: entity has been geocoded (latitude is set).
     """
     if entity.pipeline_stage != "TARGET":
         return False
 
-    if entity.osm_building_id is not None:
+    if entity.latitude is not None:
         entity.pipeline_stage = "LEAD"
         entity.enrichment_status = "idle"
         db.commit()
         emit(EventType.DB_OPERATION, "auto_advance", EventStatus.SUCCESS,
-             detail=f"'{entity.name}': TARGET → LEAD (Overpass associated)",
+             detail=f"'{entity.name}': TARGET → LEAD (geocoded)",
              entity_id=entity.id)
         return True
 

@@ -8,10 +8,11 @@ Each enricher:
 4. Logs to LeadLedger with source attribution
 
 Enrichers run at different pipeline stages:
-- NEW → auto: FEMA flood zone (coordinate-based, instant)
-- NEW → auto: Property appraiser (address-based lookup)
-- CANDIDATE → auto: Sunbiz HOA/condo association search
-- CANDIDATE → auto: AI Kill & Cook (existing analyzer)
+- TARGET → auto: Census batch geocoding → LEAD promotion
+- LEAD → auto: FEMA flood zone (coordinate-based, instant)
+- LEAD → auto: Property appraiser (address-based lookup)
+- LEAD → auto: Sunbiz HOA/condo association search
+- LEAD → auto: AI Kill & Cook (existing analyzer)
 - Any stage → manual: User uploads (brochures, dec pages, loss runs)
 """
 
