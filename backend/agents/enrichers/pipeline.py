@@ -158,14 +158,37 @@ def compute_heat_score(entity: Entity) -> str:
     if chars.get("has_user_intel"):
         score += 15
 
-    # Sunbiz data
-    if "sunbiz" in sources:
+    # Sunbiz data — officers identified = decision makers known
+    if "sunbiz" in sources or "sunbiz_bulk" in sources:
+        score += 5
+    if chars.get("sunbiz_registered_agent"):
+        score += 3  # Management company identified
+
+    # SIRS compliance risk — non-compliant associations are actively shopping
+    if chars.get("sirs_completed") is False:
+        score += 12  # Compliance deadline pressure
+    elif chars.get("sirs_compliance_risk") == "HIGH":
+        score += 15  # Imminent special assessments
+
+    # OIR market intelligence — hard market = more opportunity
+    market_hardness = chars.get("oir_market_hardness", "")
+    if market_hardness == "hard":
+        score += 8
+    elif market_hardness == "moderate":
+        score += 3
+
+    # Building report data (DBPR)
+    if chars.get("dbpr_current_assessment"):
+        score += 3  # Financial data available
+
+    # Premium estimate available = ready for quoting
+    if chars.get("oir_estimated_premium_range"):
         score += 5
 
     # Classify
-    if score >= 30:
+    if score >= 35:
         return "hot"
-    elif score >= 15:
+    elif score >= 18:
         return "warm"
     return "cold"
 
@@ -197,11 +220,15 @@ def _load_enrichers():
         "property_appraiser",   # County PA GIS lookup + direct parcel links
         "dbpr_bulk",            # DBPR condo CSV (managing entity, project number)
         "dbpr_payments",        # DBPR payment history (delinquency)
+        "dbpr_sirs",            # DBPR SIRS compliance (structural reserve studies)
+        "dbpr_building",        # DBPR building reports (stories, units, assessments)
         "cam_license",          # CAM license cross-reference
-        "sunbiz",               # Sunbiz search link + scrape attempt
+        "sunbiz",               # Sunbiz web search (fallback — may get 403)
+        "sunbiz_bulk",          # Sunbiz bulk data (quarterly corporate extract)
         "dor_nal",              # DOR NAL cross-reference (supplemental)
         "citizens_insurance",   # Citizens insurance likelihood + swap opportunity
         "fdot_parcels",         # FDOT statewide parcel API
+        "oir_market",           # OIR market intelligence (rates, carriers, wind tiers)
     ]
     for module in modules:
         try:

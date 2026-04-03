@@ -159,6 +159,34 @@ def download_cadastral():
     }
 
 
+@router.post("/api/admin/download-sunbiz")
+def download_sunbiz_bulk():
+    """Download Sunbiz quarterly corporate bulk data extract.
+
+    Filters for condo/HOA associations, parses officers and registered agents.
+    Runs in background thread. Result saved to data/ and filestore/.
+    """
+    def _run():
+        try:
+            from scripts.download_sunbiz import download_and_filter
+            path = download_and_filter()
+            emit(EventType.SYSTEM, "download_sunbiz", EventStatus.SUCCESS,
+                 detail=f"Downloaded to {os.path.basename(path)}" if path else "No data found")
+        except Exception as e:
+            logger.error(f"Sunbiz bulk download failed: {e}")
+            emit(EventType.SYSTEM, "download_sunbiz", EventStatus.ERROR,
+                 detail=str(e)[:200])
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+    emit(EventType.SYSTEM, "download_sunbiz", EventStatus.PENDING,
+         detail="Downloading Sunbiz quarterly corporate extract...")
+    return {
+        "success": True,
+        "message": "Sunbiz bulk download started. Check Events tab for progress.",
+    }
+
+
 # Full county harvest areas — covers entire county footprints
 # Split into grid tiles (~0.15° ≈ 10 miles) to keep Overpass queries manageable
 # Counties ordered south → north along both coasts

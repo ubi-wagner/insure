@@ -575,6 +575,19 @@ export default function OpsPage() {
                   className="bg-purple-600 hover:bg-purple-700 text-white text-xs px-3 py-2 rounded font-medium">
                   Pull ArcGIS
                 </button>
+                <button onClick={async () => {
+                  setSeedResult(null);
+                  try {
+                    const res = await fetch("/api/proxy/admin/download-sunbiz", { method: "POST" });
+                    const data = await res.json();
+                    setSeedResult(data.message || "Sunbiz download started");
+                  } catch (err) {
+                    setSeedResult(`Error: ${err}`);
+                  }
+                }}
+                  className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs px-3 py-2 rounded font-medium">
+                  Pull Sunbiz
+                </button>
               </div>
             </div>
 
