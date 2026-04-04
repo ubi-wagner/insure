@@ -83,9 +83,10 @@ interface PipelineProps {
   switchToStage?: string | null;
   onFlyTo?: (lat: number, lng: number, id: number) => void;
   onOpenDetails?: (id: number) => void;
+  initialCounty?: string | null;
 }
 
-export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, selectedLeadId, switchToStage, onFlyTo, onOpenDetails }: PipelineProps) {
+export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, selectedLeadId, switchToStage, onFlyTo, onOpenDetails, initialCounty }: PipelineProps) {
   const [leads, setLeads] = useState<Lead[]>([]);
   const [total, setTotal] = useState(0);
   const [fetchError, setFetchError] = useState<string | null>(null);
@@ -97,7 +98,7 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
   // Filters
   const [activeStage, setActiveStage] = useState("TARGET");
   const [search, setSearch] = useState("");
-  const [county, setCounty] = useState("");
+  const [county, setCounty] = useState(initialCounty ?? "");
   const [sortKey, setSortKey] = useState("value-desc");
   const [minValue, setMinValue] = useState("");
   const [maxValue, setMaxValue] = useState("");

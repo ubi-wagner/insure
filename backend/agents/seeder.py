@@ -65,8 +65,45 @@ TARGET_USE_CODES = {
 MIN_UNITS_FOR_OTHER = 10
 
 # Minimum thresholds — focused on commercial insurance opportunities
-MIN_MARKET_VALUE = int(os.environ.get("MIN_MARKET_VALUE", 10_000_000))  # Default $10M, configurable
+MIN_MARKET_VALUE = int(os.environ.get("MIN_MARKET_VALUE", 2_000_000))  # Default $2M, configurable
 MIN_UNITS_TARGET = 10            # At least 10 units for condos/multi-family
+
+
+SEED_STATS_PATH = os.path.join(os.path.dirname(__file__), "..", "filestore", "System Data", "seed_stats.json")
+
+
+def _save_seed_stats(county_no: str, result: dict):
+    """Persist seed stats per county to JSON for the ops dashboard."""
+    import json
+    stats = {}
+    try:
+        if os.path.exists(SEED_STATS_PATH):
+            with open(SEED_STATS_PATH, "r") as f:
+                stats = json.load(f)
+    except Exception:
+        pass
+    stats[county_no] = {
+        **result,
+        "seeded_at": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        os.makedirs(os.path.dirname(SEED_STATS_PATH), exist_ok=True)
+        with open(SEED_STATS_PATH, "w") as f:
+            json.dump(stats, f, indent=2, default=str)
+    except Exception as e:
+        logger.warning(f"Failed to save seed stats: {e}")
+
+
+def get_seed_stats() -> dict:
+    """Read persisted seed stats for all counties."""
+    import json
+    try:
+        if os.path.exists(SEED_STATS_PATH):
+            with open(SEED_STATS_PATH, "r") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {}
 
 
 def _find_nal_file(county_no: str) -> str | None:
@@ -170,6 +207,7 @@ def seed_county(county_no: str, db: Session, min_value: int | None = None) -> di
             logger.warning(f"Failed to load SDF for {county_name}: {e}")
 
     total = 0
+    type_passed = 0
     filtered = 0
     created = 0
     skipped_dupe = 0
@@ -209,6 +247,8 @@ def seed_county(county_no: str, db: Session, min_value: int | None = None) -> di
                     # Include other codes if they have enough units
                     if not num_units or num_units < MIN_UNITS_FOR_OTHER:
                         continue
+
+                type_passed += 1
 
                 # Weed out non-starters: too small or too low value
                 jv_raw = _safe_int(_get_col(row, col_map, "JV"))
@@ -375,24 +415,26 @@ def seed_county(county_no: str, db: Session, min_value: int | None = None) -> di
              detail=f"{county_name}: {str(e)[:200]}")
         return {"error": str(e), "county": county_name, "total": total, "filtered": filtered, "created": created}
 
+    threshold_used = min_value if min_value is not None else MIN_MARKET_VALUE
+
     result = {
         "county": county_name,
         "county_no": county_no,
         "total_parcels": total,
+        "type_passed": type_passed,
         "filtered": filtered,
         "created": created,
         "skipped_dupe": skipped_dupe,
-        "min_value_used": min_value if min_value is not None else MIN_MARKET_VALUE,
+        "min_value_used": threshold_used,
         "nal_file": os.path.basename(nal_path),
         "sdf_records": len(sdf_data),
-        "debug_columns": columns[:20] if columns else [],
-        "debug_col_map": {k: v for k, v in list(col_map.items())[:20]} if col_map else {},
-        "debug_sample": sample_row,
-        "debug_has_dor_uc": "DOR_UC" in col_map,
     }
 
+    # Persist seed stats for ops dashboard
+    _save_seed_stats(county_no, result)
+
     emit(EventType.HUNTER, "seed_county", EventStatus.SUCCESS,
-         detail=f"{county_name}: {created} leads from {filtered} condos/multi-family ({total} parcels)")
+         detail=f"{county_name}: {created} from {filtered} value-filtered / {type_passed} type-matched / {total} parcels")
     logger.info(f"Seed complete: {result}")
 
     return result
