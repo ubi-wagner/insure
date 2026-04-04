@@ -282,7 +282,7 @@ export default function EntityDetailModal({
         transform: `translateX(${isActive ? 0 : -offsetPx}px)`,
         zIndex,
       }}
-      className={`fixed inset-y-0 right-0 w-full sm:w-[460px] flex flex-col bg-gray-950 border-l border-gray-800 shadow-2xl shadow-black/60 transition-all duration-300 ease-out ${
+      className={`fixed inset-y-0 right-0 w-full sm:w-[420px] flex flex-col bg-gray-950 border-l border-gray-800 shadow-2xl shadow-black/60 transition-all duration-300 ease-out overflow-hidden ${
         isActive ? "opacity-100" : "opacity-90 hover:opacity-95 cursor-pointer"
       }`}
     >
