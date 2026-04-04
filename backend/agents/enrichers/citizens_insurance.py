@@ -7,24 +7,18 @@ building on Citizens is:
 2. Being actively depopulated by the state
 3. A warm/hot lead for policy swap
 
-This enricher identifies leads that are likely on Citizens by:
-- Cross-referencing against Citizens rate data
-- Checking DOR use code + location + TIV against Citizens eligibility
-- Flagging properties in high-Citizens-density areas
+This enricher estimates likelihood a property COULD be on Citizens
+based on county penetration, flood risk, TIV, construction, and age.
+
+IMPORTANT: This is heuristic scoring only. `on_citizens` is NEVER
+set True by this enricher — only by actual policy evidence (e.g.
+declaration page upload or confirmed carrier data). The heuristic
+produces `citizens_candidate` (bool) and `citizens_likelihood` (0-100).
 
 Citizens data sources:
 - Rate filings: https://www.citizensfla.com
 - Market share reports (PDF)
 - Policy count by county (public records)
-
-For now, we use heuristic scoring based on known Citizens patterns:
-- Coastal properties in wind-borne debris regions
-- High TIV with coastal exposure
-- Properties in counties with high Citizens penetration
-- Condos without wind coverage from private market
-
-When Citizens bulk data becomes available (CSV/API), this enricher
-will cross-reference directly.
 """
 
 import logging
@@ -38,9 +32,8 @@ from database.models import Entity
 logger = logging.getLogger(__name__)
 
 # Counties with highest Citizens penetration (as of 2025 data)
-# Source: Citizens Property Insurance Corporation market share reports
 HIGH_CITIZENS_COUNTIES = {
-    "Miami-Dade": 0.35,    # 35% of residential policies
+    "Miami-Dade": 0.35,
     "Broward": 0.28,
     "Palm Beach": 0.25,
     "Monroe": 0.45,
@@ -55,9 +48,8 @@ HIGH_CITIZENS_COUNTIES = {
 }
 
 # Citizens 2026 average premium by construction/location
-# These are rough estimates from rate filing data
 CITIZENS_RATE_ESTIMATES = {
-    "coastal_masonry": 8500,      # per $100K TIV
+    "coastal_masonry": 8500,
     "coastal_frame": 12000,
     "coastal_fire_resistive": 6500,
     "inland_masonry": 4500,
@@ -67,9 +59,9 @@ CITIZENS_RATE_ESTIMATES = {
 
 
 def _estimate_citizens_likelihood(entity: Entity) -> dict:
-    """Estimate likelihood that this property is on Citizens.
+    """Estimate likelihood this property could be on Citizens.
 
-    Returns dict with: likelihood (0-100), estimated_premium, factors
+    Returns dict with: likelihood (0-100), estimated_premium, factors, tier
     """
     chars = entity.characteristics or {}
     county = entity.county or ""
@@ -85,7 +77,7 @@ def _estimate_citizens_likelihood(entity: Entity) -> dict:
         score += 15
         factors.append(f"Moderate Citizens county ({county}: {penetration:.0%})")
 
-    # Flood zone — coastal high hazard
+    # Flood zone
     flood_risk = chars.get("flood_risk", "")
     if flood_risk in ("extreme", "high"):
         score += 25
@@ -93,7 +85,7 @@ def _estimate_citizens_likelihood(entity: Entity) -> dict:
     elif flood_risk == "moderate_high":
         score += 10
 
-    # TIV — Citizens handles many high-TIV coastal properties
+    # TIV
     tiv = chars.get("tiv_estimate")
     if tiv and isinstance(tiv, (int, float)):
         if tiv >= 5_000_000:
@@ -102,7 +94,7 @@ def _estimate_citizens_likelihood(entity: Entity) -> dict:
         elif tiv >= 1_000_000:
             score += 10
 
-    # Construction — frame buildings have hardest time in private market
+    # Construction
     const_class = str(chars.get("dor_construction_class") or chars.get("construction_class") or "").lower()
     if "frame" in const_class or "wood" in const_class:
         score += 15
@@ -110,7 +102,7 @@ def _estimate_citizens_likelihood(entity: Entity) -> dict:
     elif "masonry" in const_class:
         score += 5
 
-    # Age — older buildings harder to insure privately
+    # Age
     year_built = chars.get("dor_year_built") or chars.get("year_built")
     if year_built:
         try:
@@ -123,7 +115,7 @@ def _estimate_citizens_likelihood(entity: Entity) -> dict:
         except (ValueError, TypeError):
             pass
 
-    # Multi-unit — Citizens has many condo associations
+    # Multi-unit
     units = chars.get("dor_num_units") or chars.get("units_estimate")
     if units and isinstance(units, (int, float)) and units >= 50:
         score += 10
@@ -144,8 +136,20 @@ def _estimate_citizens_likelihood(entity: Entity) -> dict:
     if tiv and isinstance(tiv, (int, float)) and tiv > 0:
         estimated_premium = int(tiv / 100_000 * rate_per_100k)
 
+    # Tier based on score — descriptive, not asserting actual status
+    likelihood = min(score, 100)
+    if likelihood >= 70:
+        tier = "likely_candidate"
+    elif likelihood >= 50:
+        tier = "possible_candidate"
+    elif likelihood >= 30:
+        tier = "low_candidate"
+    else:
+        tier = "unlikely"
+
     return {
-        "likelihood": min(score, 100),
+        "likelihood": likelihood,
+        "tier": tier,
         "estimated_premium": estimated_premium,
         "factors": factors,
         "county_penetration": penetration,
@@ -154,10 +158,13 @@ def _estimate_citizens_likelihood(entity: Entity) -> dict:
 
 @register_enricher("citizens_insurance")
 def enrich_citizens_insurance(entity: Entity, db: Session) -> bool:
-    """Analyze whether this property is likely on Citizens insurance."""
+    """Analyze whether this property could be a Citizens candidate.
+
+    DOES NOT set on_citizens=True — that requires actual policy evidence.
+    Sets citizens_candidate and citizens_likelihood for screening.
+    """
     chars = entity.characteristics or {}
 
-    # Need at least county + some property data
     if not entity.county:
         return False
     if not chars.get("dor_market_value") and not chars.get("tiv_estimate"):
@@ -167,6 +174,7 @@ def enrich_citizens_insurance(entity: Entity, db: Session) -> bool:
 
     updates: dict = {
         "citizens_likelihood": analysis["likelihood"],
+        "citizens_likelihood_tier": analysis["tier"],
         "citizens_county_penetration": analysis["county_penetration"],
     }
 
@@ -177,19 +185,21 @@ def enrich_citizens_insurance(entity: Entity, db: Session) -> bool:
     if analysis["factors"]:
         updates["citizens_risk_factors"] = analysis["factors"]
 
-    # Flag as likely on Citizens if score is high enough
-    if analysis["likelihood"] >= 50:
-        updates["on_citizens"] = True
-        updates["citizens_swap_opportunity"] = True
+    # Mark as candidate for investigation, NOT as confirmed Citizens
+    updates["citizens_candidate"] = analysis["likelihood"] >= 50
+    updates["citizens_swap_opportunity"] = analysis["likelihood"] >= 70
+
+    # Explicitly do NOT set on_citizens — only real policy evidence does that
+    # If a previous heuristic run set it, clear it
+    if chars.get("on_citizens") is True and not chars.get("citizens_policy_confirmed"):
+        updates["on_citizens"] = False
 
     update_characteristics(entity, updates, "citizens_insurance")
 
     fields = [k for k, v in updates.items() if v is not None]
-    detail = f"Citizens: {analysis['likelihood']}% likelihood"
+    detail = f"Citizens: {analysis['likelihood']}% ({analysis['tier']})"
     if analysis["estimated_premium"]:
-        detail += f", est premium ${analysis['estimated_premium']:,}"
-    if analysis["likelihood"] >= 50:
-        detail += " — SWAP OPPORTUNITY"
+        detail += f", est ${analysis['estimated_premium']:,}/yr"
 
     record_enrichment(
         entity, db,

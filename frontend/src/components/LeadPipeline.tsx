@@ -575,8 +575,8 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
                         ? "bg-red-900/50 text-red-400" : "bg-gray-800 text-gray-500"
                     }`}>{String(chars.flood_zone)}</span>
                   )}
-                  {!!chars.on_citizens && (
-                    <span className="text-[10px] px-1 rounded bg-amber-900/50 text-amber-400">Citizens</span>
+                  {!!chars.citizens_candidate && (
+                    <span className="text-[10px] px-1 rounded bg-amber-900/50 text-amber-400">Citizens?</span>
                   )}
                   <span className="text-gray-700 text-[10px] ml-auto">{lead.county}</span>
                 </div>
