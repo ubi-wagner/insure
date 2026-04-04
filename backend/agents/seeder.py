@@ -65,7 +65,7 @@ TARGET_USE_CODES = {
 MIN_UNITS_FOR_OTHER = 10
 
 # Minimum thresholds — focused on commercial insurance opportunities
-MIN_MARKET_VALUE = 10_000_000    # $10M minimum market value
+MIN_MARKET_VALUE = int(os.environ.get("MIN_MARKET_VALUE", 10_000_000))  # Default $10M, configurable
 MIN_UNITS_TARGET = 10            # At least 10 units for condos/multi-family
 
 
@@ -135,10 +135,13 @@ def _get_col(row: dict, col_map: dict[str, str], *names: str) -> str:
     return ""
 
 
-def seed_county(county_no: str, db: Session) -> dict:
+def seed_county(county_no: str, db: Session, min_value: int | None = None) -> dict:
     """Seed leads from a NAL file for one county.
 
-    Returns stats: {total_parcels, filtered, created, skipped_dupe, county_name}
+    Args:
+        min_value: Override MIN_MARKET_VALUE threshold. Pass 0 to disable.
+
+    Returns stats: {total_parcels, filtered, created, skipped_dupe, county_name, min_value}
     """
     county_name = DOR_COUNTIES.get(county_no, f"County {county_no}")
     nal_path = _find_nal_file(county_no)
@@ -209,7 +212,8 @@ def seed_county(county_no: str, db: Session) -> dict:
 
                 # Weed out non-starters: too small or too low value
                 jv_raw = _safe_int(_get_col(row, col_map, "JV"))
-                if jv_raw is not None and 0 < jv_raw < MIN_MARKET_VALUE:
+                threshold = min_value if min_value is not None else MIN_MARKET_VALUE
+                if threshold > 0 and jv_raw is not None and 0 < jv_raw < threshold:
                     continue
                 if dor_uc in ("004", "005", "008") and num_units and num_units < MIN_UNITS_TARGET:
                     continue
@@ -378,6 +382,7 @@ def seed_county(county_no: str, db: Session) -> dict:
         "filtered": filtered,
         "created": created,
         "skipped_dupe": skipped_dupe,
+        "min_value_used": min_value if min_value is not None else MIN_MARKET_VALUE,
         "nal_file": os.path.basename(nal_path),
         "sdf_records": len(sdf_data),
         "debug_columns": columns[:20] if columns else [],

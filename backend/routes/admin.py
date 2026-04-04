@@ -70,7 +70,7 @@ def list_counties():
 
 
 @router.post("/api/admin/seed-county/{county_no}")
-def seed_county_endpoint(county_no: str, db: Session = Depends(get_db)):
+def seed_county_endpoint(county_no: str, min_value: int = Query(None, description="Min market value threshold (0 to disable)"), db: Session = Depends(get_db)):
     """Seed leads from NAL file for a specific county."""
     from agents.seeder import DOR_COUNTIES, _find_nal_file, seed_county
 
@@ -82,12 +82,12 @@ def seed_county_endpoint(county_no: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail=f"NAL file not found for {DOR_COUNTIES[county_no]}. Searched filestore/System Data/DOR/ and data/. Upload via File Manager.")
 
     # Run synchronously so errors are visible
-    result = seed_county(county_no, db)
+    result = seed_county(county_no, db, min_value=min_value)
     return result
 
 
 @router.post("/api/admin/seed-all")
-def seed_all_counties(db: Session = Depends(get_db)):
+def seed_all_counties(min_value: int = Query(None, description="Min market value threshold (0 to disable)"), db: Session = Depends(get_db)):
     """Seed all counties that have NAL files."""
     from agents.seeder import get_available_counties, seed_county, DOR_COUNTIES
 
@@ -115,7 +115,7 @@ def seed_all_counties(db: Session = Depends(get_db)):
         try:
             emit(EventType.HUNTER, "seed_all", EventStatus.PENDING,
                  detail=f"Seeding {c['county_name']}...")
-            result = seed_county(c["county_no"], db)
+            result = seed_county(c["county_no"], db, min_value=min_value)
             results.append(result)
         except Exception as e:
             logger.error(f"Seed failed for {c['county_name']}: {e}")

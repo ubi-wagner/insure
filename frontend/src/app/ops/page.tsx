@@ -124,6 +124,7 @@ export default function OpsPage() {
   } | null>(null);
   const [seeding, setSeeding] = useState<string | null>(null);
   const [seedResult, setSeedResult] = useState<string | null>(null);
+  const [seedMinValue, setSeedMinValue] = useState("5000000");
   const [resetting, setResetting] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
   const [services, setServices] = useState<ServiceStatus[]>([]);
@@ -187,7 +188,8 @@ export default function OpsPage() {
     setSeeding(countyNo);
     setSeedResult(null);
     try {
-      const res = await fetch(`/api/proxy/admin/seed-county/${countyNo}`, { method: "POST" });
+      const params = seedMinValue ? `?min_value=${seedMinValue}` : "";
+      const res = await fetch(`/api/proxy/admin/seed-county/${countyNo}${params}`, { method: "POST" });
       const data = await res.json().catch(() => ({ error: res.statusText }));
       if (!res.ok || data.error) {
         setSeedResult(`Error: ${data.error || res.statusText}`);
@@ -206,7 +208,8 @@ export default function OpsPage() {
     setSeeding("all");
     setSeedResult(null);
     try {
-      const res = await fetch("/api/proxy/admin/seed-all", { method: "POST" });
+      const params = seedMinValue ? `?min_value=${seedMinValue}` : "";
+      const res = await fetch(`/api/proxy/admin/seed-all${params}`, { method: "POST" });
       const data = await res.json().catch(() => ({ error: res.statusText }));
       if (!res.ok || data.error) {
         setSeedResult(`Error: ${data.error || res.statusText}`);
@@ -537,7 +540,19 @@ export default function OpsPage() {
                   <Link href="/files" className="text-blue-400 hover:underline">File Manager</Link>
                 </p>
               </div>
-              <div className="flex gap-2 items-center">
+              <div className="flex gap-2 items-center flex-wrap">
+                <div className="flex items-center gap-1.5 bg-gray-900 border border-gray-700 rounded px-2 py-1">
+                  <label className="text-[10px] text-gray-500 shrink-0">Min $</label>
+                  <select value={seedMinValue} onChange={(e) => setSeedMinValue(e.target.value)}
+                    className="bg-transparent text-white text-xs focus:outline-none">
+                    <option value="0">No min</option>
+                    <option value="1000000">$1M</option>
+                    <option value="3000000">$3M</option>
+                    <option value="5000000">$5M</option>
+                    <option value="10000000">$10M</option>
+                    <option value="25000000">$25M</option>
+                  </select>
+                </div>
                 <button onClick={seedAll} disabled={seeding !== null || resetting}
                   className="bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white text-xs px-4 py-2 rounded font-medium">
                   {seeding === "all" ? "Seeding..." : "Seed All"}
