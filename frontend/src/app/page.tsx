@@ -167,7 +167,7 @@ export default function Dashboard() {
 
       {/* Modal tab bar — fixed at bottom, positioned to the left of modals */}
       {openModals.length > 0 && (
-        <div className="fixed bottom-0 left-0 right-0 sm:right-[470px] bg-gray-900/95 backdrop-blur-sm border-t border-gray-800 flex items-center px-2 py-1.5 z-[60] gap-1 overflow-x-auto">
+        <div className="fixed bottom-0 left-0 right-0 sm:right-[430px] bg-gray-900/95 backdrop-blur-sm border-t border-gray-800 flex items-center px-2 py-1.5 z-[60] gap-1 overflow-x-auto">
           {openModals.map((id) => {
             const lead = leads.find((l) => l.id === id);
             return (
