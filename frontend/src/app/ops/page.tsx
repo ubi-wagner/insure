@@ -35,7 +35,7 @@ interface EventItem {
   metadata?: Record<string, unknown>;
 }
 
-type ActiveTab = "pipeline" | "counties" | "services" | "query" | "events";
+type ActiveTab = "pipeline" | "counties" | "services" | "query" | "events" | "email";
 
 const COUNTIES = [
   "Pasco", "Pinellas", "Hillsborough", "Manatee", "Sarasota",
@@ -332,6 +332,7 @@ export default function OpsPage() {
     { key: "services", label: "Services", badge: services.length },
     { key: "query", label: "Query" },
     { key: "events", label: "Events" },
+    { key: "email", label: "Email" },
   ];
 
   function fmtTime(ts: number | string) {
@@ -887,6 +888,313 @@ export default function OpsPage() {
                           {evt.detail}
                           {evt.duration_ms ? <span className="text-gray-700 ml-1">({evt.duration_ms.toFixed(0)}ms)</span> : ""}
                         </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ═══ EMAIL TAB ═══ */}
+        {tab === "email" && <EmailTab />}
+      </div>
+    </div>
+  );
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════
+   EMAIL TAB — generate, preview, export, and ingest emails
+   ═══════════════════════════════════════════════════════════════════ */
+
+interface EmailPreviewItem {
+  engagement_id: number;
+  entity_id: number;
+  entity_name: string;
+  county: string;
+  pipeline_stage: string;
+  subject: string;
+  style: string;
+  to_email: string | null;
+  contact_name: string | null;
+  has_email: boolean;
+}
+
+interface IngestResult {
+  matched: number;
+  unmatched: number;
+  duplicates: number;
+  matched_details: { filename: string; entity_id: number; from: string; subject: string }[];
+  unmatched_details: { filename: string; from?: string; to?: string; subject?: string; error: string }[];
+}
+
+function EmailTab() {
+  const [preview, setPreview] = useState<{ total: number; ready_to_send: number; missing_email: number; items: EmailPreviewItem[] } | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [genLoading, setGenLoading] = useState(false);
+  const [exportLoading, setExportLoading] = useState(false);
+  const [ingestResult, setIngestResult] = useState<IngestResult | null>(null);
+  const [ingestLoading, setIngestLoading] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [genStyle, setGenStyle] = useState("formal");
+  const [genStage, setGenStage] = useState("LEAD");
+  const [genCounty, setGenCounty] = useState("");
+  const [genTier, setGenTier] = useState("");
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  const STYLES = ["formal", "informal", "cost_effective", "risk_averse"];
+
+  async function loadPreview() {
+    setLoading(true);
+    setMsg(null);
+    try {
+      const res = await fetch("/api/proxy/email/export/preview?limit=100");
+      if (res.ok) {
+        setPreview(await res.json());
+      } else {
+        setMsg("Failed to load preview (" + res.status + ")");
+      }
+    } catch {
+      setMsg("Unable to connect");
+    }
+    setLoading(false);
+  }
+
+  async function generateBulk() {
+    setGenLoading(true);
+    setMsg(null);
+    try {
+      const body: Record<string, string> = { style: genStyle, stage: genStage };
+      if (genCounty) body.county = genCounty;
+      if (genTier) body.cream_tier = genTier;
+      const res = await fetch("/api/proxy/email/generate-bulk", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setMsg(`Generated ${data.created} engagements (${data.skipped} skipped — no email template)`);
+        loadPreview();
+      } else {
+        const err = await res.json().catch(() => ({ detail: res.status }));
+        setMsg("Generate failed: " + (err.detail ?? res.status));
+      }
+    } catch {
+      setMsg("Generate failed — unable to connect");
+    }
+    setGenLoading(false);
+  }
+
+  async function exportEmails() {
+    setExportLoading(true);
+    setMsg(null);
+    try {
+      const res = await fetch("/api/proxy/email/export");
+      if (res.ok) {
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `insure_emails_${new Date().toISOString().slice(0, 10)}.zip`;
+        a.click();
+        URL.revokeObjectURL(url);
+        setMsg("Exported! Import the .zip into Outlook Drafts.");
+        loadPreview();
+      } else if (res.status === 404) {
+        setMsg("No queued emails to export. Generate some first.");
+      } else {
+        setMsg("Export failed (" + res.status + ")");
+      }
+    } catch {
+      setMsg("Export failed — unable to connect");
+    }
+    setExportLoading(false);
+  }
+
+  async function handleIngest(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setIngestLoading(true);
+    setMsg(null);
+    setIngestResult(null);
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      const res = await fetch("/api/proxy/email/ingest", { method: "POST", body: form });
+      if (res.ok) {
+        const data: IngestResult = await res.json();
+        setIngestResult(data);
+        setMsg(`Ingested: ${data.matched} matched, ${data.unmatched} unmatched, ${data.duplicates} duplicates`);
+      } else {
+        const err = await res.json().catch(() => ({ detail: res.status }));
+        setMsg("Ingest failed: " + (err.detail ?? res.status));
+      }
+    } catch {
+      setMsg("Ingest failed — unable to connect");
+    }
+    setIngestLoading(false);
+    if (fileRef.current) fileRef.current.value = "";
+  }
+
+  useEffect(() => { loadPreview(); }, []);
+
+  return (
+    <div className="space-y-6">
+      {msg && (
+        <div className={`text-xs px-3 py-2 rounded border ${
+          msg.includes("failed") || msg.includes("Failed")
+            ? "bg-red-900/30 text-red-300 border-red-800"
+            : "bg-green-900/30 text-green-300 border-green-800"
+        }`}>
+          {msg}
+        </div>
+      )}
+
+      {/* ── OUTBOUND: Generate + Export ── */}
+      <div>
+        <h2 className="text-sm font-semibold text-gray-300 mb-3">Outbound — Generate & Export to Outlook</h2>
+
+        {/* Generate controls */}
+        <div className="bg-gray-900 border border-gray-800 rounded-lg p-4 space-y-3">
+          <p className="text-xs text-gray-500">
+            Step 1: Generate email engagements from AI templates. Step 2: Export as .eml zip. Step 3: Import into Outlook Drafts and send.
+          </p>
+          <div className="flex gap-2 flex-wrap">
+            <select value={genStyle} onChange={(e) => setGenStyle(e.target.value)}
+              className="bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs text-white">
+              {STYLES.map(s => <option key={s} value={s}>{s.replace("_", " ")}</option>)}
+            </select>
+            <select value={genStage} onChange={(e) => setGenStage(e.target.value)}
+              className="bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs text-white">
+              <option value="LEAD">LEAD</option>
+              <option value="OPPORTUNITY">OPPORTUNITY</option>
+            </select>
+            <select value={genCounty} onChange={(e) => setGenCounty(e.target.value)}
+              className="bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs text-white">
+              <option value="">All Counties</option>
+              {COUNTIES.map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+            <select value={genTier} onChange={(e) => setGenTier(e.target.value)}
+              className="bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs text-white">
+              <option value="">All Tiers</option>
+              <option value="platinum">Platinum</option>
+              <option value="gold">Gold</option>
+              <option value="silver">Silver</option>
+            </select>
+            <button onClick={generateBulk} disabled={genLoading}
+              className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs px-4 py-1.5 rounded font-medium">
+              {genLoading ? "Generating..." : "Generate Emails"}
+            </button>
+          </div>
+
+          {/* Export button + preview summary */}
+          <div className="flex items-center gap-3 pt-2 border-t border-gray-800">
+            <button onClick={exportEmails} disabled={exportLoading || !preview || preview.ready_to_send === 0}
+              className="bg-green-700 hover:bg-green-600 disabled:opacity-50 text-white text-xs px-4 py-1.5 rounded font-medium">
+              {exportLoading ? "Exporting..." : "Export .eml Zip"}
+            </button>
+            <button onClick={loadPreview} disabled={loading}
+              className="bg-gray-800 hover:bg-gray-700 text-gray-400 text-xs px-3 py-1.5 rounded">
+              Refresh
+            </button>
+            {preview && (
+              <span className="text-xs text-gray-500">
+                {preview.ready_to_send} ready to export, {preview.missing_email} missing contact email
+              </span>
+            )}
+          </div>
+        </div>
+
+        {/* Preview table */}
+        {preview && preview.items.length > 0 && (
+          <div className="bg-gray-900 border border-gray-800 rounded-lg overflow-auto max-h-[40vh] mt-3">
+            <table className="w-full text-xs">
+              <thead className="sticky top-0 bg-gray-900 z-10">
+                <tr className="border-b border-gray-800">
+                  <th className="text-left px-3 py-2 text-gray-500">Entity</th>
+                  <th className="text-left px-3 py-2 text-gray-500">County</th>
+                  <th className="text-left px-3 py-2 text-gray-500">Subject</th>
+                  <th className="text-left px-3 py-2 text-gray-500">To</th>
+                  <th className="text-left px-3 py-2 text-gray-500">Style</th>
+                </tr>
+              </thead>
+              <tbody>
+                {preview.items.map((item) => (
+                  <tr key={item.engagement_id} className="border-b border-gray-800/50 hover:bg-gray-800/20">
+                    <td className="px-3 py-1.5 text-white truncate max-w-[200px]">{item.entity_name}</td>
+                    <td className="px-3 py-1.5 text-gray-500">{item.county}</td>
+                    <td className="px-3 py-1.5 text-gray-400 truncate max-w-[250px]">{item.subject}</td>
+                    <td className={`px-3 py-1.5 ${item.has_email ? "text-green-400" : "text-red-400"}`}>
+                      {item.to_email ?? "No contact email"}
+                    </td>
+                    <td className="px-3 py-1.5 text-gray-600">{item.style}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* ── INBOUND: Ingest from Outlook ── */}
+      <div>
+        <h2 className="text-sm font-semibold text-gray-300 mb-3">Inbound — Ingest Outlook Replies</h2>
+        <div className="bg-gray-900 border border-gray-800 rounded-lg p-4 space-y-3">
+          <p className="text-xs text-gray-500">
+            Export emails from Outlook as .eml files (or zip them together). Upload here to auto-match replies to entities and create engagement records.
+          </p>
+          <div className="flex items-center gap-3">
+            <input ref={fileRef} type="file" accept=".eml,.zip" onChange={handleIngest}
+              className="text-xs text-gray-400 file:mr-3 file:py-1.5 file:px-3 file:rounded file:border-0 file:text-xs file:font-medium file:bg-blue-600 file:text-white hover:file:bg-blue-700" />
+            {ingestLoading && <span className="text-xs text-gray-500">Processing...</span>}
+          </div>
+        </div>
+
+        {/* Ingest results */}
+        {ingestResult && (
+          <div className="mt-3 space-y-3">
+            <div className="flex gap-4 text-xs">
+              <span className="text-green-400">{ingestResult.matched} matched</span>
+              <span className="text-amber-400">{ingestResult.unmatched} unmatched</span>
+              <span className="text-gray-500">{ingestResult.duplicates} duplicates skipped</span>
+            </div>
+
+            {ingestResult.matched_details.length > 0 && (
+              <div className="bg-gray-900 border border-green-900 rounded-lg overflow-auto max-h-[25vh]">
+                <table className="w-full text-xs">
+                  <thead className="sticky top-0 bg-gray-900">
+                    <tr className="border-b border-gray-800">
+                      <th className="text-left px-3 py-2 text-gray-500">Entity</th>
+                      <th className="text-left px-3 py-2 text-gray-500">From</th>
+                      <th className="text-left px-3 py-2 text-gray-500">Subject</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {ingestResult.matched_details.map((m, i) => (
+                      <tr key={i} className="border-b border-gray-800/50">
+                        <td className="px-3 py-1.5 text-green-400">#{m.entity_id}</td>
+                        <td className="px-3 py-1.5 text-gray-400 truncate max-w-[200px]">{m.from}</td>
+                        <td className="px-3 py-1.5 text-white truncate max-w-[250px]">{m.subject}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {ingestResult.unmatched_details.length > 0 && (
+              <div className="bg-gray-900 border border-amber-900 rounded-lg overflow-auto max-h-[25vh]">
+                <p className="px-3 py-2 text-xs text-amber-400 border-b border-gray-800">Unmatched — link manually via API</p>
+                <table className="w-full text-xs">
+                  <tbody>
+                    {ingestResult.unmatched_details.map((u, i) => (
+                      <tr key={i} className="border-b border-gray-800/50">
+                        <td className="px-3 py-1.5 text-gray-400 truncate max-w-[200px]">{u.from ?? ""}</td>
+                        <td className="px-3 py-1.5 text-gray-400 truncate max-w-[200px]">{u.subject ?? ""}</td>
+                        <td className="px-3 py-1.5 text-amber-500 text-[10px]">{u.error}</td>
                       </tr>
                     ))}
                   </tbody>

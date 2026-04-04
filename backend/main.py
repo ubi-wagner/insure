@@ -13,6 +13,7 @@ from routes.leads import router as leads_router
 from routes.admin import router as admin_router
 from routes.events import router as events_router, EventLoggingMiddleware
 from routes.status import router as status_router
+from routes.email import router as email_router
 from services.event_bus import EventStatus, EventType, emit, event_bus
 
 logger = logging.getLogger(__name__)
@@ -131,6 +132,7 @@ app.include_router(leads_router)
 app.include_router(admin_router)
 app.include_router(events_router)
 app.include_router(status_router)
+app.include_router(email_router)
 
 
 @app.get("/health")
