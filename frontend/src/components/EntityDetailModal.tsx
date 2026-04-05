@@ -106,6 +106,7 @@ const KNOWN_FIELDS = new Set([
   "citizens_likelihood", "citizens_county_penetration",
   "citizens_estimated_premium", "citizens_premium_display",
   "citizens_risk_factors", "on_citizens", "citizens_swap_opportunity",
+  "citizens_candidate", "citizens_likelihood_tier", "citizens_policy_confirmed",
   "dor_parcel_id", "dor_owner", "dor_owner_address", "dor_market_value",
   "dor_land_value", "dor_use_code", "dor_use_description",
   "dor_year_built", "dor_effective_year_built", "dor_living_sqft",
@@ -492,9 +493,12 @@ export default function EntityDetailModal({
               <DataRow label="Likelihood" value={chars.citizens_likelihood} />
               <DataRow label="Swap Opportunity" value={chars.citizens_swap_opportunity} />
               <DataRow label="Est. Premium" value={chars.citizens_premium_display || (chars.citizens_estimated_premium ? fmt(Number(chars.citizens_estimated_premium)) : null)} />
-              <DataRow label="On Citizens" value={
-                chars.on_citizens === true ? "Yes" :
-                chars.on_citizens === false ? "No" : null
+              <DataRow label="Candidate" value={
+                chars.citizens_candidate === true ? `Yes (${chars.citizens_likelihood_tier ?? "candidate"})` :
+                chars.citizens_candidate === false ? "Unlikely" : null
+              } />
+              <DataRow label="Confirmed" value={
+                chars.on_citizens === true ? "Yes — confirmed policy" : null
               } />
               <DataRow label="Risk Factors" value={
                 chars.citizens_risk_factors

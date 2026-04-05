@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { Suspense, useCallback, useState, useEffect } from "react";
+import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import MapView from "@/components/MapView";
 import LeadPipeline from "@/components/LeadPipeline";
@@ -18,14 +19,30 @@ interface LeadLocation {
 
 const MAX_MODALS = 5;
 
-export default function Dashboard() {
+export default function DashboardPage() {
+  return (
+    <Suspense fallback={<div className="h-screen bg-gray-950" />}>
+      <Dashboard />
+    </Suspense>
+  );
+}
+
+function Dashboard() {
+  const searchParams = useSearchParams();
   const [refreshKey, setRefreshKey] = useState(0);
   const [leads, setLeads] = useState<LeadLocation[]>([]);
   const [hoveredLeadId, setHoveredLeadId] = useState<number | null>(null);
   const [selectedLeadId, setSelectedLeadId] = useState<number | null>(null);
   const [switchToStage, setSwitchToStage] = useState<string | null>(null);
+  const [initialCounty] = useState<string | null>(searchParams.get("county"));
   const [flyToTarget, setFlyToTarget] = useState<{ lat: number; lng: number } | null>(null);
   const [mobileView, setMobileView] = useState<"map" | "pipeline">("pipeline");
+
+  // Apply stage from URL query params on mount
+  useEffect(() => {
+    const stage = searchParams.get("stage");
+    if (stage) setSwitchToStage(stage);
+  }, [searchParams]);
 
   // Modal system: max 5 open, ordered by open time
   const [openModals, setOpenModals] = useState<number[]>([]);
@@ -128,6 +145,7 @@ export default function Dashboard() {
               onLeadHover={setHoveredLeadId}
               selectedLeadId={selectedLeadId}
               switchToStage={switchToStage}
+              initialCounty={initialCounty}
               onFlyTo={(lat: number, lng: number, id: number) => {
                 setFlyToTarget({ lat, lng });
                 setSelectedLeadId(id);

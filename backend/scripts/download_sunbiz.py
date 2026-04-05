@@ -168,7 +168,110 @@ def is_relevant_corp(corp_name: str) -> bool:
     return any(kw in upper for kw in ASSOCIATION_KEYWORDS)
 
 
-# ─── Download ───
+# ─── SFTP Download (primary method — FL DoS blocks HTTP scraping) ───
+
+SFTP_HOST = "sftp.floridados.gov"
+SFTP_USER = "Public"
+SFTP_PASS = "PubAccess1845!"
+SFTP_DIR = "/Quarterly"  # Adjust based on actual directory structure
+
+
+def download_via_sftp(dest_dir: str) -> str | None:
+    """Download the latest quarterly corporate data file via SFTP.
+
+    The FL Division of Corporations provides public SFTP access at
+    sftp.floridados.gov (user: Public, pass: PubAccess1845!).
+    """
+    try:
+        import paramiko
+    except ImportError:
+        logger.warning("paramiko not installed — cannot use SFTP. pip install paramiko")
+        return None
+
+    os.makedirs(dest_dir, exist_ok=True)
+
+    try:
+        transport = paramiko.Transport((SFTP_HOST, 22))
+        transport.connect(username=SFTP_USER, password=SFTP_PASS)
+        sftp = paramiko.SFTPClient.from_transport(transport)
+
+        # List directories to find the data
+        logger.info(f"Connected to SFTP {SFTP_HOST}, listing directories...")
+        root_items = sftp.listdir("/")
+        logger.info(f"Root directories: {root_items[:20]}")
+
+        # Search for quarterly corporate data files
+        # Try common paths: /Quarterly, /Corp, /Data, root level
+        search_dirs = ["/", "/Quarterly", "/Corp", "/Data", "/Corporate"]
+        data_file = None
+        data_path = None
+
+        for search_dir in search_dirs:
+            try:
+                items = sftp.listdir(search_dir)
+                logger.info(f"  {search_dir}: {items[:15]}")
+
+                # Look for corporate data files — typically named corp*.dat, corp*.txt, or *.zip
+                candidates = [f for f in items
+                              if any(f.lower().startswith(p) for p in ["corp", "quarterly"])
+                              or f.lower().endswith((".dat", ".zip", ".txt", ".Z"))]
+
+                if candidates:
+                    # Pick the newest / largest file
+                    best = None
+                    best_size = 0
+                    for c in candidates:
+                        try:
+                            full_path = f"{search_dir.rstrip('/')}/{c}"
+                            stat = sftp.stat(full_path)
+                            if stat.st_size and stat.st_size > best_size:
+                                best = full_path
+                                best_size = stat.st_size
+                        except Exception:
+                            continue
+
+                    if best:
+                        data_file = best
+                        data_path = os.path.join(dest_dir, os.path.basename(best))
+                        break
+            except IOError:
+                continue
+
+        if not data_file:
+            logger.warning("Could not find corporate data file on SFTP server")
+            sftp.close()
+            transport.close()
+            return None
+
+        logger.info(f"Downloading via SFTP: {data_file} ...")
+        sftp.get(data_file, data_path)
+        file_size = os.path.getsize(data_path)
+        logger.info(f"Downloaded {file_size:,} bytes to {data_path}")
+
+        sftp.close()
+        transport.close()
+
+        # Extract if zip
+        if data_path.lower().endswith(".zip"):
+            logger.info("Extracting zip file...")
+            with zipfile.ZipFile(data_path, "r") as zf:
+                data_files = [n for n in zf.namelist()
+                              if not n.startswith("__") and not n.startswith(".")]
+                if data_files:
+                    largest = max(data_files, key=lambda n: zf.getinfo(n).file_size)
+                    extract_path = os.path.join(dest_dir, largest)
+                    zf.extract(largest, dest_dir)
+                    logger.info(f"Extracted: {largest}")
+                    return extract_path
+
+        return data_path
+
+    except Exception as e:
+        logger.error(f"SFTP download failed: {e}")
+        return None
+
+
+# ─── HTTP Download (fallback — FL DoS often blocks automated HTTP) ───
 
 def _find_download_url() -> str | None:
     """Scrape the Sunbiz quarterly data page to find the latest download link."""
@@ -426,25 +529,34 @@ def download_and_process(dry_run: bool = False, url_override: str | None = None)
     """
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    # Step 1: Find or use provided URL
+    # Step 1: Download — try SFTP first (more reliable), fall back to HTTP
+    raw_dir = os.path.join(DATA_DIR, "sunbiz_raw")
+    data_path = None
     url = url_override
+
     if not url:
-        logger.info("Scanning Sunbiz quarterly data page for download link...")
+        # Try SFTP first — FL DoS blocks HTTP scraping
+        logger.info("Attempting SFTP download from sftp.floridados.gov ...")
+        data_path = download_via_sftp(raw_dir)
+
+    if not data_path and not url:
+        # Fall back to HTTP scraping
+        logger.info("SFTP failed, trying HTTP page scraping...")
         url = _find_download_url()
 
-    if not url:
+    if url and not data_path:
+        data_path = download_file(url, raw_dir)
+
+    if not data_path:
         return {
             "success": False,
-            "error": "Could not find Sunbiz quarterly download URL. "
-                     "Visit https://dos.fl.gov/sunbiz/other-services/data-downloads/quarterly-data/ "
-                     "and provide the URL manually via --url flag.",
+            "error": "Could not download Sunbiz data via SFTP or HTTP. "
+                     "FL DoS may be blocking automated access. "
+                     "Try manually downloading from "
+                     "https://dos.fl.gov/sunbiz/other-services/data-downloads/quarterly-data/ "
+                     "and upload to System Data/Sunbiz/ via File Manager, "
+                     "then run: python -m scripts.download_sunbiz --file <path>",
         }
-
-    # Step 2: Download
-    raw_dir = os.path.join(DATA_DIR, "sunbiz_raw")
-    data_path = download_file(url, raw_dir)
-    if not data_path:
-        return {"success": False, "error": "Download failed"}
 
     # Step 3: Parse and filter
     matches = parse_and_filter(data_path, dry_run=dry_run)

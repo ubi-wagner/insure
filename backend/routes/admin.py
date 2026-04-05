@@ -70,7 +70,7 @@ def list_counties():
 
 
 @router.post("/api/admin/seed-county/{county_no}")
-def seed_county_endpoint(county_no: str, db: Session = Depends(get_db)):
+def seed_county_endpoint(county_no: str, min_value: int = Query(None, description="Min market value threshold (0 to disable)"), db: Session = Depends(get_db)):
     """Seed leads from NAL file for a specific county."""
     from agents.seeder import DOR_COUNTIES, _find_nal_file, seed_county
 
@@ -82,12 +82,12 @@ def seed_county_endpoint(county_no: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail=f"NAL file not found for {DOR_COUNTIES[county_no]}. Searched filestore/System Data/DOR/ and data/. Upload via File Manager.")
 
     # Run synchronously so errors are visible
-    result = seed_county(county_no, db)
+    result = seed_county(county_no, db, min_value=min_value)
     return result
 
 
 @router.post("/api/admin/seed-all")
-def seed_all_counties(db: Session = Depends(get_db)):
+def seed_all_counties(min_value: int = Query(None, description="Min market value threshold (0 to disable)"), db: Session = Depends(get_db)):
     """Seed all counties that have NAL files."""
     from agents.seeder import get_available_counties, seed_county, DOR_COUNTIES
 
@@ -115,7 +115,7 @@ def seed_all_counties(db: Session = Depends(get_db)):
         try:
             emit(EventType.HUNTER, "seed_all", EventStatus.PENDING,
                  detail=f"Seeding {c['county_name']}...")
-            result = seed_county(c["county_no"], db)
+            result = seed_county(c["county_no"], db, min_value=min_value)
             results.append(result)
         except Exception as e:
             logger.error(f"Seed failed for {c['county_name']}: {e}")
@@ -393,6 +393,104 @@ def get_enrich_status(db: Session = Depends(get_db)):
             "dbpr_bulk": has_dbpr,
             "citizens_insurance": has_citizens,
         },
+    }
+
+
+@router.get("/api/admin/ops-dashboard")
+def ops_dashboard(db: Session = Depends(get_db)):
+    """Single endpoint for the unified Ops page — county funnel, services, enrichment coverage."""
+    from agents.seeder import get_seed_stats, get_available_counties, DOR_COUNTIES
+    from services.registry import get_all_statuses
+
+    # -- Seed stats from last run --
+    seed_stats = get_seed_stats()
+    available_counties = get_available_counties()
+
+    # -- Per-county entity counts by stage --
+    county_stage_rows = db.execute(sa.text(
+        "SELECT county, pipeline_stage, COUNT(*) as cnt FROM entities "
+        "WHERE county IS NOT NULL GROUP BY county, pipeline_stage"
+    )).fetchall()
+    county_stages: dict[str, dict[str, int]] = {}
+    for row in county_stage_rows:
+        county_stages.setdefault(row[0], {})[row[1]] = row[2]
+
+    # -- Per-county enrichment_status counts --
+    county_enrich_rows = db.execute(sa.text(
+        "SELECT county, enrichment_status, COUNT(*) as cnt FROM entities "
+        "WHERE county IS NOT NULL AND pipeline_stage != 'ARCHIVED' "
+        "GROUP BY county, enrichment_status"
+    )).fetchall()
+    county_enrich: dict[str, dict[str, int]] = {}
+    for row in county_enrich_rows:
+        county_enrich.setdefault(row[0], {})[row[1]] = row[2]
+
+    # -- Build county rows --
+    counties = []
+    for c in available_counties:
+        cno = c["county_no"]
+        cname = c["county_name"]
+        ss = seed_stats.get(cno, {})
+        stages = county_stages.get(cname, {})
+        enrich = county_enrich.get(cname, {})
+        total_entities = sum(stages.values())
+        enriched = enrich.get("complete", 0)
+
+        counties.append({
+            "county_no": cno,
+            "county": cname,
+            "nal_ready": c["ready"],
+            "nal_file": c.get("nal_file"),
+            # Seed stats from last run
+            "nal_total": ss.get("total_parcels"),
+            "type_passed": ss.get("type_passed"),
+            "value_filtered": ss.get("filtered"),
+            "min_value_used": ss.get("min_value_used"),
+            "last_seeded": ss.get("seeded_at"),
+            # Live DB counts
+            "total_entities": total_entities,
+            "stages": {
+                "TARGET": stages.get("TARGET", 0),
+                "LEAD": stages.get("LEAD", 0),
+                "OPPORTUNITY": stages.get("OPPORTUNITY", 0),
+                "CUSTOMER": stages.get("CUSTOMER", 0),
+                "ARCHIVED": stages.get("ARCHIVED", 0),
+            },
+            "enriched": enriched,
+            "enriched_pct": round(enriched / total_entities * 100) if total_entities > 0 else 0,
+        })
+
+    # -- Global stage counts --
+    stage_counts = {}
+    for stage in ["TARGET", "LEAD", "OPPORTUNITY", "CUSTOMER", "ARCHIVED"]:
+        stage_counts[stage] = db.query(Entity).filter(Entity.pipeline_stage == stage).count()
+
+    # -- Enrichment coverage (global) --
+    enricher_names = [
+        "dor_nal", "fema_flood", "property_appraiser", "dbpr_bulk", "dbpr_payments",
+        "cam_license", "sunbiz", "citizens_insurance", "fdot_parcels", "oir_market", "cream_score",
+    ]
+    total_active = sum(v for k, v in stage_counts.items() if k != "ARCHIVED")
+    coverage = {}
+    for name in enricher_names:
+        count = db.execute(sa.text(
+            f"SELECT COUNT(*) FROM entities WHERE enrichment_sources ? :name "
+            f"AND pipeline_stage != 'ARCHIVED'"
+        ), {"name": name}).scalar() or 0
+        coverage[name] = {
+            "count": count,
+            "pct": round(count / total_active * 100) if total_active > 0 else 0,
+        }
+
+    # -- Services --
+    services = get_all_statuses()
+
+    return {
+        "counties": counties,
+        "stage_counts": stage_counts,
+        "total_active": total_active,
+        "coverage": coverage,
+        "services": services,
     }
 
 

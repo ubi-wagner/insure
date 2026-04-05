@@ -83,9 +83,10 @@ interface PipelineProps {
   switchToStage?: string | null;
   onFlyTo?: (lat: number, lng: number, id: number) => void;
   onOpenDetails?: (id: number) => void;
+  initialCounty?: string | null;
 }
 
-export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, selectedLeadId, switchToStage, onFlyTo, onOpenDetails }: PipelineProps) {
+export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, selectedLeadId, switchToStage, onFlyTo, onOpenDetails, initialCounty }: PipelineProps) {
   const [leads, setLeads] = useState<Lead[]>([]);
   const [total, setTotal] = useState(0);
   const [fetchError, setFetchError] = useState<string | null>(null);
@@ -97,7 +98,7 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
   // Filters
   const [activeStage, setActiveStage] = useState("TARGET");
   const [search, setSearch] = useState("");
-  const [county, setCounty] = useState("");
+  const [county, setCounty] = useState(initialCounty ?? "");
   const [sortKey, setSortKey] = useState("value-desc");
   const [minValue, setMinValue] = useState("");
   const [maxValue, setMaxValue] = useState("");
@@ -574,8 +575,8 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
                         ? "bg-red-900/50 text-red-400" : "bg-gray-800 text-gray-500"
                     }`}>{String(chars.flood_zone)}</span>
                   )}
-                  {!!chars.on_citizens && (
-                    <span className="text-[10px] px-1 rounded bg-amber-900/50 text-amber-400">Citizens</span>
+                  {!!chars.citizens_candidate && (
+                    <span className="text-[10px] px-1 rounded bg-amber-900/50 text-amber-400">Citizens?</span>
                   )}
                   <span className="text-gray-700 text-[10px] ml-auto">{lead.county}</span>
                 </div>
