@@ -34,7 +34,7 @@ def reset_database(db: Session = Depends(get_db)):
     try:
         # Order matters — children before parents, disable FK checks
         db.execute(sa.text("SET CONSTRAINTS ALL DEFERRED"))
-        db.execute(sa.text("TRUNCATE engagements, policies, entity_assets, contacts, lead_ledger, regions_of_interest, entities CASCADE"))
+        db.execute(sa.text("TRUNCATE job_queue, engagements, policies, entity_assets, contacts, lead_ledger, regions_of_interest, entities CASCADE"))
         db.commit()
         logger.info("Database reset complete")
         emit(EventType.SYSTEM, "reset", EventStatus.SUCCESS, detail="All entity data cleared")
@@ -485,13 +485,54 @@ def ops_dashboard(db: Session = Depends(get_db)):
     # -- Services --
     services = get_all_statuses()
 
+    # -- Job Queue Stats --
+    queue_stats = {}
+    try:
+        from services.job_queue import get_queue_stats
+        queue_stats = get_queue_stats(db)
+    except Exception as e:
+        logger.warning(f"Failed to get queue stats: {e}")
+
     return {
         "counties": counties,
         "stage_counts": stage_counts,
         "total_active": total_active,
         "coverage": coverage,
         "services": services,
+        "queue": queue_stats,
     }
+
+
+@router.get("/api/admin/queue")
+def get_queue_status(db: Session = Depends(get_db)):
+    """Get job queue statistics for the Ops dashboard."""
+    from services.job_queue import get_queue_stats
+    return get_queue_stats(db)
+
+
+@router.post("/api/admin/queue/retry-all")
+def retry_all_failed(db: Session = Depends(get_db)):
+    """Reset all FAILED jobs back to PENDING for retry."""
+    from services.job_queue import retry_failed_jobs
+    count = retry_failed_jobs(db)
+    return {"success": True, "retried": count}
+
+
+@router.post("/api/admin/queue/backfill")
+def backfill_queue(db: Session = Depends(get_db)):
+    """Create missing jobs for all LEADs that need enrichment."""
+    from services.job_queue import produce_jobs_for_all_leads
+    count = produce_jobs_for_all_leads(db)
+    return {"success": True, "jobs_created": count}
+
+
+@router.post("/api/admin/queue/purge-rejected")
+def purge_rejected(db: Session = Depends(get_db)):
+    """Delete all REJECTED jobs (permanent failures) from the queue."""
+    from database.models import JobQueue
+    count = db.query(JobQueue).filter(JobQueue.status == "REJECTED").delete()
+    db.commit()
+    return {"success": True, "purged": count}
 
 
 @router.get("/api/admin/query")

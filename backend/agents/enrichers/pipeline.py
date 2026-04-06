@@ -196,6 +196,7 @@ def check_target_to_lead(entity: Entity, db: Session) -> bool:
     """Check if a TARGET should auto-advance to LEAD.
 
     Only condition: entity has been geocoded (latitude is set).
+    On promotion, produces enrichment jobs via the job queue.
     """
     if entity.pipeline_stage != "TARGET":
         return False
@@ -207,6 +208,14 @@ def check_target_to_lead(entity: Entity, db: Session) -> bool:
         emit(EventType.DB_OPERATION, "auto_advance", EventStatus.SUCCESS,
              detail=f"'{entity.name}': TARGET → LEAD (geocoded)",
              entity_id=entity.id)
+
+        # Produce enrichment jobs for this new LEAD
+        try:
+            from services.job_queue import produce_jobs_for_entity
+            produce_jobs_for_entity(entity.id, db)
+        except Exception as e:
+            logger.warning(f"Failed to produce jobs for entity {entity.id}: {e}")
+
         return True
 
     return False

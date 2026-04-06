@@ -36,12 +36,28 @@ interface ServiceStatus {
   detail: string;
 }
 
+interface QueueStats {
+  total_jobs: number;
+  status_counts: Record<string, number>;
+  enricher_stats: Record<string, Record<string, number>>;
+  recent_failures: {
+    job_id: number;
+    entity_id: number;
+    enricher: string;
+    error: string | null;
+    attempts: number;
+    entity_name: string | null;
+  }[];
+  worker_id: string;
+}
+
 interface DashboardData {
   counties: CountyRow[];
   stage_counts: Record<string, number>;
   total_active: number;
   coverage: Record<string, CoverageItem>;
   services: ServiceStatus[];
+  queue?: QueueStats;
 }
 
 interface EventItem {
@@ -65,6 +81,9 @@ const ENRICHER_LABELS: Record<string, string> = {
   dbpr_payments: "DBPR Payments",
   cam_license: "CAM License",
   sunbiz: "Sunbiz",
+  sunbiz_bulk: "Sunbiz",
+  dbpr_sirs: "DBPR SIRS",
+  dbpr_building: "DBPR Building",
   citizens_insurance: "Citizens",
   fdot_parcels: "FDOT Parcels",
   oir_market: "OIR Market",
@@ -223,6 +242,36 @@ export default function OpsCenter() {
       const res = await fetch("/api/proxy/admin/download-sunbiz", { method: "POST" });
       const d = await res.json().catch(() => ({ error: res.statusText }));
       setActionMsg(d.message ?? d.error ?? "Sunbiz download started");
+    } catch (err) { setActionMsg(`Error: ${err}`); }
+  }
+
+  async function queueBackfill() {
+    setActionMsg(null);
+    try {
+      const res = await fetch("/api/proxy/admin/queue/backfill", { method: "POST" });
+      const d = await res.json().catch(() => ({ error: res.statusText }));
+      setActionMsg(d.error ? `Error: ${d.error}` : `Backfilled ${d.jobs_created} jobs`);
+      fetchDashboard();
+    } catch (err) { setActionMsg(`Error: ${err}`); }
+  }
+
+  async function queueRetryAll() {
+    setActionMsg(null);
+    try {
+      const res = await fetch("/api/proxy/admin/queue/retry-all", { method: "POST" });
+      const d = await res.json().catch(() => ({ error: res.statusText }));
+      setActionMsg(d.error ? `Error: ${d.error}` : `Retried ${d.retried} failed jobs`);
+      fetchDashboard();
+    } catch (err) { setActionMsg(`Error: ${err}`); }
+  }
+
+  async function queuePurgeRejected() {
+    setActionMsg(null);
+    try {
+      const res = await fetch("/api/proxy/admin/queue/purge-rejected", { method: "POST" });
+      const d = await res.json().catch(() => ({ error: res.statusText }));
+      setActionMsg(d.error ? `Error: ${d.error}` : `Purged ${d.purged} rejected jobs`);
+      fetchDashboard();
     } catch (err) { setActionMsg(`Error: ${err}`); }
   }
 
@@ -523,6 +572,132 @@ export default function OpsCenter() {
               </div>
             </div>
           </>
+        )}
+
+        {/* ════════════════════════════════════════════════════════
+            JOB QUEUE
+           ════════════════════════════════════════════════════════ */}
+        {data?.queue && data.queue.total_jobs > 0 && (
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <h2 className="text-sm font-semibold text-gray-300">
+                Job Queue
+                <span className="text-gray-600 font-normal ml-2">
+                  ({fmtNum(data.queue.total_jobs)} total)
+                </span>
+              </h2>
+              <div className="flex gap-2">
+                <button onClick={queueBackfill}
+                  className="bg-gray-800 hover:bg-gray-700 text-gray-400 text-[10px] px-2.5 py-1.5 rounded">
+                  Backfill
+                </button>
+                <button onClick={queueRetryAll}
+                  className="bg-amber-900/50 hover:bg-amber-900 text-amber-300 text-[10px] px-2.5 py-1.5 rounded border border-amber-800">
+                  Retry Failed
+                </button>
+                <button onClick={queuePurgeRejected}
+                  className="bg-red-900/50 hover:bg-red-900 text-red-300 text-[10px] px-2.5 py-1.5 rounded border border-red-800">
+                  Purge Rejected
+                </button>
+              </div>
+            </div>
+
+            {/* Status summary bar */}
+            <div className="flex gap-3 mb-3">
+              {[
+                { key: "PENDING", color: "text-blue-400", bg: "bg-blue-900/30" },
+                { key: "RUNNING", color: "text-cyan-400", bg: "bg-cyan-900/30" },
+                { key: "SUCCESS", color: "text-green-400", bg: "bg-green-900/30" },
+                { key: "FAILED", color: "text-amber-400", bg: "bg-amber-900/30" },
+                { key: "REJECTED", color: "text-red-400", bg: "bg-red-900/30" },
+              ].map(({ key, color, bg }) => {
+                const count = data.queue?.status_counts[key] ?? 0;
+                return (
+                  <div key={key} className={`${bg} rounded-lg px-3 py-2 text-center flex-1`}>
+                    <div className={`text-sm font-bold font-mono ${color}`}>{fmtNum(count)}</div>
+                    <div className="text-[9px] text-gray-500 uppercase tracking-wider">{key}</div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Per-enricher breakdown */}
+            <div className="bg-gray-900 border border-gray-800 rounded-lg overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b border-gray-800 text-gray-500">
+                    <th className="text-left px-3 py-2">Enricher</th>
+                    <th className="text-right px-2 py-2 text-blue-500">Pending</th>
+                    <th className="text-right px-2 py-2 text-cyan-500">Running</th>
+                    <th className="text-right px-2 py-2 text-green-500">Success</th>
+                    <th className="text-right px-2 py-2 text-amber-500">Failed</th>
+                    <th className="text-right px-2 py-2 text-red-500">Rejected</th>
+                    <th className="text-right px-2 py-2">Progress</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {Object.entries(data.queue.enricher_stats).map(([enricher, statuses]) => {
+                    const total = Object.values(statuses).reduce((s, n) => s + n, 0);
+                    const done = (statuses.SUCCESS ?? 0) + (statuses.REJECTED ?? 0);
+                    const pct = total > 0 ? Math.round(done / total * 100) : 0;
+                    return (
+                      <tr key={enricher} className="border-b border-gray-800/50 hover:bg-gray-800/20">
+                        <td className="px-3 py-1.5 font-medium text-gray-300">
+                          {ENRICHER_LABELS[enricher] ?? enricher}
+                        </td>
+                        <td className="text-right px-2 py-1.5 font-mono text-blue-400">{statuses.PENDING ?? 0}</td>
+                        <td className="text-right px-2 py-1.5 font-mono text-cyan-400">{statuses.RUNNING ?? 0}</td>
+                        <td className="text-right px-2 py-1.5 font-mono text-green-400">{statuses.SUCCESS ?? 0}</td>
+                        <td className="text-right px-2 py-1.5 font-mono text-amber-400">{statuses.FAILED ?? 0}</td>
+                        <td className="text-right px-2 py-1.5 font-mono text-red-400">{statuses.REJECTED ?? 0}</td>
+                        <td className="text-right px-2 py-1.5">
+                          <div className="flex items-center justify-end gap-1.5">
+                            <div className="w-14 h-1.5 bg-gray-800 rounded-full overflow-hidden">
+                              <div className="h-full bg-green-500 rounded-full" style={{ width: `${pct}%` }} />
+                            </div>
+                            <span className="text-gray-500 text-[10px] w-7 text-right">{pct}%</span>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Recent failures */}
+            {data.queue.recent_failures.length > 0 && (
+              <div className="mt-3">
+                <h3 className="text-xs text-gray-500 mb-1">Recent Failures</h3>
+                <div className="bg-gray-900 border border-gray-800 rounded-lg overflow-auto max-h-[20vh]">
+                  <table className="w-full text-xs">
+                    <thead className="sticky top-0 bg-gray-900">
+                      <tr className="border-b border-gray-800">
+                        <th className="text-left px-3 py-1.5 text-gray-500">Entity</th>
+                        <th className="text-left px-2 py-1.5 text-gray-500">Enricher</th>
+                        <th className="text-right px-2 py-1.5 text-gray-500">#</th>
+                        <th className="text-left px-3 py-1.5 text-gray-500">Error</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {data.queue.recent_failures.map((f) => (
+                        <tr key={f.job_id} className="border-b border-gray-800/50">
+                          <td className="px-3 py-1 text-gray-400 truncate max-w-[150px]">
+                            {f.entity_name ?? `#${f.entity_id}`}
+                          </td>
+                          <td className="px-2 py-1 text-gray-500">
+                            {ENRICHER_LABELS[f.enricher] ?? f.enricher}
+                          </td>
+                          <td className="text-right px-2 py-1 text-amber-500 font-mono">{f.attempts}</td>
+                          <td className="px-3 py-1 text-red-400/80 truncate max-w-[300px]">{f.error ?? "—"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+          </div>
         )}
 
         {/* ════════════════════════════════════════════════════════

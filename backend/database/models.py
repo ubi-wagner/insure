@@ -244,6 +244,40 @@ class BrokerProfile(Base):
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
 
 
+class JobStatus(str, enum.Enum):
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    SUCCESS = "SUCCESS"
+    FAILED = "FAILED"
+    REJECTED = "REJECTED"  # Permanent failure — moved to rejects bucket
+
+
+class JobQueue(Base):
+    """DB-backed job queue for enrichment pipeline.
+
+    Each row = one enrichment task for one entity + one enricher.
+    Consumer picks PENDING jobs, locks via status=RUNNING + locked_at,
+    marks SUCCESS/FAILED on completion. Queue manager sweeps stale locks.
+    """
+    __tablename__ = "job_queue"
+
+    id = Column(Integer, primary_key=True, index=True)
+    entity_id = Column(Integer, ForeignKey("entities.id"), nullable=False, index=True)
+    enricher = Column(String, nullable=False, index=True)  # e.g. "fema_flood", "dbpr_bulk"
+    status = Column(String, default="PENDING", nullable=False, index=True)
+    priority = Column(Integer, default=0, nullable=False)  # Higher = sooner (cream_score runs last = -1)
+    depends_on = Column(String, nullable=True)  # Enricher that must complete first (e.g. cream_score depends on all)
+    attempts = Column(Integer, default=0, nullable=False)
+    max_attempts = Column(Integer, default=3, nullable=False)
+    last_error = Column(Text, nullable=True)
+    locked_by = Column(String, nullable=True)  # Worker ID that claimed this job
+    locked_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+    entity = relationship("Entity")
+
+
 class ServiceRegistry(Base):
     __tablename__ = "service_registry"
 
