@@ -9,6 +9,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelna
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from database import SessionLocal
 from routes.leads import router as leads_router
 from routes.admin import router as admin_router
 from routes.events import router as events_router, EventLoggingMiddleware
@@ -68,14 +69,40 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Failed to start association worker: {e}")
 
-    # Start continuous enrichment worker (LEAD enrichment)
+    # Start job queue consumer + manager (replaces old enrichment worker)
     try:
-        from agents.enrichment_worker import start_enrichment_worker
-        start_enrichment_worker()
-        logger.info("Enrichment worker started")
-        emit(EventType.HUNTER, "enrichment_start", EventStatus.SUCCESS)
+        from services.job_queue import start_job_consumer, start_queue_manager, produce_jobs_for_all_leads
+        start_job_consumer()
+        start_queue_manager()
+        logger.info("Job consumer + queue manager started")
+        emit(EventType.HUNTER, "job_queue_start", EventStatus.SUCCESS,
+             detail="Job consumer and queue manager running")
+
+        # Backfill: create jobs for any LEADs that don't have queue entries yet
+        def _backfill():
+            import time as _t
+            _t.sleep(10)  # Wait for migrations to settle
+            _db = SessionLocal()
+            try:
+                created = produce_jobs_for_all_leads(_db)
+                if created > 0:
+                    logger.info(f"Backfilled {created} enrichment jobs on startup")
+            except Exception as _e:
+                logger.warning(f"Backfill failed: {_e}")
+            finally:
+                _db.close()
+
+        threading.Thread(target=_backfill, daemon=True).start()
+
     except Exception as e:
-        logger.error(f"Failed to start enrichment worker: {e}")
+        logger.error(f"Failed to start job queue: {e}")
+        # Fallback to old enrichment worker
+        try:
+            from agents.enrichment_worker import start_enrichment_worker
+            start_enrichment_worker()
+            logger.info("Fell back to old enrichment worker")
+        except Exception as e2:
+            logger.error(f"Failed to start enrichment worker fallback: {e2}")
 
     # Start heartbeat thread for api/database/ai_analyzer services
     def _heartbeat_loop():
