@@ -18,6 +18,7 @@ import csv
 import logging
 import os
 import re
+import zipfile
 from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
@@ -71,14 +72,21 @@ def _name_tokens(name: str) -> set[str]:
 # ─── CSV Loading ───
 
 def _find_csv() -> str | None:
-    """Find the sunbiz_corps.csv file. Also looks for timestamped copies."""
+    """Find the sunbiz_corps.csv file.
+
+    Search order:
+      1. Pre-built sunbiz_corps.csv in data/ or filestore/
+      2. Any sunbiz_corps*.csv in the Sunbiz filestore directory
+      3. Raw zip files (corpindata.zip, etc.) — auto-parse into CSV
+    """
     # Check primary locations
     for path in CSV_PATHS:
         if os.path.exists(path):
             return path
 
-    # Check for any sunbiz_corps*.csv in the Sunbiz filestore directory
     sunbiz_dir = os.path.join(BASE_DIR, "filestore", "System Data", "Sunbiz")
+
+    # Check for any sunbiz_corps*.csv in the Sunbiz filestore directory
     if os.path.isdir(sunbiz_dir):
         csvs = sorted(
             [f for f in os.listdir(sunbiz_dir) if f.startswith("sunbiz_corps") and f.endswith(".csv")],
@@ -87,7 +95,69 @@ def _find_csv() -> str | None:
         if csvs:
             return os.path.join(sunbiz_dir, csvs[0])
 
+    # No pre-built CSV found — check for raw zip files and auto-process
+    zip_dirs = [
+        sunbiz_dir,
+        os.path.join(BASE_DIR, "data"),
+        os.path.join(BASE_DIR, "data", "sunbiz_raw"),
+    ]
+    for d in zip_dirs:
+        if not os.path.isdir(d):
+            continue
+        zips = [f for f in os.listdir(d)
+                if f.lower().endswith(".zip") and ("corp" in f.lower() or "sunbiz" in f.lower())]
+        if zips:
+            zip_path = os.path.join(d, sorted(zips, reverse=True)[0])
+            logger.info(f"Found raw Sunbiz zip: {zip_path} — auto-processing...")
+            csv_path = _process_zip_to_csv(zip_path)
+            if csv_path:
+                return csv_path
+
     return None
+
+
+def _process_zip_to_csv(zip_path: str) -> str | None:
+    """Extract a Sunbiz corpindata zip, parse fixed-width records, produce sunbiz_corps.csv."""
+    try:
+        from scripts.download_sunbiz import parse_and_filter, write_csv
+
+        # Extract the largest file from the zip
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            data_files = [n for n in zf.namelist()
+                          if not n.startswith("__") and not n.startswith(".")]
+            if not data_files:
+                logger.warning(f"Zip {zip_path} contains no data files")
+                return None
+            largest = max(data_files, key=lambda n: zf.getinfo(n).file_size)
+            extract_dir = os.path.join(BASE_DIR, "data", "sunbiz_raw")
+            os.makedirs(extract_dir, exist_ok=True)
+            extract_path = os.path.join(extract_dir, largest)
+            if not os.path.exists(extract_path):
+                zf.extract(largest, extract_dir)
+                logger.info(f"Extracted {largest} ({zf.getinfo(largest).file_size:,} bytes)")
+
+        # Parse fixed-width records and filter for associations
+        matches = parse_and_filter(extract_path)
+        if not matches:
+            logger.warning("No matching associations found in Sunbiz data")
+            return None
+
+        # Write CSV to standard location
+        csv_path = os.path.join(BASE_DIR, "data", "sunbiz_corps.csv")
+        write_csv(matches, csv_path)
+
+        # Also copy to filestore for visibility
+        filestore_dir = os.path.join(BASE_DIR, "filestore", "System Data", "Sunbiz")
+        os.makedirs(filestore_dir, exist_ok=True)
+        filestore_csv = os.path.join(filestore_dir, "sunbiz_corps.csv")
+        write_csv(matches, filestore_csv)
+
+        logger.info(f"Auto-processed Sunbiz zip: {len(matches):,} associations -> {csv_path}")
+        return csv_path
+
+    except Exception as e:
+        logger.error(f"Failed to auto-process Sunbiz zip {zip_path}: {e}")
+        return None
 
 
 def _load_csv() -> dict[str, list[dict]]:
