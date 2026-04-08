@@ -41,9 +41,18 @@ const HEAT_COLORS: Record<string, string> = {
   cold: "bg-gray-700 text-gray-400",
 };
 
+// All 35 Florida coastal counties (sorted Atlantic → Keys → Gulf → Panhandle)
 const TARGET_COUNTIES = [
-  "Pasco", "Pinellas", "Hillsborough", "Manatee", "Sarasota",
-  "Charlotte", "Lee", "Collier", "Palm Beach", "Miami-Dade", "Broward",
+  // Atlantic NE → SE
+  "Nassau", "Duval", "St. Johns", "Flagler", "Volusia", "Brevard",
+  "Indian River", "St. Lucie", "Martin", "Palm Beach", "Broward", "Miami-Dade",
+  // Florida Keys
+  "Monroe",
+  // Gulf SW → NW
+  "Collier", "Lee", "Charlotte", "Sarasota", "Manatee", "Hillsborough",
+  "Pinellas", "Pasco", "Hernando", "Citrus", "Levy", "Dixie", "Taylor",
+  "Jefferson", "Wakulla", "Franklin", "Gulf", "Bay", "Walton",
+  "Okaloosa", "Santa Rosa", "Escambia",
 ];
 
 const SORT_OPTIONS = [
