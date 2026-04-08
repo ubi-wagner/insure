@@ -44,12 +44,51 @@ from services.event_bus import EventStatus, EventType, emit
 
 logger = logging.getLogger(__name__)
 
-# DOR county numbers (alphabetical, starting at 11)
+# DOR county numbers (alphabetical, starting at 11).
+# All 35 Florida coastal counties — every county that touches the
+# Atlantic, the Gulf, the Florida Straits, or a major saltwater bay.
 DOR_COUNTIES = {
-    "16": "Broward", "18": "Charlotte", "21": "Collier",
-    "23": "Miami-Dade", "39": "Hillsborough", "46": "Lee",
-    "51": "Manatee", "60": "Palm Beach", "61": "Pasco",
-    "62": "Pinellas", "68": "Sarasota",
+    # Original 11 target counties
+    "16": "Broward",
+    "18": "Charlotte",
+    "21": "Collier",
+    "23": "Miami-Dade",
+    "39": "Hillsborough",
+    "46": "Lee",
+    "51": "Manatee",
+    "60": "Palm Beach",
+    "61": "Pasco",
+    "62": "Pinellas",
+    "68": "Sarasota",
+    # Panhandle Gulf Coast
+    "13": "Bay",            # Panama City, Panama City Beach
+    "27": "Escambia",       # Pensacola
+    "29": "Franklin",       # Apalachicola, St. George Island
+    "33": "Gulf",           # Port St. Joe, Cape San Blas
+    "56": "Okaloosa",       # Destin, Fort Walton Beach
+    "67": "Santa Rosa",     # Navarre Beach, Pensacola Beach
+    "76": "Walton",         # 30A, Miramar Beach, Seaside
+    # Big Bend / Nature Coast Gulf
+    "19": "Citrus",         # Crystal River, Homosassa
+    "25": "Dixie",          # Suwannee, Steinhatchee
+    "37": "Hernando",       # Hernando Beach, Bayport
+    "43": "Jefferson",      # Tiny Apalachee Bay frontage
+    "48": "Levy",           # Cedar Key
+    "72": "Taylor",         # Steinhatchee, Keaton Beach
+    "75": "Wakulla",        # St. Marks, Panacea
+    # NE / Atlantic Coast
+    "26": "Duval",          # Jacksonville Beach
+    "28": "Flagler",        # Palm Coast, Flagler Beach
+    "55": "Nassau",         # Amelia Island, Fernandina Beach
+    "65": "St. Johns",      # St. Augustine, Ponte Vedra
+    # Central / South Atlantic
+    "15": "Brevard",        # Cocoa Beach, Cape Canaveral, Melbourne
+    "41": "Indian River",   # Vero Beach
+    "53": "Martin",         # Stuart, Hutchinson Island
+    "66": "St. Lucie",      # Fort Pierce, Hutchinson Island
+    "74": "Volusia",        # Daytona, New Smyrna Beach
+    # Florida Keys
+    "54": "Monroe",         # Key Largo, Marathon, Key West
 }
 
 # Target DOR use codes for insurance leads
@@ -480,5 +519,100 @@ def get_available_counties() -> list[dict]:
             "sdf_file": os.path.basename(sdf_path) if sdf_path else None,
             "sdf_size": os.path.getsize(sdf_path) if sdf_path else 0,
             "ready": nal_path is not None,
+            "ready_for_auto_seed": nal_path is not None and sdf_path is not None,
         })
     return available
+
+
+# In-memory guard against double-triggering auto-seed when many files arrive
+# in quick succession (e.g. uploading 24 NAL+SDF pairs back-to-back).
+_auto_seed_in_progress: set[str] = set()
+_auto_seed_lock = threading.Lock()
+
+
+def scan_dor_dir_and_auto_seed(min_value: int | None = None) -> dict:
+    """Scan filestore/System Data/DOR/ for new NAL+SDF pairs and trigger seeds.
+
+    A county is auto-seeded only if:
+      1. It has BOTH a NAL file and an SDF file uploaded
+      2. It hasn't been seeded yet (no seed_stats record), OR the existing
+         file is newer than the last seeded timestamp
+      3. It's not already being seeded by another worker
+
+    Each qualifying county runs in its own background thread so the upload
+    request returns immediately.
+
+    Returns a summary of what was triggered.
+    """
+    triggered: list[dict] = []
+    skipped: list[dict] = []
+
+    seed_stats = get_seed_stats()
+    available = get_available_counties()
+
+    for c in available:
+        county_no = c["county_no"]
+        county_name = c["county_name"]
+
+        # Need both files
+        if not c["ready_for_auto_seed"]:
+            continue
+
+        # Already seeded?
+        prior = seed_stats.get(county_no, {})
+        if prior.get("seeded_at"):
+            # Check if the NAL file is newer than the last seed
+            nal_path = _find_nal_file(county_no)
+            try:
+                nal_mtime = os.path.getmtime(nal_path) if nal_path else 0
+                last_seeded_str = prior.get("seeded_at", "")
+                last_seeded_ts = datetime.fromisoformat(last_seeded_str).timestamp() if last_seeded_str else 0
+                if nal_mtime <= last_seeded_ts:
+                    skipped.append({
+                        "county": county_name,
+                        "reason": "already seeded (file not newer)",
+                    })
+                    continue
+            except (ValueError, OSError):
+                pass
+
+        # Already seeding from another upload?
+        with _auto_seed_lock:
+            if county_no in _auto_seed_in_progress:
+                skipped.append({
+                    "county": county_name,
+                    "reason": "auto-seed already in progress",
+                })
+                continue
+            _auto_seed_in_progress.add(county_no)
+
+        # Spin up a background thread for the seed
+        def _run(cno=county_no, cname=county_name):
+            db = SessionLocal()
+            try:
+                logger.info(f"Auto-seed starting for {cname} (DOR {cno})")
+                emit(EventType.HUNTER, "auto_seed", EventStatus.PENDING,
+                     detail=f"Auto-seed {cname}: NAL+SDF detected")
+                result = seed_county(cno, db, min_value=min_value)
+                emit(EventType.HUNTER, "auto_seed", EventStatus.SUCCESS,
+                     detail=f"Auto-seed {cname}: {result.get('created', 0):,} created")
+            except Exception as e:
+                logger.error(f"Auto-seed failed for {cname}: {e}")
+                emit(EventType.HUNTER, "auto_seed", EventStatus.ERROR,
+                     detail=f"Auto-seed {cname}: {str(e)[:200]}")
+            finally:
+                db.close()
+                with _auto_seed_lock:
+                    _auto_seed_in_progress.discard(cno)
+
+        thread = threading.Thread(target=_run, daemon=True, name=f"auto-seed-{county_no}")
+        thread.start()
+
+        triggered.append({
+            "county_no": county_no,
+            "county": county_name,
+            "nal_file": c["nal_file"],
+            "sdf_file": c["sdf_file"],
+        })
+
+    return {"triggered": triggered, "skipped": skipped}

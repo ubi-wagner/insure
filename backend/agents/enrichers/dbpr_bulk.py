@@ -96,14 +96,32 @@ DBPR_CSV_FILES = {
     },
 }
 
-# Map our target counties to CSV regions
+# Map our target counties to their primary DBPR CSV region.
+# The matcher falls back to searching ALL CSVs if the primary misses,
+# so this is just an optimization for the common case.
 COUNTY_TO_REGION = {
+    # Central West (Tampa Bay → SW Florida)
     "Pinellas": "central_west", "Hillsborough": "central_west",
-    "Pasco": "central_west", "Manatee": "central_west",
+    "Pasco": "central_west", "Hernando": "central_west",
+    "Citrus": "central_west", "Manatee": "central_west",
     "Sarasota": "central_west", "Charlotte": "central_west",
     "Lee": "central_west", "Collier": "central_west",
-    "Miami-Dade": "dade_monroe",
+    # Dade/Monroe (Miami-Dade + Florida Keys)
+    "Miami-Dade": "dade_monroe", "Monroe": "dade_monroe",
+    # Central East / SE Atlantic
     "Broward": "central_east", "Palm Beach": "central_east",
+    "Martin": "central_east", "St. Lucie": "central_east",
+    "Indian River": "central_east", "Brevard": "central_east",
+    "Volusia": "central_east",
+    # North Florida (NE Atlantic + Big Bend + Panhandle)
+    "Nassau": "north_florida", "Duval": "north_florida",
+    "St. Johns": "north_florida", "Flagler": "north_florida",
+    "Levy": "north_florida", "Dixie": "north_florida",
+    "Taylor": "north_florida", "Jefferson": "north_florida",
+    "Wakulla": "north_florida", "Franklin": "north_florida",
+    "Gulf": "north_florida", "Bay": "north_florida",
+    "Walton": "north_florida", "Okaloosa": "north_florida",
+    "Santa Rosa": "north_florida", "Escambia": "north_florida",
 }
 
 # In-memory cache of parsed CSV data, keyed by region

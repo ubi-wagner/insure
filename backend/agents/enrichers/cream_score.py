@@ -48,10 +48,36 @@ def _safe_int(val) -> int:
         return 0
 
 
-# Counties with highest wind insurance costs (coastal exposure)
-PREMIUM_COUNTIES = {"Broward", "Palm Beach", "Miami-Dade", "Pinellas", "Lee", "Collier"}
-HIGH_WIND_COUNTIES = {"Broward", "Palm Beach", "Miami-Dade", "Lee", "Charlotte", "Collier"}
-IAN_IMPACT_COUNTIES = {"Lee", "Charlotte", "Collier", "Sarasota"}
+# Counties with highest wind insurance costs — premium markets
+PREMIUM_COUNTIES = {
+    "Broward", "Palm Beach", "Miami-Dade", "Monroe",
+    "Pinellas", "Lee", "Collier", "Sarasota", "Manatee",
+    "Bay", "Walton", "Okaloosa", "Escambia",
+    "Martin", "St. Lucie", "Brevard",
+}
+
+# High-wind exposure (coastal high hazard zones, 140+ mph design wind)
+HIGH_WIND_COUNTIES = {
+    "Broward", "Palm Beach", "Miami-Dade", "Monroe",
+    "Lee", "Charlotte", "Collier",
+    "Bay", "Gulf", "Franklin",
+    "Martin", "St. Lucie", "Brevard",
+}
+
+# Hurricane Ian (2022) damage zone — still in market dislocation
+IAN_IMPACT_COUNTIES = {
+    "Lee", "Charlotte", "Collier", "Sarasota", "DeSoto", "Hardee",
+}
+
+# Hurricane Michael (2018) panhandle damage zone
+MICHAEL_IMPACT_COUNTIES = {
+    "Bay", "Gulf", "Franklin", "Calhoun", "Jackson",
+}
+
+# Hurricane Sally (2020) / Ivan (2004) panhandle damage zone
+SALLY_IMPACT_COUNTIES = {
+    "Escambia", "Santa Rosa", "Okaloosa",
+}
 
 
 @register_enricher("cream_score", requires=[])
@@ -133,6 +159,12 @@ def compute_cream_score(entity: Entity, db: Session) -> bool:
     if county in IAN_IMPACT_COUNTIES:
         score += 3
         factors.append("Hurricane Ian impact zone")
+    elif county in MICHAEL_IMPACT_COUNTIES:
+        score += 3
+        factors.append("Hurricane Michael impact zone")
+    elif county in SALLY_IMPACT_COUNTIES:
+        score += 2
+        factors.append("Hurricane Sally impact zone")
 
     # Premium estimate available → quantified opportunity
     if chars.get("oir_estimated_premium_range"):

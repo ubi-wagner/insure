@@ -98,6 +98,127 @@ COUNTY_GIS_ENDPOINTS: dict[str, dict] = {
         "url": None,
         "info_url": "https://www.collierappraiser.com/",
     },
+    # ── Newly added coastal counties (URL-only fallbacks) ──
+    "Monroe": {
+        "name": "Monroe County Property Appraiser",
+        "url": None,
+        "info_url": "https://www.mcpafl.org/",
+    },
+    "Bay": {
+        "name": "Bay County Property Appraiser",
+        "url": None,
+        "info_url": "https://baypa.net/",
+    },
+    "Walton": {
+        "name": "Walton County Property Appraiser",
+        "url": None,
+        "info_url": "https://www.waltonpa.com/",
+    },
+    "Okaloosa": {
+        "name": "Okaloosa County Property Appraiser",
+        "url": None,
+        "info_url": "https://www.okaloosapa.com/",
+    },
+    "Santa Rosa": {
+        "name": "Santa Rosa County Property Appraiser",
+        "url": None,
+        "info_url": "https://www.srcpa.gov/",
+    },
+    "Escambia": {
+        "name": "Escambia County Property Appraiser",
+        "url": None,
+        "info_url": "https://www.escpa.org/",
+    },
+    "Gulf": {
+        "name": "Gulf County Property Appraiser",
+        "url": None,
+        "info_url": "https://www.gulfpa.com/",
+    },
+    "Franklin": {
+        "name": "Franklin County Property Appraiser",
+        "url": None,
+        "info_url": "https://www.franklincountypa.net/",
+    },
+    "Wakulla": {
+        "name": "Wakulla County Property Appraiser",
+        "url": None,
+        "info_url": "https://www.mywakullapa.com/",
+    },
+    "Jefferson": {
+        "name": "Jefferson County Property Appraiser",
+        "url": None,
+        "info_url": "https://www.jeffersonpa.net/",
+    },
+    "Taylor": {
+        "name": "Taylor County Property Appraiser",
+        "url": None,
+        "info_url": "https://www.taylorcountypa.com/",
+    },
+    "Dixie": {
+        "name": "Dixie County Property Appraiser",
+        "url": None,
+        "info_url": "https://www.dixiepa.com/",
+    },
+    "Levy": {
+        "name": "Levy County Property Appraiser",
+        "url": None,
+        "info_url": "https://www.levypa.com/",
+    },
+    "Citrus": {
+        "name": "Citrus County Property Appraiser",
+        "url": None,
+        "info_url": "https://www.citruspa.org/",
+    },
+    "Hernando": {
+        "name": "Hernando County Property Appraiser",
+        "url": None,
+        "info_url": "https://www.hernandopa-fl.us/",
+    },
+    "Nassau": {
+        "name": "Nassau County Property Appraiser",
+        "url": None,
+        "info_url": "https://www.nassauflpa.com/",
+    },
+    "Duval": {
+        "name": "Duval County Property Appraiser",
+        "url": None,
+        "info_url": "https://paopropertysearch.coj.net/",
+    },
+    "St. Johns": {
+        "name": "St. Johns County Property Appraiser",
+        "url": None,
+        "info_url": "https://www.sjcpa.us/",
+    },
+    "Flagler": {
+        "name": "Flagler County Property Appraiser",
+        "url": None,
+        "info_url": "https://www.flaglerpa.com/",
+    },
+    "Volusia": {
+        "name": "Volusia County Property Appraiser",
+        "url": None,
+        "info_url": "https://vcpa.vcgov.org/",
+    },
+    "Brevard": {
+        "name": "Brevard County Property Appraiser",
+        "url": None,
+        "info_url": "https://www.bcpao.us/",
+    },
+    "Indian River": {
+        "name": "Indian River County Property Appraiser",
+        "url": None,
+        "info_url": "https://www.ircpa.org/",
+    },
+    "St. Lucie": {
+        "name": "St. Lucie County Property Appraiser",
+        "url": None,
+        "info_url": "https://www.paslc.gov/",
+    },
+    "Martin": {
+        "name": "Martin County Property Appraiser",
+        "url": None,
+        "info_url": "https://www.pa.martin.fl.us/",
+    },
 }
 
 

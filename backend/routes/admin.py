@@ -478,6 +478,18 @@ def purge_rejected(db: Session = Depends(get_db)):
     return {"success": True, "purged": count}
 
 
+@router.post("/api/admin/auto-seed-scan")
+def manual_auto_seed_scan(min_value: int = Query(None, description="Min market value override")):
+    """Manually trigger the auto-seed scanner to look for NAL+SDF pairs.
+
+    Useful when files have been uploaded out-of-band (e.g. directly to S3 or
+    via shell) and the upload-triggered scan didn't fire.
+    """
+    from agents.seeder import scan_dor_dir_and_auto_seed
+    result = scan_dor_dir_and_auto_seed(min_value=min_value)
+    return {"success": True, **result}
+
+
 @router.post("/api/admin/queue/force-rerun/{enricher}")
 def force_rerun_enricher(enricher: str, db: Session = Depends(get_db)):
     """Force re-run a specific enricher on all entities.
@@ -906,13 +918,36 @@ async def upload_file(
         except Exception as e:
             logger.warning(f"S3 upload failed: {e}")
 
+    # Auto-seed: if a NAL or SDF file landed in System Data/DOR/, scan
+    # the directory and trigger a background seed for any county that now
+    # has both files and isn't already seeded.
+    auto_seed_result: dict | None = None
+    is_dor_upload = (
+        path.replace("\\", "/").lower().startswith("system data/dor")
+        or filename.upper().startswith(("NAL", "SDF"))
+    )
+    if is_dor_upload:
+        try:
+            from agents.seeder import scan_dor_dir_and_auto_seed
+            auto_seed_result = scan_dor_dir_and_auto_seed()
+            if auto_seed_result.get("triggered"):
+                triggered_names = ", ".join(t["county"] for t in auto_seed_result["triggered"])
+                logger.info(f"Auto-seed triggered for: {triggered_names}")
+                emit(EventType.SYSTEM, "auto_seed_scan", EventStatus.SUCCESS,
+                     detail=f"Triggered: {triggered_names}")
+        except Exception as e:
+            logger.warning(f"Auto-seed scan failed: {e}")
+
     rel = os.path.relpath(filepath, FILE_STORE_ROOT)
-    return {
+    response: dict = {
         "success": True,
         "name": filename,
         "path": rel,
         "size": total_size,
     }
+    if auto_seed_result:
+        response["auto_seed"] = auto_seed_result
+    return response
 
 
 @router.get("/api/files/download")

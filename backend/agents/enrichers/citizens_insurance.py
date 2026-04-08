@@ -31,20 +31,49 @@ from database.models import Entity
 
 logger = logging.getLogger(__name__)
 
-# Counties with highest Citizens penetration (as of 2025 data)
+# Citizens market penetration by county (estimated 2025-2026 data).
+# Coverage: all 35 Florida coastal counties + Florida Keys.
 HIGH_CITIZENS_COUNTIES = {
+    # Original 11 + Monroe
+    "Monroe": 0.45,         # Florida Keys — highest in state
     "Miami-Dade": 0.35,
     "Broward": 0.28,
     "Palm Beach": 0.25,
-    "Monroe": 0.45,
     "Pinellas": 0.22,
     "Lee": 0.20,
     "Collier": 0.18,
+    "Charlotte": 0.16,
     "Sarasota": 0.15,
     "Manatee": 0.14,
     "Hillsborough": 0.12,
-    "Charlotte": 0.16,
     "Pasco": 0.10,
+    # Panhandle (post-Sally / post-Michael — elevated but moderating)
+    "Bay": 0.18,            # Panama City (post-Michael)
+    "Gulf": 0.14,           # Port St. Joe
+    "Walton": 0.14,
+    "Okaloosa": 0.13,
+    "Santa Rosa": 0.13,
+    "Escambia": 0.14,       # Pensacola
+    "Franklin": 0.10,
+    # Big Bend / Nature Coast (low density, lower penetration)
+    "Wakulla": 0.07,
+    "Jefferson": 0.06,
+    "Taylor": 0.07,
+    "Dixie": 0.07,
+    "Levy": 0.07,
+    "Citrus": 0.07,
+    "Hernando": 0.08,
+    # NE Atlantic
+    "Nassau": 0.09,
+    "Duval": 0.08,
+    "St. Johns": 0.10,
+    "Flagler": 0.11,
+    # Central Atlantic
+    "Volusia": 0.12,
+    "Brevard": 0.13,
+    "Indian River": 0.13,
+    "St. Lucie": 0.14,
+    "Martin": 0.16,
 }
 
 # Citizens 2026 commercial property rates per $1,000 of TIV.
