@@ -245,6 +245,32 @@ export default function OpsCenter() {
     } catch (err) { setActionMsg(`Error: ${err}`); }
   }
 
+  const [recalibrating, setRecalibrating] = useState(false);
+  const [confirmRecalibrate, setConfirmRecalibrate] = useState(false);
+  async function recalibrateAll() {
+    setRecalibrating(true);
+    setActionMsg(null);
+    try {
+      const res = await fetch("/api/proxy/admin/recalibrate-all", { method: "POST" });
+      const d = await res.json().catch(() => ({ error: res.statusText }));
+      if (d.error) {
+        setActionMsg(`Error: ${d.error}`);
+      } else {
+        const p1 = d.phase_1_inplace ?? {};
+        const p2 = d.phase_2_requeue ?? {};
+        const fields = (p1.dor_construction_class_patched ?? 0) + (p1.dor_use_description_patched ?? 0);
+        const totalRequeued = Object.values(p2).reduce((s: number, r: unknown) => {
+          const rec = r as { requeued?: number; new_jobs?: number };
+          return s + (rec.requeued ?? 0) + (rec.new_jobs ?? 0);
+        }, 0);
+        setActionMsg(`Recalibrated: patched ${fields.toLocaleString()} fields, requeued ${totalRequeued.toLocaleString()} jobs across ${Object.keys(p2).length} enrichers`);
+      }
+      fetchDashboard();
+    } catch (err) { setActionMsg(`Error: ${err}`); }
+    setRecalibrating(false);
+    setConfirmRecalibrate(false);
+  }
+
   async function queueBackfill() {
     setActionMsg(null);
     try {
@@ -351,6 +377,21 @@ export default function OpsCenter() {
             className="bg-indigo-700 hover:bg-indigo-600 text-white text-xs px-3 py-2 rounded font-medium">
             Pull Sunbiz
           </button>
+          {!confirmRecalibrate ? (
+            <button onClick={() => setConfirmRecalibrate(true)} disabled={recalibrating}
+              className="bg-purple-700 hover:bg-purple-600 disabled:opacity-50 text-white text-xs px-3 py-2 rounded font-medium">
+              Recalibrate All
+            </button>
+          ) : (
+            <div className="flex items-center gap-1.5 bg-purple-950 border border-purple-700 rounded px-3 py-1.5">
+              <span className="text-purple-300 text-xs">Re-run all enrichers?</span>
+              <button onClick={recalibrateAll} disabled={recalibrating}
+                className="bg-purple-600 hover:bg-purple-500 text-white text-[11px] px-2.5 py-1 rounded font-medium">
+                {recalibrating ? "..." : "Yes"}
+              </button>
+              <button onClick={() => setConfirmRecalibrate(false)} className="text-gray-400 text-[11px] px-2 py-1">No</button>
+            </div>
+          )}
           {!confirmReset ? (
             <button onClick={() => setConfirmReset(true)}
               className="bg-red-900/50 hover:bg-red-900 border border-red-800 text-red-300 text-xs px-3 py-2 rounded ml-auto">

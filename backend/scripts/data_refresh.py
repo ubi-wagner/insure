@@ -50,19 +50,8 @@ def _ensure_dirs():
 #          Tax Roll Data Files/NAL/{year}F/{CountyName} {code} Final NAL {year}.zip
 DOR_BASE = "https://floridarevenue.com/property/dataportal/Documents/PTO%20Data%20Portal/Tax%20Roll%20Data%20Files"
 
-TARGET_COUNTIES_DOR = {
-    "16": "Broward",
-    "18": "Charlotte",
-    "21": "Collier",
-    "23": "Miami-Dade",
-    "39": "Hillsborough",
-    "46": "Lee",
-    "51": "Manatee",
-    "60": "Palm Beach",
-    "61": "Pasco",
-    "62": "Pinellas",
-    "68": "Sarasota",
-}
+# County list now lives in agents.seeder.DOR_COUNTIES (35 coastal counties)
+# and is imported lazily inside refresh_dor_nal() to avoid a circular import.
 
 # Current tax roll year
 DOR_YEAR = "2025"
@@ -94,14 +83,21 @@ def _try_nal_url(county_name: str, county_no: str, year: str, roll_type: str = "
 
 
 def refresh_dor_nal() -> dict:
-    """Download DOR NAL + SDF files for all target counties."""
+    """Download DOR NAL + SDF files for all configured coastal counties.
+
+    Pulls the county list from seeder.DOR_COUNTIES so this stays in sync
+    with the rest of the pipeline (35 coastal counties as of expansion).
+    After download, triggers the auto-seed scanner so any newly complete
+    NAL+SDF pairs immediately start seeding.
+    """
     import zipfile
+    from agents.seeder import DOR_COUNTIES, scan_dor_dir_and_auto_seed
 
     _ensure_dirs()
     result = {"source": "dor_nal", "status": "pending", "files": [], "failed": []}
     dor_dir = os.path.join(FILESTORE_DIR, "DOR")
 
-    for county_no, county_name in TARGET_COUNTIES_DOR.items():
+    for county_no, county_name in DOR_COUNTIES.items():
         for roll_type in ["NAL", "SDF"]:
             # Check if we already have this file
             existing = [f for f in os.listdir(dor_dir)
@@ -153,6 +149,21 @@ def refresh_dor_nal() -> dict:
             time.sleep(1)  # Rate limit
 
     result["status"] = "success" if result["files"] else ("partial" if result["failed"] else "success")
+
+    # Auto-seed any county that now has both NAL and SDF.
+    # The scanner is idempotent — counties already seeded with the same
+    # file mtime are skipped.
+    if result["files"]:
+        try:
+            seed_result = scan_dor_dir_and_auto_seed()
+            result["auto_seed"] = seed_result
+            if seed_result.get("triggered"):
+                triggered_names = ", ".join(t["county"] for t in seed_result["triggered"])
+                logger.info(f"Auto-seed triggered after DOR refresh: {triggered_names}")
+        except Exception as e:
+            logger.warning(f"Auto-seed scan failed after DOR refresh: {e}")
+            result["auto_seed_error"] = str(e)[:200]
+
     return result
 
 
