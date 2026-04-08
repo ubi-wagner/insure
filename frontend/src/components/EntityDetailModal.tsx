@@ -77,6 +77,91 @@ const SOURCE_BADGE_COLORS: Record<string, string> = {
   overpass: "bg-blue-900 text-blue-300",
 };
 
+/**
+ * Field provenance — labels every displayed field with its source and confidence kind.
+ *  data     = factual, sourced from an authoritative dataset (DOR NAL, FEMA, county PA, DBPR, Sunbiz)
+ *  estimate = computed/heuristic from real data (TIV, premium ranges, citizens likelihood)
+ *  verified = manually confirmed by broker or sourced from a policy declaration page
+ *  unknown  = source not yet wired
+ */
+type FieldKind = "data" | "estimate" | "verified" | "unknown";
+
+const FIELD_META: Record<string, { src: string; kind: FieldKind }> = {
+  // ── DOR NAL tax roll (factual) ──
+  dor_owner: { src: "DOR", kind: "data" },
+  dor_owner_address: { src: "DOR", kind: "data" },
+  dor_market_value: { src: "DOR", kind: "data" },
+  dor_land_value: { src: "DOR", kind: "data" },
+  dor_use_description: { src: "DOR", kind: "data" },
+  dor_year_built: { src: "DOR", kind: "data" },
+  dor_num_units: { src: "DOR", kind: "data" },
+  dor_num_buildings: { src: "DOR", kind: "data" },
+  dor_living_sqft: { src: "DOR", kind: "data" },
+  dor_land_sqft: { src: "DOR", kind: "data" },
+  dor_last_sale_price: { src: "DOR", kind: "data" },
+  dor_construction_class: { src: "DOR", kind: "data" },
+  dor_parcel_id: { src: "DOR", kind: "data" },
+  // ── FEMA flood (factual) ──
+  flood_zone: { src: "FEMA", kind: "data" },
+  flood_zone_label: { src: "FEMA", kind: "data" },
+  flood_sfha: { src: "FEMA", kind: "data" },
+  flood_risk: { src: "FEMA", kind: "data" },
+  flood_base_elev_ft: { src: "FEMA", kind: "data" },
+  fema_map_url: { src: "FEMA", kind: "data" },
+  // ── County Property Appraiser (factual) ──
+  pa_owner: { src: "County PA", kind: "data" },
+  pa_assessed_value: { src: "County PA", kind: "data" },
+  pa_year_built: { src: "County PA", kind: "data" },
+  pa_building_sqft: { src: "County PA", kind: "data" },
+  pa_parcel_id: { src: "County PA", kind: "data" },
+  pa_lookup_url: { src: "County PA", kind: "data" },
+  // ── DBPR Condo Registry (factual) ──
+  dbpr_condo_name: { src: "DBPR", kind: "data" },
+  dbpr_managing_entity: { src: "DBPR", kind: "data" },
+  dbpr_project_number: { src: "DBPR", kind: "data" },
+  dbpr_status: { src: "DBPR", kind: "data" },
+  dbpr_official_units: { src: "DBPR", kind: "data" },
+  dbpr_operating_revenue: { src: "DBPR", kind: "data" },
+  dbpr_reserve_fund_balance: { src: "DBPR", kind: "data" },
+  // ── CAM License (factual) ──
+  cam_license_number: { src: "DBPR CAM", kind: "data" },
+  cam_license_name: { src: "DBPR CAM", kind: "data" },
+  cam_license_expiration: { src: "DBPR CAM", kind: "data" },
+  cam_license_active: { src: "DBPR CAM", kind: "data" },
+  // ── Sunbiz quarterly extract (factual) ──
+  sunbiz_corp_name: { src: "Sunbiz", kind: "data" },
+  sunbiz_doc_number: { src: "Sunbiz", kind: "data" },
+  sunbiz_filing_status: { src: "Sunbiz", kind: "data" },
+  property_manager: { src: "Sunbiz", kind: "data" },
+  // ── Computed / Heuristic (estimate) ──
+  tiv_estimate: { src: "Calc", kind: "estimate" },
+  units_estimate: { src: "Calc", kind: "estimate" },
+  footprint_sqft: { src: "OSM/PA", kind: "data" },
+  stories: { src: "DOR/Calc", kind: "estimate" },
+  building_type: { src: "DOR", kind: "data" },
+  year_built: { src: "DOR/PA", kind: "data" },
+  construction_class: { src: "DOR", kind: "data" },
+  // ── Citizens heuristic (estimate, never verified) ──
+  citizens_likelihood: { src: "Heuristic", kind: "estimate" },
+  citizens_swap_opportunity: { src: "Heuristic", kind: "estimate" },
+  citizens_estimated_premium: { src: "Heuristic", kind: "estimate" },
+  citizens_premium_display: { src: "Heuristic", kind: "estimate" },
+  citizens_candidate: { src: "Heuristic", kind: "estimate" },
+  citizens_risk_factors: { src: "Heuristic", kind: "estimate" },
+  on_citizens: { src: "Dec Page", kind: "verified" },
+  // ── OIR market (estimate) ──
+  oir_estimated_premium_range: { src: "OIR Calc", kind: "estimate" },
+  oir_rate_per_thousand: { src: "OIR Calc", kind: "estimate" },
+  oir_carrier_options: { src: "OIR Calc", kind: "estimate" },
+};
+
+const KIND_BADGE: Record<FieldKind, string> = {
+  data: "bg-green-900/40 text-green-400 border-green-800/60",
+  estimate: "bg-amber-900/40 text-amber-400 border-amber-800/60",
+  verified: "bg-blue-900/40 text-blue-400 border-blue-800/60",
+  unknown: "bg-gray-800 text-gray-500 border-gray-700",
+};
+
 /** Fields rendered in dedicated sections -- excluded from the catch-all Intelligence grid. */
 const KNOWN_FIELDS = new Set([
   "emails", "osm_tags", "osm_id",
@@ -136,20 +221,43 @@ function safeNum(val: unknown): string {
 /*  Sub-components                                                     */
 /* ------------------------------------------------------------------ */
 
-/** Single key-value row used inside DataSection cards. Returns null when value is empty. */
-function DataRow({ label, value, href }: { label: string; value: unknown; href?: string }) {
+/** Single key-value row used inside DataSection cards. Returns null when value is empty.
+ *  When `field` is provided, looks up FIELD_META to render a small source/kind badge.
+ */
+function DataRow({
+  label,
+  value,
+  href,
+  field,
+}: {
+  label: string;
+  value: unknown;
+  href?: string;
+  field?: string;
+}) {
   if (value === null || value === undefined || value === "" || value === 0) return null;
+  const meta = field ? FIELD_META[field] : undefined;
   return (
-    <div className="flex justify-between py-1 border-b border-gray-800/50 last:border-0">
+    <div className="flex justify-between items-center py-1 border-b border-gray-800/50 last:border-0 gap-2">
       <span className="text-gray-500 text-xs shrink-0">{label}</span>
-      {href ? (
-        <a href={String(href)} target="_blank" rel="noopener noreferrer"
-          className="text-blue-400 text-xs hover:underline truncate ml-2 max-w-[220px]">
-          {String(value)}
-        </a>
-      ) : (
-        <span className="text-white text-xs font-medium truncate ml-2 max-w-[220px]">{String(value)}</span>
-      )}
+      <div className="flex items-center gap-1.5 min-w-0">
+        {href ? (
+          <a href={String(href)} target="_blank" rel="noopener noreferrer"
+            className="text-blue-400 text-xs hover:underline truncate max-w-[180px]">
+            {String(value)}
+          </a>
+        ) : (
+          <span className="text-white text-xs font-medium truncate max-w-[180px]">{String(value)}</span>
+        )}
+        {meta && (
+          <span
+            title={`${meta.src} — ${meta.kind}`}
+            className={`text-[8px] uppercase tracking-wider px-1 py-px rounded border shrink-0 ${KIND_BADGE[meta.kind]}`}
+          >
+            {meta.kind === "data" ? "data" : meta.kind === "estimate" ? "est" : meta.kind === "verified" ? "verif" : "?"}
+          </span>
+        )}
+      </div>
     </div>
   );
 }
@@ -391,80 +499,91 @@ export default function EntityDetailModal({
         {/* ============================================================ */}
         {lead && tab === "overview" && (
           <>
+            {/* Field provenance legend */}
+            <div className="flex items-center gap-2 mb-3 text-[9px] text-gray-600">
+              <span>Provenance:</span>
+              <span className={`px-1 py-px rounded border ${KIND_BADGE.data}`}>data</span>
+              <span className="text-gray-600">factual</span>
+              <span className={`px-1 py-px rounded border ${KIND_BADGE.estimate}`}>est</span>
+              <span className="text-gray-600">heuristic</span>
+              <span className={`px-1 py-px rounded border ${KIND_BADGE.verified}`}>verif</span>
+              <span className="text-gray-600">confirmed</span>
+            </div>
+
             {/* Building Profile */}
             <DataSection title="Building Profile">
-              <DataRow label="Construction" value={chars.construction_class ?? chars.dor_construction_class} />
-              <DataRow label="Stories" value={chars.stories} />
-              <DataRow label="Building Type" value={chars.building_type} />
-              <DataRow label="Year Built" value={chars.year_built ?? chars.dor_year_built} />
-              <DataRow label="Units" value={chars.units_estimate ?? chars.dor_num_units} />
-              <DataRow label="Living Area" value={chars.dor_living_sqft ? `${safeNum(chars.dor_living_sqft)} sqft` : null} />
-              <DataRow label="Footprint" value={chars.footprint_sqft ? `${safeNum(chars.footprint_sqft)} sqft` : null} />
-              <DataRow label="Est. TIV" value={chars.tiv_estimate ? `$${safeNum(chars.tiv_estimate)}` : null} />
+              <DataRow field="construction_class" label="Construction" value={chars.construction_class ?? chars.dor_construction_class} />
+              <DataRow field="stories" label="Stories" value={chars.stories} />
+              <DataRow field="building_type" label="Building Type" value={chars.building_type} />
+              <DataRow field="year_built" label="Year Built" value={chars.year_built ?? chars.dor_year_built} />
+              <DataRow field="units_estimate" label="Units" value={chars.units_estimate ?? chars.dor_num_units} />
+              <DataRow field="dor_living_sqft" label="Living Area" value={chars.dor_living_sqft ? `${safeNum(chars.dor_living_sqft)} sqft` : null} />
+              <DataRow field="footprint_sqft" label="Footprint" value={chars.footprint_sqft ? `${safeNum(chars.footprint_sqft)} sqft` : null} />
+              <DataRow field="tiv_estimate" label="Est. TIV" value={chars.tiv_estimate ? `$${safeNum(chars.tiv_estimate)}` : null} />
             </DataSection>
 
             {/* Flood & Risk */}
             <DataSection title="Flood & Risk">
-              <DataRow label="FEMA Zone" value={chars.flood_zone_label || chars.flood_zone} />
-              <DataRow label="SFHA" value={
+              <DataRow field="flood_zone" label="FEMA Zone" value={chars.flood_zone_label || chars.flood_zone} />
+              <DataRow field="flood_sfha" label="SFHA" value={
                 chars.flood_sfha === true ? "Yes \u2014 flood insurance required" :
                 chars.flood_sfha === false ? "No" : null
               } />
-              <DataRow label="Risk Level" value={chars.flood_risk} />
-              <DataRow label="Base Elevation" value={chars.flood_base_elev_ft ? `${chars.flood_base_elev_ft} ft` : null} />
-              <DataRow label="FEMA Map" value={chars.fema_map_url ? "View on FEMA MSC" : null} href={typeof chars.fema_map_url === "string" ? chars.fema_map_url : undefined} />
+              <DataRow field="flood_risk" label="Risk Level" value={chars.flood_risk} />
+              <DataRow field="flood_base_elev_ft" label="Base Elevation" value={chars.flood_base_elev_ft ? `${chars.flood_base_elev_ft} ft` : null} />
+              <DataRow field="fema_map_url" label="FEMA Map" value={chars.fema_map_url ? "View on FEMA MSC" : null} href={typeof chars.fema_map_url === "string" ? chars.fema_map_url : undefined} />
             </DataSection>
 
             {/* Property Appraiser */}
             <DataSection title="Property Appraiser">
-              <DataRow label="Lookup" value={chars.pa_lookup_url ? "View on PA Site" : null} href={typeof chars.pa_lookup_url === "string" ? chars.pa_lookup_url : undefined} />
-              <DataRow label="Owner" value={chars.pa_owner} />
-              <DataRow label="Assessed Value" value={chars.pa_assessed_value ? `$${safeNum(chars.pa_assessed_value)}` : null} />
-              <DataRow label="Parcel ID" value={chars.pa_parcel_id} />
-              <DataRow label="Year Built (PA)" value={chars.pa_year_built} />
-              <DataRow label="Building Sqft" value={chars.pa_building_sqft ? safeNum(chars.pa_building_sqft) : null} />
+              <DataRow field="pa_lookup_url" label="Lookup" value={chars.pa_lookup_url ? "View on PA Site" : null} href={typeof chars.pa_lookup_url === "string" ? chars.pa_lookup_url : undefined} />
+              <DataRow field="pa_owner" label="Owner" value={chars.pa_owner} />
+              <DataRow field="pa_assessed_value" label="Assessed Value" value={chars.pa_assessed_value ? `$${safeNum(chars.pa_assessed_value)}` : null} />
+              <DataRow field="pa_parcel_id" label="Parcel ID" value={chars.pa_parcel_id} />
+              <DataRow field="pa_year_built" label="Year Built (PA)" value={chars.pa_year_built} />
+              <DataRow field="pa_building_sqft" label="Building Sqft" value={chars.pa_building_sqft ? safeNum(chars.pa_building_sqft) : null} />
             </DataSection>
 
             {/* DOR Tax Roll */}
             <DataSection title="DOR Tax Roll">
-              <DataRow label="Owner" value={chars.dor_owner} />
-              <DataRow label="Owner Address" value={chars.dor_owner_address} />
-              <DataRow label="Market Value" value={chars.dor_market_value ? `$${safeNum(chars.dor_market_value)}` : null} />
-              <DataRow label="Land Value" value={chars.dor_land_value ? `$${safeNum(chars.dor_land_value)}` : null} />
-              <DataRow label="Use Type" value={chars.dor_use_description} />
-              <DataRow label="Units" value={chars.dor_num_units} />
-              <DataRow label="Buildings" value={chars.dor_num_buildings} />
-              <DataRow label="Living Area" value={chars.dor_living_sqft ? `${safeNum(chars.dor_living_sqft)} sqft` : null} />
-              <DataRow label="Land Sqft" value={chars.dor_land_sqft ? `${safeNum(chars.dor_land_sqft)} sqft` : null} />
-              <DataRow label="Last Sale" value={
+              <DataRow field="dor_owner" label="Owner" value={chars.dor_owner} />
+              <DataRow field="dor_owner_address" label="Owner Address" value={chars.dor_owner_address} />
+              <DataRow field="dor_market_value" label="Market Value" value={chars.dor_market_value ? `$${safeNum(chars.dor_market_value)}` : null} />
+              <DataRow field="dor_land_value" label="Land Value" value={chars.dor_land_value ? `$${safeNum(chars.dor_land_value)}` : null} />
+              <DataRow field="dor_use_description" label="Use Type" value={chars.dor_use_description} />
+              <DataRow field="dor_num_units" label="Units" value={chars.dor_num_units} />
+              <DataRow field="dor_num_buildings" label="Buildings" value={chars.dor_num_buildings} />
+              <DataRow field="dor_living_sqft" label="Living Area" value={chars.dor_living_sqft ? `${safeNum(chars.dor_living_sqft)} sqft` : null} />
+              <DataRow field="dor_land_sqft" label="Land Sqft" value={chars.dor_land_sqft ? `${safeNum(chars.dor_land_sqft)} sqft` : null} />
+              <DataRow field="dor_last_sale_price" label="Last Sale" value={
                 chars.dor_last_sale_price
                   ? `$${safeNum(chars.dor_last_sale_price)}${chars.dor_last_sale_date ? ` (${String(chars.dor_last_sale_date)})` : ""}`
                   : null
               } />
-              <DataRow label="Parcel ID" value={chars.dor_parcel_id} />
+              <DataRow field="dor_parcel_id" label="Parcel ID" value={chars.dor_parcel_id} />
             </DataSection>
 
             {/* DBPR Condo */}
             <DataSection title="DBPR Condo Registry">
-              <DataRow label="Condo Name" value={chars.dbpr_condo_name} />
-              <DataRow label="Managing Entity" value={chars.dbpr_managing_entity} />
-              <DataRow label="Project #" value={chars.dbpr_project_number} />
-              <DataRow label="Status" value={chars.dbpr_status} />
-              <DataRow label="Official Units" value={chars.dbpr_official_units} />
-              <DataRow label="Operating Revenue" value={chars.dbpr_operating_revenue} />
-              <DataRow label="Reserve Fund" value={chars.dbpr_reserve_fund_balance} />
+              <DataRow field="dbpr_condo_name" label="Condo Name" value={chars.dbpr_condo_name} />
+              <DataRow field="dbpr_managing_entity" label="Managing Entity" value={chars.dbpr_managing_entity} />
+              <DataRow field="dbpr_project_number" label="Project #" value={chars.dbpr_project_number} />
+              <DataRow field="dbpr_status" label="Status" value={chars.dbpr_status} />
+              <DataRow field="dbpr_official_units" label="Official Units" value={chars.dbpr_official_units} />
+              <DataRow field="dbpr_operating_revenue" label="Operating Revenue" value={chars.dbpr_operating_revenue} />
+              <DataRow field="dbpr_reserve_fund_balance" label="Reserve Fund" value={chars.dbpr_reserve_fund_balance} />
             </DataSection>
 
             {/* CAM License */}
             <DataSection title="CAM License">
-              <DataRow label="License #" value={chars.cam_license_number} />
-              <DataRow label="Name" value={chars.cam_license_name} />
-              <DataRow label="Expires" value={
+              <DataRow field="cam_license_number" label="License #" value={chars.cam_license_number} />
+              <DataRow field="cam_license_name" label="Name" value={chars.cam_license_name} />
+              <DataRow field="cam_license_expiration" label="Expires" value={
                 chars.cam_license_expiration
                   ? `${String(chars.cam_license_expiration)} ${chars.cam_license_active ? "(active)" : "(EXPIRED)"}`
                   : null
               } />
-              <DataRow label="Active" value={
+              <DataRow field="cam_license_active" label="Active" value={
                 chars.cam_license_active === true ? "Yes" :
                 chars.cam_license_active === false ? "EXPIRED" : null
               } />
@@ -477,10 +596,10 @@ export default function EntityDetailModal({
 
             {/* Sunbiz */}
             <DataSection title="Association (Sunbiz)">
-              <DataRow label="Corp Name" value={chars.sunbiz_corp_name} />
-              <DataRow label="Filing Status" value={chars.sunbiz_filing_status} />
-              <DataRow label="Registered Agent" value={chars.property_manager} />
-              <DataRow label="Doc #" value={chars.sunbiz_doc_number} />
+              <DataRow field="sunbiz_corp_name" label="Corp Name" value={chars.sunbiz_corp_name} />
+              <DataRow field="sunbiz_filing_status" label="Filing Status" value={chars.sunbiz_filing_status} />
+              <DataRow field="property_manager" label="Registered Agent" value={chars.property_manager} />
+              <DataRow field="sunbiz_doc_number" label="Doc #" value={chars.sunbiz_doc_number} />
               <DataRow
                 label="Lookup"
                 value={(chars.sunbiz_detail_url || chars.sunbiz_search_url) ? "View on Sunbiz" : null}
@@ -490,20 +609,20 @@ export default function EntityDetailModal({
 
             {/* Citizens Insurance */}
             <DataSection title="Citizens Insurance">
-              <DataRow label="Likelihood" value={chars.citizens_likelihood} />
-              <DataRow label="Swap Opportunity" value={chars.citizens_swap_opportunity} />
-              <DataRow label="Est. Premium" value={chars.citizens_premium_display || (chars.citizens_estimated_premium ? fmt(Number(chars.citizens_estimated_premium)) : null)} />
-              <DataRow label="Candidate" value={
+              <DataRow field="citizens_likelihood" label="Likelihood" value={chars.citizens_likelihood} />
+              <DataRow field="citizens_swap_opportunity" label="Swap Opportunity" value={chars.citizens_swap_opportunity} />
+              <DataRow field="citizens_estimated_premium" label="Est. Premium" value={chars.citizens_premium_display || (chars.citizens_estimated_premium ? fmt(Number(chars.citizens_estimated_premium)) : null)} />
+              <DataRow field="citizens_candidate" label="Candidate" value={
                 chars.citizens_candidate === true ? `Yes (${chars.citizens_likelihood_tier ?? "candidate"})` :
                 chars.citizens_candidate === false ? "Unlikely" : null
               } />
-              <DataRow label="Confirmed" value={
+              <DataRow field="on_citizens" label="Confirmed" value={
                 chars.on_citizens === true ? "Yes — confirmed policy" : null
               } />
-              <DataRow label="Risk Factors" value={
+              <DataRow field="citizens_risk_factors" label="Risk Factors" value={
                 chars.citizens_risk_factors
                   ? (Array.isArray(chars.citizens_risk_factors)
-                      ? (Array.isArray(chars.citizens_risk_factors) ? chars.citizens_risk_factors.map(String).join(", ") : String(chars.citizens_risk_factors))
+                      ? chars.citizens_risk_factors.map(String).join(", ")
                       : String(chars.citizens_risk_factors))
                   : null
               } />

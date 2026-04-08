@@ -47,14 +47,16 @@ HIGH_CITIZENS_COUNTIES = {
     "Pasco": 0.10,
 }
 
-# Citizens 2026 average premium by construction/location
-CITIZENS_RATE_ESTIMATES = {
-    "coastal_masonry": 8500,
-    "coastal_frame": 12000,
-    "coastal_fire_resistive": 6500,
-    "inland_masonry": 4500,
-    "inland_frame": 6500,
-    "inland_fire_resistive": 3500,
+# Citizens 2026 commercial property rates per $1,000 of TIV.
+# Citizens runs ~30-50% above the open market rate as it's the insurer of
+# last resort. These reflect typical Florida commercial residential rates.
+CITIZENS_RATE_PER_1000 = {
+    "coastal_masonry": 9.5,
+    "coastal_frame": 14.0,
+    "coastal_fire_resistive": 7.5,
+    "inland_masonry": 5.0,
+    "inland_frame": 7.5,
+    "inland_fire_resistive": 4.0,
 }
 
 
@@ -121,7 +123,7 @@ def _estimate_citizens_likelihood(entity: Entity) -> dict:
         score += 10
         factors.append(f"Large association ({int(units)} units)")
 
-    # Estimate premium if on Citizens
+    # Estimate premium if on Citizens — rate-per-$1000-TIV model
     is_coastal = flood_risk in ("extreme", "high", "moderate_high")
     location = "coastal" if is_coastal else "inland"
     if "frame" in const_class:
@@ -131,10 +133,10 @@ def _estimate_citizens_likelihood(entity: Entity) -> dict:
     else:
         rate_key = f"{location}_masonry"
 
-    rate_per_100k = CITIZENS_RATE_ESTIMATES.get(rate_key, 5000)
+    rate_per_1000 = CITIZENS_RATE_PER_1000.get(rate_key, 6.0)
     estimated_premium = None
     if tiv and isinstance(tiv, (int, float)) and tiv > 0:
-        estimated_premium = int(tiv / 100_000 * rate_per_100k)
+        estimated_premium = int(tiv * rate_per_1000 / 1000)
 
     # Tier based on score — descriptive, not asserting actual status
     likelihood = min(score, 100)
