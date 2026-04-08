@@ -39,12 +39,14 @@ ENRICHER_CHAIN = [
     {"enricher": "property_appraiser",  "priority": 10, "depends_on": None},
     {"enricher": "dbpr_bulk",           "priority": 10, "depends_on": None},
     {"enricher": "dbpr_payments",       "priority": 8,  "depends_on": "dbpr_bulk"},
+    {"enricher": "dbpr_kfi",            "priority": 8,  "depends_on": "dbpr_bulk"},
     {"enricher": "dbpr_sirs",           "priority": 8,  "depends_on": "dbpr_bulk"},
     {"enricher": "dbpr_building",       "priority": 8,  "depends_on": "dbpr_bulk"},
+    {"enricher": "dbpr_noic",           "priority": 7,  "depends_on": None},
     {"enricher": "cam_license",         "priority": 7,  "depends_on": None},
     {"enricher": "sunbiz_bulk",         "priority": 9,  "depends_on": None},
     {"enricher": "dor_nal",             "priority": 6,  "depends_on": None},
-    {"enricher": "citizens_insurance",  "priority": 5,  "depends_on": None},
+    {"enricher": "citizens_insurance",  "priority": 4,  "depends_on": "oir_market"},
     {"enricher": "fdot_parcels",        "priority": 4,  "depends_on": None},
     {"enricher": "oir_market",          "priority": 5,  "depends_on": None},
     {"enricher": "cream_score",         "priority": -1, "depends_on": "__all__"},  # Runs last
@@ -380,13 +382,17 @@ def retry_failed_jobs(db: Session) -> int:
 
 
 def get_queue_stats(db: Session) -> dict:
-    """Get current queue statistics for the Ops dashboard."""
+    """Get current queue statistics for the Ops dashboard.
+
+    Returns aggregate counts per-enricher AND per-enricher-per-county
+    so the Ops page can expand each enricher row into a county breakdown.
+    """
     rows = db.execute(sa.text(
         "SELECT status, COUNT(*) as cnt FROM job_queue GROUP BY status"
     )).fetchall()
     status_counts = {row[0]: row[1] for row in rows}
 
-    # Per-enricher breakdown
+    # Per-enricher aggregate
     enricher_rows = db.execute(sa.text(
         "SELECT enricher, status, COUNT(*) as cnt FROM job_queue "
         "GROUP BY enricher, status ORDER BY enricher"
@@ -394,6 +400,18 @@ def get_queue_stats(db: Session) -> dict:
     enricher_stats: dict[str, dict[str, int]] = {}
     for row in enricher_rows:
         enricher_stats.setdefault(row[0], {})[row[1]] = row[2]
+
+    # Per-enricher per-county breakdown (single query for efficiency)
+    by_county_rows = db.execute(sa.text(
+        "SELECT jq.enricher, e.county, jq.status, COUNT(*) as cnt "
+        "FROM job_queue jq "
+        "LEFT JOIN entities e ON jq.entity_id = e.id "
+        "WHERE e.county IS NOT NULL "
+        "GROUP BY jq.enricher, e.county, jq.status"
+    )).fetchall()
+    enricher_by_county: dict[str, dict[str, dict[str, int]]] = {}
+    for enricher, county, status, cnt in by_county_rows:
+        enricher_by_county.setdefault(enricher, {}).setdefault(county, {})[status] = cnt
 
     # Recent failures
     recent_failures = db.execute(sa.text(
@@ -414,6 +432,7 @@ def get_queue_stats(db: Session) -> dict:
         "total_jobs": total,
         "status_counts": status_counts,
         "enricher_stats": enricher_stats,
+        "enricher_by_county": enricher_by_county,
         "recent_failures": failures,
         "worker_id": WORKER_ID,
     }

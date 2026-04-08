@@ -228,8 +228,10 @@ def _load_enrichers():
         "property_appraiser",   # County PA GIS lookup + direct parcel links
         "dbpr_bulk",            # DBPR condo CSV (managing entity, project number)
         "dbpr_payments",        # DBPR payment history (delinquency)
+        "dbpr_kfi",             # DBPR Key Financial Indicators (revenue, expenses, fund balance)
         "dbpr_sirs",            # DBPR SIRS compliance (structural reserve studies)
         "dbpr_building",        # DBPR building reports (stories, units, assessments)
+        "dbpr_noic",            # DBPR Notice of Intended Conversion (newly converted condos)
         "cam_license",          # CAM license cross-reference
         "sunbiz_bulk",          # Sunbiz bulk data (quarterly corporate extract)
         "dor_nal",              # DOR NAL cross-reference (supplemental)

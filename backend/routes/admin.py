@@ -398,94 +398,38 @@ def get_enrich_status(db: Session = Depends(get_db)):
 
 @router.get("/api/admin/ops-dashboard")
 def ops_dashboard(db: Session = Depends(get_db)):
-    """Single endpoint for the unified Ops page — county funnel, services, enrichment coverage."""
-    from agents.seeder import get_seed_stats, get_available_counties, DOR_COUNTIES
+    """Compact Ops dashboard — global stage counts, services, available counties for seeding,
+    and the job queue (which is the single source of truth for per-enricher pipeline state)."""
+    from agents.seeder import get_available_counties, get_seed_stats
     from services.registry import get_all_statuses
 
-    # -- Seed stats from last run --
-    seed_stats = get_seed_stats()
+    # Available counties — only for the seed dropdown / NAL readiness check
     available_counties = get_available_counties()
-
-    # -- Per-county entity counts by stage --
-    county_stage_rows = db.execute(sa.text(
-        "SELECT county, pipeline_stage, COUNT(*) as cnt FROM entities "
-        "WHERE county IS NOT NULL GROUP BY county, pipeline_stage"
-    )).fetchall()
-    county_stages: dict[str, dict[str, int]] = {}
-    for row in county_stage_rows:
-        county_stages.setdefault(row[0], {})[row[1]] = row[2]
-
-    # -- Per-county enrichment_status counts --
-    county_enrich_rows = db.execute(sa.text(
-        "SELECT county, enrichment_status, COUNT(*) as cnt FROM entities "
-        "WHERE county IS NOT NULL AND pipeline_stage != 'ARCHIVED' "
-        "GROUP BY county, enrichment_status"
-    )).fetchall()
-    county_enrich: dict[str, dict[str, int]] = {}
-    for row in county_enrich_rows:
-        county_enrich.setdefault(row[0], {})[row[1]] = row[2]
-
-    # -- Build county rows --
+    seed_stats = get_seed_stats()
     counties = []
     for c in available_counties:
         cno = c["county_no"]
-        cname = c["county_name"]
         ss = seed_stats.get(cno, {})
-        stages = county_stages.get(cname, {})
-        enrich = county_enrich.get(cname, {})
-        total_entities = sum(stages.values())
-        enriched = enrich.get("complete", 0)
-
         counties.append({
             "county_no": cno,
-            "county": cname,
+            "county": c["county_name"],
             "nal_ready": c["ready"],
-            "nal_file": c.get("nal_file"),
-            # Seed stats from last run
             "nal_total": ss.get("total_parcels"),
             "type_passed": ss.get("type_passed"),
             "value_filtered": ss.get("filtered"),
-            "min_value_used": ss.get("min_value_used"),
             "last_seeded": ss.get("seeded_at"),
-            # Live DB counts
-            "total_entities": total_entities,
-            "stages": {
-                "TARGET": stages.get("TARGET", 0),
-                "LEAD": stages.get("LEAD", 0),
-                "OPPORTUNITY": stages.get("OPPORTUNITY", 0),
-                "CUSTOMER": stages.get("CUSTOMER", 0),
-                "ARCHIVED": stages.get("ARCHIVED", 0),
-            },
-            "enriched": enriched,
-            "enriched_pct": round(enriched / total_entities * 100) if total_entities > 0 else 0,
         })
 
-    # -- Global stage counts --
+    # Global stage counts (for the headline number)
     stage_counts = {}
     for stage in ["TARGET", "LEAD", "OPPORTUNITY", "CUSTOMER", "ARCHIVED"]:
         stage_counts[stage] = db.query(Entity).filter(Entity.pipeline_stage == stage).count()
-
-    # -- Enrichment coverage (global) --
-    enricher_names = [
-        "dor_nal", "fema_flood", "property_appraiser", "dbpr_bulk", "dbpr_payments",
-        "cam_license", "sunbiz", "citizens_insurance", "fdot_parcels", "oir_market", "cream_score",
-    ]
     total_active = sum(v for k, v in stage_counts.items() if k != "ARCHIVED")
-    coverage = {}
-    for name in enricher_names:
-        count = db.execute(sa.text(
-            f"SELECT COUNT(*) FROM entities WHERE enrichment_sources ? :name "
-            f"AND pipeline_stage != 'ARCHIVED'"
-        ), {"name": name}).scalar() or 0
-        coverage[name] = {
-            "count": count,
-            "pct": round(count / total_active * 100) if total_active > 0 else 0,
-        }
 
-    # -- Services --
+    # Services
     services = get_all_statuses()
 
-    # -- Job Queue Stats --
+    # Job Queue — per-enricher and per-enricher-per-county breakdowns
     queue_stats = {}
     try:
         from services.job_queue import get_queue_stats
@@ -497,7 +441,6 @@ def ops_dashboard(db: Session = Depends(get_db)):
         "counties": counties,
         "stage_counts": stage_counts,
         "total_active": total_active,
-        "coverage": coverage,
         "services": services,
         "queue": queue_stats,
     }
@@ -533,6 +476,297 @@ def purge_rejected(db: Session = Depends(get_db)):
     count = db.query(JobQueue).filter(JobQueue.status == "REJECTED").delete()
     db.commit()
     return {"success": True, "purged": count}
+
+
+@router.post("/api/admin/auto-seed-scan")
+def manual_auto_seed_scan(min_value: int = Query(None, description="Min market value override")):
+    """Manually trigger the auto-seed scanner to look for NAL+SDF pairs.
+
+    Useful when files have been uploaded out-of-band (e.g. directly to S3 or
+    via shell) and the upload-triggered scan didn't fire.
+    """
+    from agents.seeder import scan_dor_dir_and_auto_seed
+    result = scan_dor_dir_and_auto_seed(min_value=min_value)
+    return {"success": True, **result}
+
+
+@router.post("/api/admin/recalibrate-all")
+def recalibrate_all(db: Session = Depends(get_db)):
+    """Apply all post-seed corrections to existing entities and re-run enrichers.
+
+    Two phases:
+
+    1. IN-PLACE FIX (no DB wipe needed):
+       - Map raw DOR construction codes ('1'..'6') to readable labels
+         on entities seeded before the mapping was added
+       - Map raw DOR use codes ('003', '004', etc.) to friendly descriptions
+         on entities seeded before label expansion
+
+    2. FORCE RE-RUN ENRICHERS:
+       - Clear enrichment_sources entries for every enricher whose logic
+         has changed (Sunbiz field positions, Citizens math, DBPR address
+         matching, KFI/NOIC new enrichers, cream score new signals)
+       - Reset / create job_queue entries so the consumer picks them up
+
+    Returns a summary of what was patched and how many jobs were requeued.
+    """
+    from database.models import Entity, JobQueue
+    from agents.seeder import DOR_CONSTRUCTION_CLASSES, TARGET_USE_CODES
+
+    summary: dict = {
+        "phase_1_inplace": {},
+        "phase_2_requeue": {},
+    }
+
+    # ── Phase 1: in-place characteristic patches ──
+
+    # 1a. DOR construction class numeric → label
+    construction_patched = 0
+    for raw_code, label in DOR_CONSTRUCTION_CLASSES.items():
+        # Only update entities where the raw numeric code is currently stored
+        result = db.execute(sa.text("""
+            UPDATE entities
+            SET characteristics = jsonb_set(
+                jsonb_set(
+                    characteristics,
+                    '{dor_construction_class_raw}',
+                    to_jsonb(:raw),
+                    true
+                ),
+                '{dor_construction_class}',
+                to_jsonb(:label),
+                true
+            )
+            WHERE characteristics->>'dor_construction_class' = :raw
+        """), {"raw": raw_code, "label": label})
+        construction_patched += result.rowcount or 0
+    summary["phase_1_inplace"]["dor_construction_class_patched"] = construction_patched
+
+    # 1b. DOR use description "Code XXX" → friendly label
+    use_desc_patched = 0
+    for raw_code, label in TARGET_USE_CODES.items():
+        result = db.execute(sa.text("""
+            UPDATE entities
+            SET characteristics = jsonb_set(
+                characteristics,
+                '{dor_use_description}',
+                to_jsonb(:label),
+                true
+            )
+            WHERE characteristics->>'dor_use_code' = :raw
+              AND characteristics->>'dor_use_description' LIKE 'Code %'
+        """), {"raw": raw_code, "label": label})
+        use_desc_patched += result.rowcount or 0
+    summary["phase_1_inplace"]["dor_use_description_patched"] = use_desc_patched
+
+    db.commit()
+
+    # ── Phase 2: force-rerun enrichers whose logic changed ──
+
+    # Order matters because of dependencies:
+    #   dbpr_bulk → dbpr_payments / dbpr_kfi / dbpr_sirs / dbpr_building
+    #   oir_market → citizens_insurance
+    #   <everything> → cream_score
+    enrichers_to_rerun = [
+        "dbpr_bulk",       # Strict address matching fix
+        "dbpr_payments",   # Re-runs after dbpr_bulk
+        "dbpr_kfi",        # New enricher — first pass
+        "dbpr_sirs",       # Now reads xlsx instead of portal scrape
+        "dbpr_noic",       # New enricher — first pass
+        "sunbiz_bulk",     # Field position fix
+        "oir_market",      # Updated for 24 new counties
+        "citizens_insurance",  # Markup over OIR market
+        "cream_score",     # New financial-distress + hurricane signals
+    ]
+
+    # Field cleanups for force-rerun (mirrors the per-enricher logic in
+    # the existing /queue/force-rerun/{enricher} endpoint)
+    field_cleanups: dict[str, list[str]] = {
+        "citizens_insurance": [
+            "citizens_likelihood", "citizens_likelihood_tier",
+            "citizens_county_penetration", "citizens_estimated_premium",
+            "citizens_premium_display", "citizens_risk_factors",
+            "citizens_candidate", "citizens_swap_opportunity",
+            "citizens_estimate_source",
+        ],
+    }
+
+    requeue_summary: dict[str, dict] = {}
+    for enricher in enrichers_to_rerun:
+        try:
+            entities = db.query(Entity).filter(
+                Entity.enrichment_sources.op("?")(enricher)
+            ).all()
+
+            cleared = 0
+            for entity in entities:
+                sources = dict(entity.enrichment_sources or {})
+                if enricher in sources:
+                    del sources[enricher]
+                    entity.enrichment_sources = sources
+                    if enricher in field_cleanups:
+                        chars = dict(entity.characteristics or {})
+                        for key in field_cleanups[enricher]:
+                            chars.pop(key, None)
+                        entity.characteristics = chars
+                    cleared += 1
+            db.commit()
+
+            # Reset / create queue jobs
+            requeued = 0
+            for entity in entities:
+                existing_job = db.query(JobQueue).filter(
+                    JobQueue.entity_id == entity.id,
+                    JobQueue.enricher == enricher,
+                ).first()
+                if existing_job:
+                    existing_job.status = "PENDING"
+                    existing_job.attempts = 0
+                    existing_job.last_error = None
+                    existing_job.locked_by = None
+                    existing_job.locked_at = None
+                    existing_job.completed_at = None
+                else:
+                    new_job = JobQueue(
+                        entity_id=entity.id,
+                        enricher=enricher,
+                        status="PENDING",
+                        priority=5,
+                    )
+                    db.add(new_job)
+                requeued += 1
+
+            # Also create jobs for entities that NEVER ran this enricher
+            # (mostly relevant for the brand-new dbpr_kfi and dbpr_noic)
+            from sqlalchemy import not_
+            never_ran = db.query(Entity).filter(
+                Entity.pipeline_stage == "LEAD",
+                not_(Entity.enrichment_sources.op("?")(enricher)),
+            ).all()
+            new_jobs = 0
+            for entity in never_ran:
+                existing = db.query(JobQueue).filter(
+                    JobQueue.entity_id == entity.id,
+                    JobQueue.enricher == enricher,
+                ).first()
+                if not existing:
+                    db.add(JobQueue(
+                        entity_id=entity.id,
+                        enricher=enricher,
+                        status="PENDING",
+                        priority=5,
+                    ))
+                    new_jobs += 1
+                else:
+                    # Mark for retry if it was failed/rejected
+                    if existing.status in ("FAILED", "REJECTED"):
+                        existing.status = "PENDING"
+                        existing.attempts = 0
+                        existing.last_error = None
+                        existing.locked_by = None
+                        existing.locked_at = None
+                        existing.completed_at = None
+                        new_jobs += 1
+
+            db.commit()
+
+            requeue_summary[enricher] = {
+                "cleared": cleared,
+                "requeued": requeued,
+                "new_jobs": new_jobs,
+            }
+        except Exception as e:
+            db.rollback()
+            requeue_summary[enricher] = {"error": str(e)[:200]}
+            logger.warning(f"Recalibrate failed for {enricher}: {e}")
+
+    summary["phase_2_requeue"] = requeue_summary
+
+    emit(EventType.SYSTEM, "recalibrate_all", EventStatus.SUCCESS,
+         detail=f"Patched {construction_patched + use_desc_patched} fields, "
+                f"requeued {sum(r.get('requeued', 0) + r.get('new_jobs', 0) for r in requeue_summary.values() if isinstance(r, dict))} jobs")
+
+    return {"success": True, **summary}
+
+
+@router.post("/api/admin/queue/force-rerun/{enricher}")
+def force_rerun_enricher(enricher: str, db: Session = Depends(get_db)):
+    """Force re-run a specific enricher on all entities.
+
+    Removes the enricher's record from enrichment_sources and resets/creates
+    queue jobs as PENDING. Useful after fixing an enricher's logic.
+
+    Also clears any characteristics fields the enricher writes (best-effort by prefix).
+    """
+    from database.models import Entity, JobQueue
+
+    # Find all entities that have this enricher recorded
+    entities = db.query(Entity).filter(
+        Entity.enrichment_sources.op("?")(enricher)
+    ).all()
+
+    cleared_entities = 0
+    for entity in entities:
+        # Shallow-copy to trigger SQLAlchemy mutation detection
+        sources = dict(entity.enrichment_sources or {})
+        if enricher in sources:
+            del sources[enricher]
+            entity.enrichment_sources = sources
+
+            # For citizens_insurance, clear the heuristic-derived fields so the
+            # new math can repopulate them. Other enrichers can be added here
+            # as needed.
+            if enricher == "citizens_insurance":
+                chars = dict(entity.characteristics or {})
+                for key in [
+                    "citizens_likelihood",
+                    "citizens_likelihood_tier",
+                    "citizens_county_penetration",
+                    "citizens_estimated_premium",
+                    "citizens_premium_display",
+                    "citizens_risk_factors",
+                    "citizens_candidate",
+                    "citizens_swap_opportunity",
+                ]:
+                    chars.pop(key, None)
+                entity.characteristics = chars
+
+            cleared_entities += 1
+
+    db.commit()
+
+    # Reset/create queue jobs for these entities
+    requeued = 0
+    for entity in entities:
+        existing_job = db.query(JobQueue).filter(
+            JobQueue.entity_id == entity.id,
+            JobQueue.enricher == enricher,
+        ).first()
+        if existing_job:
+            existing_job.status = "PENDING"
+            existing_job.attempts = 0
+            existing_job.last_error = None
+            existing_job.locked_by = None
+            existing_job.locked_at = None
+            existing_job.completed_at = None
+        else:
+            new_job = JobQueue(
+                entity_id=entity.id,
+                enricher=enricher,
+                status="PENDING",
+                priority=5,
+            )
+            db.add(new_job)
+        requeued += 1
+
+    db.commit()
+
+    return {
+        "success": True,
+        "enricher": enricher,
+        "entities_cleared": cleared_entities,
+        "jobs_requeued": requeued,
+    }
 
 
 @router.get("/api/admin/query")
@@ -883,13 +1117,36 @@ async def upload_file(
         except Exception as e:
             logger.warning(f"S3 upload failed: {e}")
 
+    # Auto-seed: if a NAL or SDF file landed in System Data/DOR/, scan
+    # the directory and trigger a background seed for any county that now
+    # has both files and isn't already seeded.
+    auto_seed_result: dict | None = None
+    is_dor_upload = (
+        path.replace("\\", "/").lower().startswith("system data/dor")
+        or filename.upper().startswith(("NAL", "SDF"))
+    )
+    if is_dor_upload:
+        try:
+            from agents.seeder import scan_dor_dir_and_auto_seed
+            auto_seed_result = scan_dor_dir_and_auto_seed()
+            if auto_seed_result.get("triggered"):
+                triggered_names = ", ".join(t["county"] for t in auto_seed_result["triggered"])
+                logger.info(f"Auto-seed triggered for: {triggered_names}")
+                emit(EventType.SYSTEM, "auto_seed_scan", EventStatus.SUCCESS,
+                     detail=f"Triggered: {triggered_names}")
+        except Exception as e:
+            logger.warning(f"Auto-seed scan failed: {e}")
+
     rel = os.path.relpath(filepath, FILE_STORE_ROOT)
-    return {
+    response: dict = {
         "success": True,
         "name": filename,
         "path": rel,
         "size": total_size,
     }
+    if auto_seed_result:
+        response["auto_seed"] = auto_seed_result
+    return response
 
 
 @router.get("/api/files/download")

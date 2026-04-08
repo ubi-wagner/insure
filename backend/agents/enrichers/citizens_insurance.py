@@ -31,31 +31,68 @@ from database.models import Entity
 
 logger = logging.getLogger(__name__)
 
-# Counties with highest Citizens penetration (as of 2025 data)
+# Citizens market penetration by county (estimated 2025-2026 data).
+# Coverage: all 35 Florida coastal counties + Florida Keys.
 HIGH_CITIZENS_COUNTIES = {
+    # Original 11 + Monroe
+    "Monroe": 0.45,         # Florida Keys — highest in state
     "Miami-Dade": 0.35,
     "Broward": 0.28,
     "Palm Beach": 0.25,
-    "Monroe": 0.45,
     "Pinellas": 0.22,
     "Lee": 0.20,
     "Collier": 0.18,
+    "Charlotte": 0.16,
     "Sarasota": 0.15,
     "Manatee": 0.14,
     "Hillsborough": 0.12,
-    "Charlotte": 0.16,
     "Pasco": 0.10,
+    # Panhandle (post-Sally / post-Michael — elevated but moderating)
+    "Bay": 0.18,            # Panama City (post-Michael)
+    "Gulf": 0.14,           # Port St. Joe
+    "Walton": 0.14,
+    "Okaloosa": 0.13,
+    "Santa Rosa": 0.13,
+    "Escambia": 0.14,       # Pensacola
+    "Franklin": 0.10,
+    # Big Bend / Nature Coast (low density, lower penetration)
+    "Wakulla": 0.07,
+    "Jefferson": 0.06,
+    "Taylor": 0.07,
+    "Dixie": 0.07,
+    "Levy": 0.07,
+    "Citrus": 0.07,
+    "Hernando": 0.08,
+    # NE Atlantic
+    "Nassau": 0.09,
+    "Duval": 0.08,
+    "St. Johns": 0.10,
+    "Flagler": 0.11,
+    # Central Atlantic
+    "Volusia": 0.12,
+    "Brevard": 0.13,
+    "Indian River": 0.13,
+    "St. Lucie": 0.14,
+    "Martin": 0.16,
 }
 
-# Citizens 2026 average premium by construction/location
-CITIZENS_RATE_ESTIMATES = {
-    "coastal_masonry": 8500,
-    "coastal_frame": 12000,
-    "coastal_fire_resistive": 6500,
-    "inland_masonry": 4500,
-    "inland_frame": 6500,
-    "inland_fire_resistive": 3500,
+# Citizens 2026 commercial property rates per $1,000 of TIV.
+# These are FALLBACK rates used only when OIR market data is unavailable.
+# When OIR has run, Citizens uses oir_estimated_premium * CITIZENS_MARKUP
+# (statutorily required to be higher than market — FL Statute 627.351(6)).
+CITIZENS_RATE_PER_1000 = {
+    "coastal_masonry": 9.5,
+    "coastal_frame": 14.0,
+    "coastal_fire_resistive": 7.5,
+    "inland_masonry": 5.0,
+    "inland_frame": 7.5,
+    "inland_fire_resistive": 4.0,
 }
+
+# Citizens is the insurer of last resort. By FL Statute 627.351(6), Citizens
+# rates must be non-competitive — meaning at least as high as the highest
+# market rate. In practice, Citizens runs ~30-50% above the standard market.
+CITIZENS_MARKUP = 1.35
 
 
 def _estimate_citizens_likelihood(entity: Entity) -> dict:
@@ -121,20 +158,32 @@ def _estimate_citizens_likelihood(entity: Entity) -> dict:
         score += 10
         factors.append(f"Large association ({int(units)} units)")
 
-    # Estimate premium if on Citizens
-    is_coastal = flood_risk in ("extreme", "high", "moderate_high")
-    location = "coastal" if is_coastal else "inland"
-    if "frame" in const_class:
-        rate_key = f"{location}_frame"
-    elif "fire" in const_class or "resistive" in const_class:
-        rate_key = f"{location}_fire_resistive"
-    else:
-        rate_key = f"{location}_masonry"
-
-    rate_per_100k = CITIZENS_RATE_ESTIMATES.get(rate_key, 5000)
+    # Estimate premium if on Citizens.
+    # PREFERRED: market premium (from OIR enricher) × Citizens statutory markup.
+    # FALLBACK: simple rate-per-$1000-TIV table when OIR hasn't run yet.
     estimated_premium = None
-    if tiv and isinstance(tiv, (int, float)) and tiv > 0:
-        estimated_premium = int(tiv / 100_000 * rate_per_100k)
+    estimate_source = None
+
+    oir_low = chars.get("oir_estimated_premium_low")
+    oir_high = chars.get("oir_estimated_premium_high")
+    if oir_low and oir_high and isinstance(oir_low, (int, float)) and isinstance(oir_high, (int, float)):
+        # Use OIR midpoint × markup
+        market_mid = (float(oir_low) + float(oir_high)) / 2
+        estimated_premium = int(market_mid * CITIZENS_MARKUP)
+        estimate_source = "oir_market+markup"
+    elif tiv and isinstance(tiv, (int, float)) and tiv > 0:
+        # Fallback to simple rate-per-$1000 table
+        is_coastal = flood_risk in ("extreme", "high", "moderate_high")
+        location = "coastal" if is_coastal else "inland"
+        if "frame" in const_class:
+            rate_key = f"{location}_frame"
+        elif "fire" in const_class or "resistive" in const_class:
+            rate_key = f"{location}_fire_resistive"
+        else:
+            rate_key = f"{location}_masonry"
+        rate_per_1000 = CITIZENS_RATE_PER_1000.get(rate_key, 6.0)
+        estimated_premium = int(tiv * rate_per_1000 / 1000)
+        estimate_source = "fallback_table"
 
     # Tier based on score — descriptive, not asserting actual status
     likelihood = min(score, 100)
@@ -151,12 +200,13 @@ def _estimate_citizens_likelihood(entity: Entity) -> dict:
         "likelihood": likelihood,
         "tier": tier,
         "estimated_premium": estimated_premium,
+        "estimate_source": estimate_source,
         "factors": factors,
         "county_penetration": penetration,
     }
 
 
-@register_enricher("citizens_insurance")
+@register_enricher("citizens_insurance", requires=["oir_market"])
 def enrich_citizens_insurance(entity: Entity, db: Session) -> bool:
     """Analyze whether this property could be a Citizens candidate.
 
@@ -180,7 +230,12 @@ def enrich_citizens_insurance(entity: Entity, db: Session) -> bool:
 
     if analysis["estimated_premium"]:
         updates["citizens_estimated_premium"] = analysis["estimated_premium"]
-        updates["citizens_premium_display"] = f"${analysis['estimated_premium']:,}/yr (est)"
+        # Show as a range (±15%) and tag the source
+        low = int(analysis["estimated_premium"] * 0.85)
+        high = int(analysis["estimated_premium"] * 1.15)
+        src_tag = "+35% over market" if analysis["estimate_source"] == "oir_market+markup" else "fallback rate table"
+        updates["citizens_premium_display"] = f"${low:,} – ${high:,}/yr ({src_tag})"
+        updates["citizens_estimate_source"] = analysis["estimate_source"]
 
     if analysis["factors"]:
         updates["citizens_risk_factors"] = analysis["factors"]

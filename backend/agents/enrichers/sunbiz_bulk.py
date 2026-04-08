@@ -218,7 +218,7 @@ def _match_name(search_name: str, index: dict[str, list[dict]]) -> dict | None:
       2. Containment match (one name contains the other)
       3. Token overlap match (>= 60% word overlap, minimum 3 shared words)
 
-    Prefers active (AA) records over inactive ones.
+    Prefers active records over inactive ones.
     """
     if not search_name:
         return None
@@ -275,7 +275,8 @@ def _pick_best(records: list[dict]) -> dict | None:
         return records[0]
 
     # Prefer active status
-    active = [r for r in records if (r.get("status_code") or "").strip() == "AA"]
+    # Active records: status code "A" (per Corporate File spec) or "AA" (legacy)
+    active = [r for r in records if (r.get("status_code") or "").strip() in ("A", "AA")]
     pool = active if active else records
 
     # Among remaining, prefer most recent filing date
