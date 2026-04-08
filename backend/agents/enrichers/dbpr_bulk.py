@@ -86,6 +86,14 @@ DBPR_CSV_FILES = {
         "local": "data/tsmailing.csv",
         "remote": "https://www2.myfloridalicense.com/sto/file_download/extracts/tsmailing.csv",
     },
+    "county_summary": {
+        "local": "data/countysummary.csv",
+        "remote": "https://www2.myfloridalicense.com/sto/file_download/extracts/countysummary.csv",
+    },
+    "developer_summary": {
+        "local": "data/developersummary.csv",
+        "remote": "https://www2.myfloridalicense.com/sto/file_download/extracts/developersummary.csv",
+    },
 }
 
 # Map our target counties to CSV regions
@@ -170,128 +178,237 @@ def _normalize(s: str) -> str:
     return re.sub(r'[^a-z0-9\s]', '', s.lower()).strip()
 
 
-def _normalize_addr(s: str) -> str:
-    """Normalize an address for matching — strip unit/apt, abbreviate."""
-    addr = s.upper().strip()
-    # Remove unit/apt/suite suffixes
-    addr = re.sub(r'\s*(APT|UNIT|STE|SUITE|#|BLDG|NO)\s*\S*$', '', addr)
-    # Standard abbreviations
-    for full, abbr in [("STREET", "ST"), ("AVENUE", "AVE"), ("BOULEVARD", "BLVD"),
-                       ("DRIVE", "DR"), ("LANE", "LN"), ("ROAD", "RD"), ("COURT", "CT"),
-                       ("CIRCLE", "CIR"), ("HIGHWAY", "HWY"), ("PLACE", "PL"),
-                       ("NORTH", "N"), ("SOUTH", "S"), ("EAST", "E"), ("WEST", "W")]:
+# Street suffix abbreviations (full → abbr)
+_STREET_ABBR = {
+    "STREET": "ST", "AVENUE": "AVE", "BOULEVARD": "BLVD", "BLVD": "BLVD",
+    "DRIVE": "DR", "LANE": "LN", "ROAD": "RD", "COURT": "CT",
+    "CIRCLE": "CIR", "HIGHWAY": "HWY", "PLACE": "PL", "PARKWAY": "PKWY",
+    "TERRACE": "TER", "TRAIL": "TRL", "WAY": "WAY",
+    "NORTH": "N", "SOUTH": "S", "EAST": "E", "WEST": "W",
+    "NORTHEAST": "NE", "NORTHWEST": "NW", "SOUTHEAST": "SE", "SOUTHWEST": "SW",
+}
+
+# Common street suffix words to drop when comparing core street name tokens
+_STREET_SUFFIX_TOKENS = {
+    "ST", "AVE", "BLVD", "DR", "LN", "RD", "CT", "CIR", "HWY", "PL", "PKWY",
+    "TER", "TRL", "WAY", "N", "S", "E", "W", "NE", "NW", "SE", "SW",
+}
+
+
+def _parse_address(raw: str) -> dict:
+    """Parse a free-form address into structured components.
+
+    Returns:
+        {
+            "street_num": "2200",
+            "street_tokens": {"NW", "72", "AVE"},     # for comparison (incl directionals)
+            "street_core": {"72"},                     # name tokens only (suffixes/dirs removed)
+            "city": "MIAMI",
+            "state": "FL",
+            "zip": "33137",
+            "raw_normalized": "2200 NW 72 AVE MIAMI FL 33137",
+        }
+    """
+    if not raw:
+        return {"street_num": "", "street_tokens": set(), "street_core": set(),
+                "city": "", "state": "", "zip": "", "raw_normalized": ""}
+
+    addr = raw.upper().strip()
+    # Strip unit/apt/suite suffixes
+    addr = re.sub(r'\s*(APT|UNIT|STE|SUITE|#|BLDG|NO)\s*\S*', '', addr)
+    # Apply standard abbreviations as whole-word replacements
+    for full, abbr in _STREET_ABBR.items():
         addr = re.sub(rf'\b{full}\b', abbr, addr)
-    # Extract just street number + name (first 2-3 tokens)
-    return re.sub(r'\s+', ' ', addr).strip()
+    # Collapse whitespace and punctuation
+    addr = re.sub(r'[,]+', ' ', addr)
+    addr = re.sub(r'\s+', ' ', addr).strip()
+
+    # Extract zip (5 digit, optionally + 4)
+    zip_match = re.search(r'\b(\d{5})(?:-\d{4})?\b', addr)
+    zipcode = zip_match.group(1) if zip_match else ""
+
+    # Extract state (2-letter, usually right before zip)
+    state = ""
+    if zip_match:
+        before_zip = addr[:zip_match.start()].rstrip()
+        state_match = re.search(r'\b([A-Z]{2})\s*$', before_zip)
+        if state_match:
+            state = state_match.group(1)
+
+    # Extract street number (first numeric token)
+    num_match = re.match(r'(\d+)', addr)
+    street_num = num_match.group(1) if num_match else ""
+
+    # All tokens for comparison
+    tokens = set(addr.split())
+    # Drop the zip, state from tokens
+    tokens.discard(zipcode)
+    if state:
+        tokens.discard(state)
+
+    # Core street name tokens — drop directionals and street suffixes
+    core = {t for t in tokens if t not in _STREET_SUFFIX_TOKENS and not t.isdigit()}
+    # If everything is a directional/suffix, fall back to numeric tokens
+    if not core:
+        core = {t for t in tokens if t != street_num}
+
+    # City: token sequence between street part and state (best effort)
+    # We don't do strict city extraction — we just keep it for display
+    city = ""
+    if state and zip_match:
+        # Take tokens between numeric street and state
+        try:
+            head = addr[: addr.rfind(state)].strip()
+            tail_tokens = head.split()
+            # Skip numeric/directional tokens at start
+            city_tokens = []
+            for t in reversed(tail_tokens):
+                if t.isdigit() or t in _STREET_SUFFIX_TOKENS:
+                    break
+                city_tokens.append(t)
+            city = " ".join(reversed(city_tokens))
+        except Exception:
+            city = ""
+
+    return {
+        "street_num": street_num,
+        "street_tokens": tokens,
+        "street_core": core,
+        "city": city,
+        "state": state,
+        "zip": zipcode,
+        "raw_normalized": addr,
+    }
 
 
-def _extract_street_number(addr: str) -> str:
-    """Extract the street number from an address for quick matching."""
-    match = re.match(r'(\d+)', addr)
-    return match.group(1) if match else ""
+def _county_matches(entity_county: str, condo_county: str) -> bool:
+    """Strict county comparison."""
+    if not entity_county or not condo_county:
+        return False
+    e = entity_county.lower().replace("-", " ").strip()
+    c = condo_county.lower().replace("-", " ").strip()
+    return e == c or e in c or c in e
 
 
 def _match_entity_to_condo(entity: Entity, records: list[dict]) -> dict | None:
     """Find the best matching DBPR condo record for an entity.
 
-    Strategy (in priority order):
-    1. County + street address match (most reliable for physical properties)
-    2. County + name match (for when addresses differ)
-    3. Name-only match (fallback)
-    """
-    entity_name = _normalize(entity.name or "")
-    entity_addr_raw = entity.address or ""
-    entity_addr = _normalize_addr(entity_addr_raw)
-    entity_street_num = _extract_street_number(entity_addr)
-    entity_county = (entity.county or "").lower()
-    chars = entity.characteristics or {}
-    entity_owner = _normalize(str(chars.get("dor_owner", "") or ""))
+    STRICT address-based matching ONLY. No name-based fallback.
 
-    if not entity_name and not entity_addr:
+    Required for any match:
+      1. County must match (entity.county == condo.County)
+      2. Street number must match exactly
+      3. At least one core street name token must overlap
+
+    Tiebreaker bonus:
+      4. Zip match adds confidence
+      5. Name overlap adds confidence (only as a tiebreaker, never the sole signal)
+
+    Returns None if no record meets the strict requirements.
+    """
+    entity_addr_raw = entity.address or ""
+    entity_county = entity.county or ""
+
+    if not entity_addr_raw or not entity_county:
         return None
+
+    parsed_entity = _parse_address(entity_addr_raw)
+    if not parsed_entity["street_num"]:
+        return None  # Can't match without a street number
+
+    entity_name = _normalize(entity.name or "")
 
     best_match = None
     best_score = 0
 
     for record in records:
+        condo_county = record.get("County", "") or ""
+        if not _county_matches(entity_county, condo_county):
+            continue
+
+        condo_addr_raw = record.get("Street City State Zip", "") or ""
+        if not condo_addr_raw:
+            continue
+
+        parsed_condo = _parse_address(condo_addr_raw)
+        if not parsed_condo["street_num"]:
+            continue
+
+        # REQUIRED: street number must match exactly
+        if parsed_entity["street_num"] != parsed_condo["street_num"]:
+            continue
+
+        # REQUIRED: at least one core street name token must overlap
+        core_overlap = parsed_entity["street_core"] & parsed_condo["street_core"]
+        if not core_overlap:
+            continue
+
+        # Base score for satisfying all required conditions
+        score = 80
+
+        # Bonus: zip match
+        if parsed_entity["zip"] and parsed_condo["zip"]:
+            if parsed_entity["zip"] == parsed_condo["zip"]:
+                score += 10
+
+        # Bonus: more shared core street tokens = stronger match
+        score += min(5, len(core_overlap))
+
+        # Bonus: full token overlap (suffixes + directionals)
+        shared_tokens = parsed_entity["street_tokens"] & parsed_condo["street_tokens"]
+        if len(shared_tokens) >= 3:
+            score += 5
+
+        # Bonus: name overlap as tiebreaker (only if address already matches)
         condo_name = _normalize(record.get("Condo Name", "") or "")
-        condo_addr = _normalize_addr(record.get("Street City State Zip", "") or "")
-        condo_county = (record.get("County", "") or "").lower()
-        condo_street_num = _extract_street_number(condo_addr)
+        if entity_name and condo_name:
+            entity_words = set(entity_name.split())
+            condo_words = set(condo_name.split())
+            name_overlap = len(entity_words & condo_words)
+            if name_overlap >= 2:
+                score += 5
 
-        score = 0
-
-        # ─── Strategy 1: Address matching (most reliable) ───
-        if entity_addr and condo_addr:
-            # Same street number is a strong signal
-            if entity_street_num and condo_street_num and entity_street_num == condo_street_num:
-                # Check if street names overlap
-                entity_parts = set(entity_addr.split())
-                condo_parts = set(condo_addr.split())
-                shared = entity_parts & condo_parts
-                if len(shared) >= 2:  # Street number + at least one street name word
-                    score = 85
-                    # County match bonus
-                    if entity_county and condo_county and entity_county in condo_county:
-                        score = 95
-
-        # ─── Strategy 2: Name matching ───
-        if score < 80 and entity_name and condo_name:
-            name_score = 0
-            if entity_name == condo_name:
-                name_score = 100
-            elif entity_name in condo_name or condo_name in entity_name:
-                name_score = 80
-            else:
-                # Word overlap
-                entity_words = set(entity_name.split())
-                condo_words = set(condo_name.split())
-                if entity_words and condo_words:
-                    overlap = len(entity_words & condo_words)
-                    total = max(len(entity_words), len(condo_words))
-                    if overlap >= 2:
-                        name_score = int(60 * overlap / total)
-
-            # Owner name match (DOR owner → condo name)
-            if name_score < 60 and entity_owner and condo_name:
-                if entity_owner in condo_name or condo_name in entity_owner:
-                    name_score = max(name_score, 70)
-
-            # County match bonus for name matches
-            if name_score >= 40 and entity_county and condo_county:
-                if entity_county in condo_county or condo_county in entity_county:
-                    name_score += 10
-
-            score = max(score, name_score)
-
-        # ─── Address partial match bonus ───
-        if score >= 30 and score < 85 and entity_addr and condo_addr:
-            if entity_addr in condo_addr or condo_addr in entity_addr:
-                score += 15
-
-        if score > best_score and score >= 35:
+        if score > best_score:
             best_score = score
             best_match = record
 
-    return best_match
+    # best_score is 0 when no candidate met the strict requirements above.
+    # Otherwise it's at least 80 (base for satisfying all required conditions).
+    return best_match if best_score >= 80 else None
 
 
 @register_enricher("dbpr_bulk")
 def enrich_dbpr_bulk(entity: Entity, db: Session) -> bool:
-    """Match entity against DBPR bulk condo CSV data."""
+    """Match entity against DBPR bulk condo CSV data.
+
+    Searches the county-mapped regional CSV first; if no match, falls back
+    to searching ALL regional condo CSVs (some counties span multiple regions
+    or get filed in unexpected files).
+    """
     county = entity.county
     if not county:
         return False
 
-    region = COUNTY_TO_REGION.get(county)
-    if not region:
-        return False
+    # Primary search: the county's expected region
+    match = None
+    primary_region = COUNTY_TO_REGION.get(county)
+    if primary_region:
+        records = _get_csv_data(primary_region)
+        if records:
+            match = _match_entity_to_condo(entity, records)
 
-    records = _get_csv_data(region)
-    if not records:
-        return False
+    # Fallback: search every condo CSV (CW, MD, NF, CE, conv, coopmailing)
+    if not match:
+        for region in ("central_west", "dade_monroe", "central_east",
+                       "north_florida", "condo_conversions", "cooperatives"):
+            if region == primary_region:
+                continue
+            records = _get_csv_data(region)
+            if records:
+                match = _match_entity_to_condo(entity, records)
+                if match:
+                    break
 
-    match = _match_entity_to_condo(entity, records)
     if not match:
         return False
 

@@ -48,8 +48,9 @@ HIGH_CITIZENS_COUNTIES = {
 }
 
 # Citizens 2026 commercial property rates per $1,000 of TIV.
-# Citizens runs ~30-50% above the open market rate as it's the insurer of
-# last resort. These reflect typical Florida commercial residential rates.
+# These are FALLBACK rates used only when OIR market data is unavailable.
+# When OIR has run, Citizens uses oir_estimated_premium * CITIZENS_MARKUP
+# (statutorily required to be higher than market — FL Statute 627.351(6)).
 CITIZENS_RATE_PER_1000 = {
     "coastal_masonry": 9.5,
     "coastal_frame": 14.0,
@@ -58,6 +59,11 @@ CITIZENS_RATE_PER_1000 = {
     "inland_frame": 7.5,
     "inland_fire_resistive": 4.0,
 }
+
+# Citizens is the insurer of last resort. By FL Statute 627.351(6), Citizens
+# rates must be non-competitive — meaning at least as high as the highest
+# market rate. In practice, Citizens runs ~30-50% above the standard market.
+CITIZENS_MARKUP = 1.35
 
 
 def _estimate_citizens_likelihood(entity: Entity) -> dict:
@@ -123,20 +129,32 @@ def _estimate_citizens_likelihood(entity: Entity) -> dict:
         score += 10
         factors.append(f"Large association ({int(units)} units)")
 
-    # Estimate premium if on Citizens — rate-per-$1000-TIV model
-    is_coastal = flood_risk in ("extreme", "high", "moderate_high")
-    location = "coastal" if is_coastal else "inland"
-    if "frame" in const_class:
-        rate_key = f"{location}_frame"
-    elif "fire" in const_class or "resistive" in const_class:
-        rate_key = f"{location}_fire_resistive"
-    else:
-        rate_key = f"{location}_masonry"
-
-    rate_per_1000 = CITIZENS_RATE_PER_1000.get(rate_key, 6.0)
+    # Estimate premium if on Citizens.
+    # PREFERRED: market premium (from OIR enricher) × Citizens statutory markup.
+    # FALLBACK: simple rate-per-$1000-TIV table when OIR hasn't run yet.
     estimated_premium = None
-    if tiv and isinstance(tiv, (int, float)) and tiv > 0:
+    estimate_source = None
+
+    oir_low = chars.get("oir_estimated_premium_low")
+    oir_high = chars.get("oir_estimated_premium_high")
+    if oir_low and oir_high and isinstance(oir_low, (int, float)) and isinstance(oir_high, (int, float)):
+        # Use OIR midpoint × markup
+        market_mid = (float(oir_low) + float(oir_high)) / 2
+        estimated_premium = int(market_mid * CITIZENS_MARKUP)
+        estimate_source = "oir_market+markup"
+    elif tiv and isinstance(tiv, (int, float)) and tiv > 0:
+        # Fallback to simple rate-per-$1000 table
+        is_coastal = flood_risk in ("extreme", "high", "moderate_high")
+        location = "coastal" if is_coastal else "inland"
+        if "frame" in const_class:
+            rate_key = f"{location}_frame"
+        elif "fire" in const_class or "resistive" in const_class:
+            rate_key = f"{location}_fire_resistive"
+        else:
+            rate_key = f"{location}_masonry"
+        rate_per_1000 = CITIZENS_RATE_PER_1000.get(rate_key, 6.0)
         estimated_premium = int(tiv * rate_per_1000 / 1000)
+        estimate_source = "fallback_table"
 
     # Tier based on score — descriptive, not asserting actual status
     likelihood = min(score, 100)
@@ -153,12 +171,13 @@ def _estimate_citizens_likelihood(entity: Entity) -> dict:
         "likelihood": likelihood,
         "tier": tier,
         "estimated_premium": estimated_premium,
+        "estimate_source": estimate_source,
         "factors": factors,
         "county_penetration": penetration,
     }
 
 
-@register_enricher("citizens_insurance")
+@register_enricher("citizens_insurance", requires=["oir_market"])
 def enrich_citizens_insurance(entity: Entity, db: Session) -> bool:
     """Analyze whether this property could be a Citizens candidate.
 
@@ -182,7 +201,12 @@ def enrich_citizens_insurance(entity: Entity, db: Session) -> bool:
 
     if analysis["estimated_premium"]:
         updates["citizens_estimated_premium"] = analysis["estimated_premium"]
-        updates["citizens_premium_display"] = f"${analysis['estimated_premium']:,}/yr (est)"
+        # Show as a range (±15%) and tag the source
+        low = int(analysis["estimated_premium"] * 0.85)
+        high = int(analysis["estimated_premium"] * 1.15)
+        src_tag = "+35% over market" if analysis["estimate_source"] == "oir_market+markup" else "fallback rate table"
+        updates["citizens_premium_display"] = f"${low:,} – ${high:,}/yr ({src_tag})"
+        updates["citizens_estimate_source"] = analysis["estimate_source"]
 
     if analysis["factors"]:
         updates["citizens_risk_factors"] = analysis["factors"]

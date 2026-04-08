@@ -44,7 +44,7 @@ ENRICHER_CHAIN = [
     {"enricher": "cam_license",         "priority": 7,  "depends_on": None},
     {"enricher": "sunbiz_bulk",         "priority": 9,  "depends_on": None},
     {"enricher": "dor_nal",             "priority": 6,  "depends_on": None},
-    {"enricher": "citizens_insurance",  "priority": 5,  "depends_on": None},
+    {"enricher": "citizens_insurance",  "priority": 4,  "depends_on": "oir_market"},
     {"enricher": "fdot_parcels",        "priority": 4,  "depends_on": None},
     {"enricher": "oir_market",          "priority": 5,  "depends_on": None},
     {"enricher": "cream_score",         "priority": -1, "depends_on": "__all__"},  # Runs last
