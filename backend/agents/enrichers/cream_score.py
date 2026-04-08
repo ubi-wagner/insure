@@ -186,6 +186,35 @@ def compute_cream_score(entity: Entity, db: Session) -> bool:
         score += 5
         factors.append("DBPR payment delinquent")
 
+    # ═══════════════════════════════════════════
+    # FINANCIAL DISTRESS — from DBPR Key Financial Indicators
+    # The single strongest "actively shopping" signal
+    # ═══════════════════════════════════════════
+
+    distress = chars.get("dbpr_financial_distress")
+    if distress == "negative_operating_fund":
+        score += 12
+        factors.append("negative operating fund balance")
+    elif distress == "burning_cash":
+        score += 10
+        factors.append("operating expenses exceed revenue")
+    elif distress == "thin_margin":
+        score += 5
+        factors.append("thin operating margin")
+
+    if chars.get("dbpr_collections_issue"):
+        score += 5
+        factors.append("collections / bad debt issue")
+
+    if chars.get("dbpr_reserve_underfunded"):
+        score += 8
+        factors.append("reserve fund underfunded — assessment risk")
+
+    # Newly converted condos (NOIC) — fresh associations need master policies
+    if chars.get("noic_match"):
+        score += 4
+        factors.append("recently converted condo (NOIC)")
+
     # Flood zone risk → higher insurance need
     flood_risk = chars.get("flood_risk", "")
     if flood_risk in ("extreme", "high"):

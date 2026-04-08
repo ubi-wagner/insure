@@ -121,8 +121,6 @@ const FIELD_META: Record<string, { src: string; kind: FieldKind }> = {
   dbpr_project_number: { src: "DBPR", kind: "data" },
   dbpr_status: { src: "DBPR", kind: "data" },
   dbpr_official_units: { src: "DBPR", kind: "data" },
-  dbpr_operating_revenue: { src: "DBPR", kind: "data" },
-  dbpr_reserve_fund_balance: { src: "DBPR", kind: "data" },
   // ── CAM License (factual) ──
   cam_license_number: { src: "DBPR CAM", kind: "data" },
   cam_license_name: { src: "DBPR CAM", kind: "data" },
@@ -182,6 +180,33 @@ const FIELD_META: Record<string, { src: string; kind: FieldKind }> = {
   payment_is_delinquent: { src: "DBPR", kind: "data" },
   payment_latest_year: { src: "DBPR", kind: "data" },
   payment_years_tracked: { src: "DBPR", kind: "data" },
+  // ── DBPR Key Financial Indicators (factual) ──
+  dbpr_fiscal_year_end: { src: "DBPR KFI", kind: "data" },
+  dbpr_operating_revenue: { src: "DBPR KFI", kind: "data" },
+  dbpr_operating_expenses: { src: "DBPR KFI", kind: "data" },
+  dbpr_reserve_revenue: { src: "DBPR KFI", kind: "data" },
+  dbpr_reserve_expenses: { src: "DBPR KFI", kind: "data" },
+  dbpr_bad_debt: { src: "DBPR KFI", kind: "data" },
+  dbpr_operating_fund_balance: { src: "DBPR KFI", kind: "data" },
+  dbpr_reserve_fund_balance: { src: "DBPR KFI", kind: "data" },
+  // ── DBPR KFI derived signals (computed) ──
+  dbpr_operating_margin: { src: "KFI Calc", kind: "estimate" },
+  dbpr_financial_distress: { src: "KFI Calc", kind: "estimate" },
+  dbpr_bad_debt_ratio: { src: "KFI Calc", kind: "estimate" },
+  dbpr_collections_issue: { src: "KFI Calc", kind: "estimate" },
+  dbpr_reserve_ratio: { src: "KFI Calc", kind: "estimate" },
+  dbpr_reserve_underfunded: { src: "KFI Calc", kind: "estimate" },
+  // ── DBPR NOIC (factual) ──
+  noic_match: { src: "DBPR NOIC", kind: "data" },
+  noic_file_number: { src: "DBPR NOIC", kind: "data" },
+  noic_name: { src: "DBPR NOIC", kind: "data" },
+  noic_approval_date: { src: "DBPR NOIC", kind: "data" },
+  noic_status: { src: "DBPR NOIC", kind: "data" },
+  noic_developer_name: { src: "DBPR NOIC", kind: "data" },
+  noic_developer_address: { src: "DBPR NOIC", kind: "data" },
+  // ── Cream Score (computed) ──
+  cream_score: { src: "Cream Calc", kind: "estimate" },
+  cream_tier: { src: "Cream Calc", kind: "estimate" },
 };
 
 const KIND_BADGE: Record<FieldKind, string> = {
@@ -245,6 +270,17 @@ const KNOWN_FIELDS = new Set([
   "payment_is_delinquent", "payment_latest_year", "payment_years_tracked",
   // DBPR extras
   "dbpr_address", "dbpr_secondary_status", "dbpr_recorded_date",
+  // DBPR KFI
+  "dbpr_operating_revenue", "dbpr_operating_expenses",
+  "dbpr_reserve_revenue", "dbpr_reserve_expenses",
+  "dbpr_bad_debt", "dbpr_operating_fund_balance", "dbpr_reserve_fund_balance",
+  "dbpr_operating_margin", "dbpr_financial_distress", "dbpr_bad_debt_ratio",
+  "dbpr_collections_issue", "dbpr_reserve_ratio", "dbpr_reserve_underfunded",
+  // DBPR NOIC
+  "noic_match", "noic_file_number", "noic_name", "noic_approval_date",
+  "noic_status", "noic_developer_name", "noic_developer_address",
+  // Cream Score
+  "cream_score", "cream_tier", "cream_factors",
   // Seeder noise
   "tiv", "phy_city", "phy_zip", "imp_qual", "geocode_source",
   "has_user_intel", "user_doc_types", "_field_sources",
@@ -619,8 +655,6 @@ export default function EntityDetailModal({
               <DataRow field="dbpr_project_number" label="Project #" value={chars.dbpr_project_number} />
               <DataRow field="dbpr_status" label="Status" value={chars.dbpr_status} />
               <DataRow field="dbpr_official_units" label="Official Units" value={chars.dbpr_official_units} />
-              <DataRow field="dbpr_operating_revenue" label="Operating Revenue" value={chars.dbpr_operating_revenue} />
-              <DataRow field="dbpr_reserve_fund_balance" label="Reserve Fund" value={chars.dbpr_reserve_fund_balance} />
             </DataSection>
 
             {/* CAM License */}
@@ -724,6 +758,54 @@ export default function EntityDetailModal({
               } />
               <DataRow field="payment_latest_year" label="Latest Year" value={chars.payment_latest_year} />
             </DataSection>
+
+            {/* DBPR Key Financial Indicators */}
+            <DataSection title="Financial Health (DBPR KFI)">
+              <DataRow field="dbpr_fiscal_year_end" label="Fiscal Year End" value={chars.dbpr_fiscal_year_end} />
+              <DataRow field="dbpr_operating_revenue" label="Operating Revenue" value={
+                typeof chars.dbpr_operating_revenue === "number" ? fmt(chars.dbpr_operating_revenue) : null
+              } />
+              <DataRow field="dbpr_operating_expenses" label="Operating Expenses" value={
+                typeof chars.dbpr_operating_expenses === "number" ? fmt(chars.dbpr_operating_expenses) : null
+              } />
+              <DataRow field="dbpr_operating_fund_balance" label="Operating Fund Balance" value={
+                typeof chars.dbpr_operating_fund_balance === "number" ? fmt(chars.dbpr_operating_fund_balance) : null
+              } />
+              <DataRow field="dbpr_reserve_fund_balance" label="Reserve Fund Balance" value={
+                typeof chars.dbpr_reserve_fund_balance === "number" ? fmt(chars.dbpr_reserve_fund_balance) : null
+              } />
+              <DataRow field="dbpr_bad_debt" label="Bad Debt" value={
+                typeof chars.dbpr_bad_debt === "number" && chars.dbpr_bad_debt > 0 ? fmt(chars.dbpr_bad_debt) : null
+              } />
+              <DataRow field="dbpr_operating_margin" label="Operating Margin" value={
+                typeof chars.dbpr_operating_margin === "number"
+                  ? `${(chars.dbpr_operating_margin * 100).toFixed(1)}%`
+                  : null
+              } />
+              <DataRow field="dbpr_financial_distress" label="Distress Signal" value={
+                chars.dbpr_financial_distress
+                  ? String(chars.dbpr_financial_distress).replace(/_/g, " ")
+                  : null
+              } />
+              <DataRow field="dbpr_reserve_underfunded" label="Reserve Status" value={
+                chars.dbpr_reserve_underfunded === true ? "UNDERFUNDED — assessment risk" : null
+              } />
+              <DataRow field="dbpr_collections_issue" label="Collections" value={
+                chars.dbpr_collections_issue === true ? "Issues — high bad debt ratio" : null
+              } />
+            </DataSection>
+
+            {/* NOIC — Notice of Intended Conversion */}
+            {chars.noic_match === true && (
+              <DataSection title="Condo Conversion (NOIC)">
+                <DataRow field="noic_name" label="Project" value={chars.noic_name} />
+                <DataRow field="noic_file_number" label="File #" value={chars.noic_file_number} />
+                <DataRow field="noic_approval_date" label="Approval Date" value={chars.noic_approval_date} />
+                <DataRow field="noic_status" label="Status" value={chars.noic_status} />
+                <DataRow field="noic_developer_name" label="Developer" value={chars.noic_developer_name} />
+                <DataRow field="noic_developer_address" label="Developer Address" value={chars.noic_developer_address} />
+              </DataSection>
+            )}
 
             {/* Insurance Intelligence -- remaining characteristics not shown above */}
             {(() => {
