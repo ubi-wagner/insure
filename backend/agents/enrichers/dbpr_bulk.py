@@ -290,6 +290,45 @@ def _county_matches(entity_county: str, condo_county: str) -> bool:
     return e == c or e in c or c in e
 
 
+def _get_address_from_record(record: dict) -> str:
+    """Extract a full address string from a DBPR record.
+
+    DBPR distributes condo CSVs in TWO different formats:
+      Old format: single column "Street City State Zip"
+      New format (per readme): separate columns "Street", "City", "State", "Zip"
+
+    This handles both gracefully.
+    """
+    # New format — separate columns
+    street = (record.get("Street") or "").strip()
+    city = (record.get("City") or "").strip()
+    state = (record.get("State") or "").strip()
+    zipc = (record.get("Zip") or "").strip()
+    if street or city:
+        parts = [p for p in (street, city, state, zipc) if p]
+        return ", ".join(parts)
+
+    # Old format — combined column
+    combined = (record.get("Street City State Zip") or "").strip()
+    return combined
+
+
+def _get_name_from_record(record: dict) -> str:
+    """Extract the property name from a DBPR record.
+
+    Different files use different name columns:
+      Condo files: "Condo Name"
+      Cooperative file: "Coop Name"
+      Mobile home file: "MH Name"
+      Timeshare file: "TS Name"
+    """
+    for key in ("Condo Name", "Coop Name", "MH Name", "TS Name", "Name"):
+        val = record.get(key)
+        if val and str(val).strip():
+            return str(val).strip()
+    return ""
+
+
 def _match_entity_to_condo(entity: Entity, records: list[dict]) -> dict | None:
     """Find the best matching DBPR condo record for an entity.
 
@@ -326,7 +365,7 @@ def _match_entity_to_condo(entity: Entity, records: list[dict]) -> dict | None:
         if not _county_matches(entity_county, condo_county):
             continue
 
-        condo_addr_raw = record.get("Street City State Zip", "") or ""
+        condo_addr_raw = _get_address_from_record(record)
         if not condo_addr_raw:
             continue
 
@@ -360,7 +399,7 @@ def _match_entity_to_condo(entity: Entity, records: list[dict]) -> dict | None:
             score += 5
 
         # Bonus: name overlap as tiebreaker (only if address already matches)
-        condo_name = _normalize(record.get("Condo Name", "") or "")
+        condo_name = _normalize(_get_name_from_record(record))
         if entity_name and condo_name:
             entity_words = set(entity_name.split())
             condo_words = set(condo_name.split())

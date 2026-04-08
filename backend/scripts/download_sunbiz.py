@@ -38,38 +38,52 @@ logger = logging.getLogger(__name__)
 SUNBIZ_QUARTERLY_URL = "https://dos.fl.gov/sunbiz/other-services/data-downloads/quarterly-data/"
 
 # Record is 1440 characters fixed-width ASCII.
-# Field positions (0-indexed, inclusive start, exclusive end).
-# These are approximate — the script logs sample records for verification.
+# Field positions per FL DoS Corporate File Definitions PDF.
+# Positions in the spec are 1-indexed; Python slices are 0-indexed.
+#
+# CONFIRMED FROM SPEC (Corporate Data File):
+#   Field 1: Corporation Number, start 1, length 12  → [0:12]
+#   Field 2: Corporation Name,   start 13, length 192 → [12:204]
+#   Field 3: Status,             start 205, length 1  → [204:205]  ("A" or "I")
+#
+# UNVERIFIED — positions for fields 4 onward are best-effort and may
+# need adjustment after the full Corporate File Definitions PDF is shared.
+# Spec mentions fields for filing date, FEI, principal/mailing addresses,
+# registered agent, and up to 6 officers starting at field 37.
 RECORD_LENGTH = 1440
 
 FIELD_MAP = {
+    # CONFIRMED FROM SPEC
     "document_number":    (0, 12),
-    "filing_type_code":   (12, 16),
-    "filing_date":        (16, 20),     # MMYY
-    "status_code":        (20, 22),     # AA=Active, IA=Inactive, etc.
-    "corp_name":          (22, 182),    # 160 chars
-    "principal_street":   (182, 302),   # 120 chars
-    "principal_city":     (302, 362),   # 60 chars
-    "principal_state":    (362, 364),   # 2 chars
-    "principal_zip":      (364, 374),   # 10 chars
-    "principal_country":  (374, 376),   # 2 chars (US, etc.)
-    "mailing_street":     (376, 496),   # 120 chars
-    "mailing_city":       (496, 556),   # 60 chars
-    "mailing_state":      (556, 558),   # 2 chars
-    "mailing_zip":        (558, 568),   # 10 chars
-    "mailing_country":    (568, 570),   # 2 chars
-    "registered_agent":   (570, 630),   # 60 chars (name)
-    "ra_street":          (630, 690),   # 60 chars
-    "ra_city":            (690, 730),   # 40 chars
-    "ra_state":           (730, 732),   # 2 chars
-    "ra_zip":             (732, 742),   # 10 chars
+    "corp_name":          (12, 204),    # 192 chars (was wrongly at (22, 182))
+    "status_code":        (204, 205),   # 1 char: "A" active, "I" inactive
+    # UNVERIFIED — best-effort guesses, may produce garbage until spec is confirmed
+    "filing_date":        (205, 213),   # 8 chars guess (MMDDYYYY?)
+    "fei_number":         (213, 222),   # 9 chars guess
+    "principal_street":   (222, 342),   # 120 chars guess
+    "principal_city":     (342, 402),   # 60 chars guess
+    "principal_state":    (402, 404),   # 2 chars
+    "principal_zip":      (404, 414),   # 10 chars
+    "principal_country":  (414, 416),   # 2 chars
+    "mailing_street":     (416, 536),   # 120 chars
+    "mailing_city":       (536, 596),   # 60 chars
+    "mailing_state":      (596, 598),   # 2 chars
+    "mailing_zip":        (598, 608),   # 10 chars
+    "mailing_country":    (608, 610),   # 2 chars
+    "registered_agent":   (610, 670),   # 60 chars
+    "ra_street":          (670, 730),   # 60 chars
+    "ra_city":             (730, 770),   # 40 chars
+    "ra_state":           (770, 772),   # 2 chars
+    "ra_zip":             (772, 782),   # 10 chars
 }
 
-# Officers start at position 742, up to 6 officers.
+# Officers start after the registered agent fields, up to 6 officers.
+# Spec says officers begin at field 37 — exact byte position UNVERIFIED.
+# Best estimate: after ra_zip (ends at 782), officers begin around 782.
 # Each officer block: title(4) + name(50) + street(50) + city(40) + state(2) + zip(10) = ~156 chars
-# But record length only allows (1440 - 742) / 6 ≈ 116 chars per officer.
-OFFICER_START = 742
-OFFICER_BLOCK_SIZE = 116
+# But record length only allows (1440 - 782) / 6 ≈ 109 chars per officer.
+OFFICER_START = 782
+OFFICER_BLOCK_SIZE = 109
 OFFICER_FIELDS = {
     "title":  (0, 4),
     "name":   (4, 54),
@@ -93,8 +107,11 @@ ASSOCIATION_KEYWORDS = [
     "APARTMENTS", "PROPERTY OWNERS",
 ]
 
-# Status codes
+# Status codes — Corporate File spec confirms field 3 is 1 char: "A" or "I"
 STATUS_CODES = {
+    "A": "Active",
+    "I": "Inactive",
+    # Older 2-char codes left in for backward compat with previously-parsed files
     "AA": "Active",
     "IA": "Inactive",
     "AD": "Admin Dissolved",
@@ -450,7 +467,8 @@ def _log_sample_record(line: str):
 # ─── CSV Output ───
 
 CSV_HEADERS = [
-    "document_number", "filing_type_code", "filing_date", "filing_date_formatted",
+    "document_number", "filing_date", "filing_date_formatted",
+    "fei_number",
     "status_code", "status", "corp_name",
     "principal_street", "principal_city", "principal_state", "principal_zip",
     "principal_address",
