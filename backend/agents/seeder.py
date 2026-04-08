@@ -54,11 +54,22 @@ DOR_COUNTIES = {
 
 # Target DOR use codes for insurance leads
 TARGET_USE_CODES = {
+    "003": "Multi-Family (small)",
     "004": "Condominium",
     "005": "Cooperatives",
     "006": "Retirement Homes",
     "008": "Multi-Family (10+)",
     "039": "Hotels/Motels",
+}
+
+# DOR construction class numeric codes → readable labels
+DOR_CONSTRUCTION_CLASSES = {
+    "1": "Frame",
+    "2": "Masonry",
+    "3": "Non-Combustible",
+    "4": "Fire Resistive",
+    "5": "Fire Resistive (Premium)",
+    "6": "Fire Resistive (Premium)",
 }
 
 # Also include if they have enough units (for non-target use codes)
@@ -291,7 +302,9 @@ def seed_county(county_no: str, db: Session, min_value: int | None = None) -> di
                 # Build characteristics from NAL data
                 jv = jv_raw  # Already extracted above for filtering
                 tiv_estimate = round(jv * 1.3, -3) if jv and jv > 0 else None
-                const_class = _get_col(row, col_map, "CONST_CLASS").strip() or None
+                const_class_raw = _get_col(row, col_map, "CONST_CLASS").strip() or None
+                # Map numeric DOR construction code to readable label
+                const_class = DOR_CONSTRUCTION_CLASSES.get(const_class_raw, const_class_raw)
                 act_yr_blt = _safe_int(_get_col(row, col_map, "ACT_YR_BLT"))
 
                 characteristics = {
@@ -302,6 +315,7 @@ def seed_county(county_no: str, db: Session, min_value: int | None = None) -> di
                     "dor_market_value": jv if jv and jv > 0 else None,
                     "dor_land_value": _safe_int(_get_col(row, col_map, "LND_VAL")),
                     "dor_construction_class": const_class,
+                    "dor_construction_class_raw": const_class_raw,
                     "year_built": str(act_yr_blt) if act_yr_blt else None,
                     "dor_year_built": act_yr_blt,
                     "dor_effective_year_built": _safe_int(_get_col(row, col_map, "EFF_YR_BLT")),

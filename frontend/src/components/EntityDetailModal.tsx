@@ -149,10 +149,39 @@ const FIELD_META: Record<string, { src: string; kind: FieldKind }> = {
   citizens_candidate: { src: "Heuristic", kind: "estimate" },
   citizens_risk_factors: { src: "Heuristic", kind: "estimate" },
   on_citizens: { src: "Dec Page", kind: "verified" },
-  // ── OIR market (estimate) ──
+  // ── OIR market (estimate, except top_carriers which is data) ──
+  oir_county: { src: "OIR", kind: "data" },
+  oir_county_top_carriers: { src: "OIR", kind: "data" },
+  oir_county_active_carriers: { src: "OIR", kind: "data" },
+  oir_county_citizens_pct: { src: "OIR", kind: "data" },
+  oir_county_base_rate: { src: "OIR", kind: "data" },
+  oir_county_region: { src: "OIR", kind: "data" },
+  oir_market_hardness: { src: "OIR", kind: "data" },
   oir_estimated_premium_range: { src: "OIR Calc", kind: "estimate" },
+  oir_estimated_premium_low: { src: "OIR Calc", kind: "estimate" },
+  oir_estimated_premium_high: { src: "OIR Calc", kind: "estimate" },
   oir_rate_per_thousand: { src: "OIR Calc", kind: "estimate" },
   oir_carrier_options: { src: "OIR Calc", kind: "estimate" },
+  oir_construction_tier: { src: "OIR Calc", kind: "estimate" },
+  oir_code_era: { src: "OIR Calc", kind: "estimate" },
+  oir_wind_tier: { src: "OIR Calc", kind: "estimate" },
+  oir_wind_label: { src: "OIR Calc", kind: "estimate" },
+  oir_flood_sfha: { src: "FEMA", kind: "data" },
+  oir_flood_rate_adder: { src: "OIR Calc", kind: "estimate" },
+  oir_flood_note: { src: "OIR Calc", kind: "estimate" },
+  // ── SIRS (data when scraped, estimate when fallback) ──
+  sirs_completed: { src: "DBPR SIRS", kind: "data" },
+  sirs_compliance_risk: { src: "Heuristic", kind: "estimate" },
+  sirs_deadline: { src: "FL Statute", kind: "data" },
+  sirs_lookup_url: { src: "DBPR SIRS", kind: "data" },
+  sirs_needs_manual_verification: { src: "DBPR SIRS", kind: "data" },
+  // ── DBPR Building Report ──
+  dbpr_building_report_url: { src: "DBPR", kind: "data" },
+  dbpr_building_report_needs_verification: { src: "DBPR", kind: "data" },
+  // ── DBPR Payments ──
+  payment_is_delinquent: { src: "DBPR", kind: "data" },
+  payment_latest_year: { src: "DBPR", kind: "data" },
+  payment_years_tracked: { src: "DBPR", kind: "data" },
 };
 
 const KIND_BADGE: Record<FieldKind, string> = {
@@ -197,7 +226,27 @@ const KNOWN_FIELDS = new Set([
   "dor_year_built", "dor_effective_year_built", "dor_living_sqft",
   "dor_num_buildings", "dor_num_units", "dor_last_sale_price",
   "dor_last_sale_year", "dor_last_sale_date", "dor_special_features_value",
-  "dor_land_sqft",
+  "dor_land_sqft", "dor_construction_class_raw",
+  // OIR Market Intelligence
+  "oir_county", "oir_county_base_rate", "oir_county_active_carriers",
+  "oir_county_citizens_pct", "oir_county_top_carriers", "oir_county_region",
+  "oir_rate_per_thousand", "oir_construction_tier", "oir_code_era",
+  "oir_wind_tier", "oir_wind_label", "oir_market_hardness", "oir_carrier_options",
+  "oir_estimated_premium_low", "oir_estimated_premium_high",
+  "oir_estimated_premium_range", "oir_flood_sfha", "oir_flood_rate_adder",
+  "oir_flood_note", "oir_rate_filings_url", "oir_company_search_url",
+  // SIRS
+  "sirs_completed", "sirs_compliance_risk", "sirs_deadline",
+  "sirs_lookup_url", "sirs_data_source", "sirs_needs_manual_verification",
+  // DBPR Building report
+  "dbpr_building_report_url", "dbpr_building_report_source",
+  "dbpr_building_report_needs_verification",
+  // DBPR Payments
+  "payment_is_delinquent", "payment_latest_year", "payment_years_tracked",
+  // DBPR extras
+  "dbpr_address", "dbpr_secondary_status", "dbpr_recorded_date",
+  // Seeder noise
+  "tiv", "phy_city", "phy_zip", "imp_qual", "geocode_source",
   "has_user_intel", "user_doc_types", "_field_sources",
 ]);
 
@@ -626,6 +675,54 @@ export default function EntityDetailModal({
                       : String(chars.citizens_risk_factors))
                   : null
               } />
+            </DataSection>
+
+            {/* OIR Market Intelligence */}
+            <DataSection title="OIR Market Intelligence">
+              <DataRow field="oir_county" label="County" value={chars.oir_county} />
+              <DataRow field="oir_market_hardness" label="Market" value={chars.oir_market_hardness} />
+              <DataRow field="oir_county_active_carriers" label="Active Carriers" value={chars.oir_county_active_carriers} />
+              <DataRow field="oir_carrier_options" label="Carrier Options" value={chars.oir_carrier_options ? `~${chars.oir_carrier_options}` : null} />
+              <DataRow field="oir_county_citizens_pct" label="Citizens %" value={chars.oir_county_citizens_pct ? `${Math.round(Number(chars.oir_county_citizens_pct) * 100)}%` : null} />
+              <DataRow field="oir_rate_per_thousand" label="Rate/$1K TIV" value={chars.oir_rate_per_thousand ? `$${chars.oir_rate_per_thousand}` : null} />
+              <DataRow field="oir_estimated_premium_range" label="Est. Premium" value={chars.oir_estimated_premium_range} />
+              <DataRow field="oir_construction_tier" label="Construction Tier" value={chars.oir_construction_tier} />
+              <DataRow field="oir_code_era" label="FBC Era" value={chars.oir_code_era} />
+              <DataRow field="oir_wind_label" label="Wind Tier" value={chars.oir_wind_label} />
+              <DataRow field="oir_county_top_carriers" label="Top Carriers" value={
+                Array.isArray(chars.oir_county_top_carriers)
+                  ? (chars.oir_county_top_carriers as unknown[]).slice(0, 3).map(String).join(", ")
+                  : null
+              } />
+              {!!chars.oir_flood_note && (
+                <div className="py-1 text-[10px] text-amber-400/90">{String(chars.oir_flood_note)}</div>
+              )}
+            </DataSection>
+
+            {/* SIRS Compliance */}
+            <DataSection title="SIRS Compliance (FL Statute 718.112)">
+              <DataRow field="sirs_completed" label="Completed" value={
+                chars.sirs_completed === true ? "Yes" :
+                chars.sirs_completed === false ? "No" : null
+              } />
+              <DataRow field="sirs_compliance_risk" label="Risk Level" value={chars.sirs_compliance_risk} />
+              <DataRow field="sirs_deadline" label="Deadline" value={chars.sirs_deadline} />
+              <DataRow field="sirs_lookup_url" label="Verify" value={chars.sirs_lookup_url ? "DBPR Portal" : null} href={typeof chars.sirs_lookup_url === "string" ? chars.sirs_lookup_url : undefined} />
+              {chars.sirs_needs_manual_verification === true && (
+                <div className="py-1 text-[10px] text-amber-400/90">
+                  Needs manual verification — DBPR portal blocks scraping
+                </div>
+              )}
+            </DataSection>
+
+            {/* DBPR Building Report */}
+            <DataSection title="DBPR Building Report">
+              <DataRow field="dbpr_building_report_url" label="Report" value={chars.dbpr_building_report_url ? "DBPR Portal" : null} href={typeof chars.dbpr_building_report_url === "string" ? chars.dbpr_building_report_url : undefined} />
+              <DataRow field="payment_is_delinquent" label="Payment Status" value={
+                chars.payment_is_delinquent === true ? "DELINQUENT" :
+                chars.payment_is_delinquent === false ? "Current" : null
+              } />
+              <DataRow field="payment_latest_year" label="Latest Year" value={chars.payment_latest_year} />
             </DataSection>
 
             {/* Insurance Intelligence -- remaining characteristics not shown above */}

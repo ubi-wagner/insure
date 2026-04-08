@@ -535,6 +535,86 @@ def purge_rejected(db: Session = Depends(get_db)):
     return {"success": True, "purged": count}
 
 
+@router.post("/api/admin/queue/force-rerun/{enricher}")
+def force_rerun_enricher(enricher: str, db: Session = Depends(get_db)):
+    """Force re-run a specific enricher on all entities.
+
+    Removes the enricher's record from enrichment_sources and resets/creates
+    queue jobs as PENDING. Useful after fixing an enricher's logic.
+
+    Also clears any characteristics fields the enricher writes (best-effort by prefix).
+    """
+    from database.models import Entity, JobQueue
+
+    # Find all entities that have this enricher recorded
+    entities = db.query(Entity).filter(
+        Entity.enrichment_sources.op("?")(enricher)
+    ).all()
+
+    cleared_entities = 0
+    for entity in entities:
+        # Shallow-copy to trigger SQLAlchemy mutation detection
+        sources = dict(entity.enrichment_sources or {})
+        if enricher in sources:
+            del sources[enricher]
+            entity.enrichment_sources = sources
+
+            # For citizens_insurance, clear the heuristic-derived fields so the
+            # new math can repopulate them. Other enrichers can be added here
+            # as needed.
+            if enricher == "citizens_insurance":
+                chars = dict(entity.characteristics or {})
+                for key in [
+                    "citizens_likelihood",
+                    "citizens_likelihood_tier",
+                    "citizens_county_penetration",
+                    "citizens_estimated_premium",
+                    "citizens_premium_display",
+                    "citizens_risk_factors",
+                    "citizens_candidate",
+                    "citizens_swap_opportunity",
+                ]:
+                    chars.pop(key, None)
+                entity.characteristics = chars
+
+            cleared_entities += 1
+
+    db.commit()
+
+    # Reset/create queue jobs for these entities
+    requeued = 0
+    for entity in entities:
+        existing_job = db.query(JobQueue).filter(
+            JobQueue.entity_id == entity.id,
+            JobQueue.enricher == enricher,
+        ).first()
+        if existing_job:
+            existing_job.status = "PENDING"
+            existing_job.attempts = 0
+            existing_job.last_error = None
+            existing_job.locked_by = None
+            existing_job.locked_at = None
+            existing_job.completed_at = None
+        else:
+            new_job = JobQueue(
+                entity_id=entity.id,
+                enricher=enricher,
+                status="PENDING",
+                priority=5,
+            )
+            db.add(new_job)
+        requeued += 1
+
+    db.commit()
+
+    return {
+        "success": True,
+        "enricher": enricher,
+        "entities_cleared": cleared_entities,
+        "jobs_requeued": requeued,
+    }
+
+
 @router.get("/api/admin/query")
 def query_data(
     q: str = Query(""),
