@@ -398,94 +398,38 @@ def get_enrich_status(db: Session = Depends(get_db)):
 
 @router.get("/api/admin/ops-dashboard")
 def ops_dashboard(db: Session = Depends(get_db)):
-    """Single endpoint for the unified Ops page — county funnel, services, enrichment coverage."""
-    from agents.seeder import get_seed_stats, get_available_counties, DOR_COUNTIES
+    """Compact Ops dashboard — global stage counts, services, available counties for seeding,
+    and the job queue (which is the single source of truth for per-enricher pipeline state)."""
+    from agents.seeder import get_available_counties, get_seed_stats
     from services.registry import get_all_statuses
 
-    # -- Seed stats from last run --
-    seed_stats = get_seed_stats()
+    # Available counties — only for the seed dropdown / NAL readiness check
     available_counties = get_available_counties()
-
-    # -- Per-county entity counts by stage --
-    county_stage_rows = db.execute(sa.text(
-        "SELECT county, pipeline_stage, COUNT(*) as cnt FROM entities "
-        "WHERE county IS NOT NULL GROUP BY county, pipeline_stage"
-    )).fetchall()
-    county_stages: dict[str, dict[str, int]] = {}
-    for row in county_stage_rows:
-        county_stages.setdefault(row[0], {})[row[1]] = row[2]
-
-    # -- Per-county enrichment_status counts --
-    county_enrich_rows = db.execute(sa.text(
-        "SELECT county, enrichment_status, COUNT(*) as cnt FROM entities "
-        "WHERE county IS NOT NULL AND pipeline_stage != 'ARCHIVED' "
-        "GROUP BY county, enrichment_status"
-    )).fetchall()
-    county_enrich: dict[str, dict[str, int]] = {}
-    for row in county_enrich_rows:
-        county_enrich.setdefault(row[0], {})[row[1]] = row[2]
-
-    # -- Build county rows --
+    seed_stats = get_seed_stats()
     counties = []
     for c in available_counties:
         cno = c["county_no"]
-        cname = c["county_name"]
         ss = seed_stats.get(cno, {})
-        stages = county_stages.get(cname, {})
-        enrich = county_enrich.get(cname, {})
-        total_entities = sum(stages.values())
-        enriched = enrich.get("complete", 0)
-
         counties.append({
             "county_no": cno,
-            "county": cname,
+            "county": c["county_name"],
             "nal_ready": c["ready"],
-            "nal_file": c.get("nal_file"),
-            # Seed stats from last run
             "nal_total": ss.get("total_parcels"),
             "type_passed": ss.get("type_passed"),
             "value_filtered": ss.get("filtered"),
-            "min_value_used": ss.get("min_value_used"),
             "last_seeded": ss.get("seeded_at"),
-            # Live DB counts
-            "total_entities": total_entities,
-            "stages": {
-                "TARGET": stages.get("TARGET", 0),
-                "LEAD": stages.get("LEAD", 0),
-                "OPPORTUNITY": stages.get("OPPORTUNITY", 0),
-                "CUSTOMER": stages.get("CUSTOMER", 0),
-                "ARCHIVED": stages.get("ARCHIVED", 0),
-            },
-            "enriched": enriched,
-            "enriched_pct": round(enriched / total_entities * 100) if total_entities > 0 else 0,
         })
 
-    # -- Global stage counts --
+    # Global stage counts (for the headline number)
     stage_counts = {}
     for stage in ["TARGET", "LEAD", "OPPORTUNITY", "CUSTOMER", "ARCHIVED"]:
         stage_counts[stage] = db.query(Entity).filter(Entity.pipeline_stage == stage).count()
-
-    # -- Enrichment coverage (global) --
-    enricher_names = [
-        "dor_nal", "fema_flood", "property_appraiser", "dbpr_bulk", "dbpr_payments",
-        "cam_license", "sunbiz", "citizens_insurance", "fdot_parcels", "oir_market", "cream_score",
-    ]
     total_active = sum(v for k, v in stage_counts.items() if k != "ARCHIVED")
-    coverage = {}
-    for name in enricher_names:
-        count = db.execute(sa.text(
-            f"SELECT COUNT(*) FROM entities WHERE enrichment_sources ? :name "
-            f"AND pipeline_stage != 'ARCHIVED'"
-        ), {"name": name}).scalar() or 0
-        coverage[name] = {
-            "count": count,
-            "pct": round(count / total_active * 100) if total_active > 0 else 0,
-        }
 
-    # -- Services --
+    # Services
     services = get_all_statuses()
 
-    # -- Job Queue Stats --
+    # Job Queue — per-enricher and per-enricher-per-county breakdowns
     queue_stats = {}
     try:
         from services.job_queue import get_queue_stats
@@ -497,7 +441,6 @@ def ops_dashboard(db: Session = Depends(get_db)):
         "counties": counties,
         "stage_counts": stage_counts,
         "total_active": total_active,
-        "coverage": coverage,
         "services": services,
         "queue": queue_stats,
     }

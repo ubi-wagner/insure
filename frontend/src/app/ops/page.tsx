@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useRef, useCallback } from "react";
+import { Fragment, useEffect, useState, useRef, useCallback } from "react";
 import Link from "next/link";
 
 /* ================================================================
@@ -11,21 +11,10 @@ interface CountyRow {
   county_no: string;
   county: string;
   nal_ready: boolean;
-  nal_file: string | null;
   nal_total: number | null;
   type_passed: number | null;
   value_filtered: number | null;
-  min_value_used: number | null;
   last_seeded: string | null;
-  total_entities: number;
-  stages: Record<string, number>;
-  enriched: number;
-  enriched_pct: number;
-}
-
-interface CoverageItem {
-  count: number;
-  pct: number;
 }
 
 interface ServiceStatus {
@@ -40,6 +29,7 @@ interface QueueStats {
   total_jobs: number;
   status_counts: Record<string, number>;
   enricher_stats: Record<string, Record<string, number>>;
+  enricher_by_county: Record<string, Record<string, Record<string, number>>>;
   recent_failures: {
     job_id: number;
     entity_id: number;
@@ -55,7 +45,6 @@ interface DashboardData {
   counties: CountyRow[];
   stage_counts: Record<string, number>;
   total_active: number;
-  coverage: Record<string, CoverageItem>;
   services: ServiceStatus[];
   queue?: QueueStats;
 }
@@ -124,6 +113,17 @@ export default function OpsCenter() {
   const [showQuery, setShowQuery] = useState(false);
   const [queryText, setQueryText] = useState("");
   const [queryResult, setQueryResult] = useState<{ table: string; total: number; results: Record<string, unknown>[] } | null>(null);
+
+  // Queue per-enricher expansion
+  const [expandedEnrichers, setExpandedEnrichers] = useState<Set<string>>(new Set());
+  function toggleEnricher(name: string) {
+    setExpandedEnrichers((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  }
 
   /* ── Data fetch ── */
   const fetchDashboard = useCallback(async () => {
@@ -305,20 +305,6 @@ export default function OpsCenter() {
     ? events.filter((e) => e.event_type === eventFilter || e.action.includes(eventFilter))
     : events;
 
-  const totalActive = data?.total_active ?? 0;
-
-  /* ── Totals row for the county table ── */
-  const totals = data ? {
-    nal_total: data.counties.reduce((s, c) => s + (c.nal_total ?? 0), 0),
-    type_passed: data.counties.reduce((s, c) => s + (c.type_passed ?? 0), 0),
-    value_filtered: data.counties.reduce((s, c) => s + (c.value_filtered ?? 0), 0),
-    total_entities: data.counties.reduce((s, c) => s + c.total_entities, 0),
-    target: data.stage_counts.TARGET ?? 0,
-    lead: data.stage_counts.LEAD ?? 0,
-    opp: data.stage_counts.OPPORTUNITY ?? 0,
-    cust: data.stage_counts.CUSTOMER ?? 0,
-  } : null;
-
   /* ================================================================
      Render
      ================================================================ */
@@ -395,179 +381,75 @@ export default function OpsCenter() {
         {data && (
           <>
             {/* ════════════════════════════════════════════════════════
-                COUNTY FUNNEL TABLE
+                STAGE TOTALS + SERVICES (compact bar)
                ════════════════════════════════════════════════════════ */}
-            <div>
-              <h2 className="text-sm font-semibold text-gray-300 mb-2">County Pipeline</h2>
-              <div className="bg-gray-900 border border-gray-800 rounded-lg overflow-x-auto">
-                <table className="w-full text-xs">
-                  <thead>
-                    <tr className="border-b border-gray-800 text-gray-500">
-                      <th className="text-left px-3 py-2">County</th>
-                      <th className="text-right px-2 py-2" title="Total parcels in NAL file">NAL</th>
-                      <th className="text-right px-2 py-2" title="Passed building type filter (004/005/006/008/039)">Type</th>
-                      <th className="text-right px-2 py-2" title="Passed value threshold">$2M+</th>
-                      <th className="text-right px-2 py-2 text-gray-400" title="Total entities in DB">DB</th>
-                      <th className="text-right px-2 py-2 text-cyan-500">Lead</th>
-                      <th className="text-right px-2 py-2 text-amber-500">Opp</th>
-                      <th className="text-right px-2 py-2 text-green-500">Cust</th>
-                      <th className="text-right px-2 py-2" title="Enrichment complete">Enr%</th>
-                      <th className="text-right px-2 py-2 w-20"></th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {data.counties.map((c) => (
-                      <tr key={c.county_no} className="border-b border-gray-800/50 hover:bg-gray-800/30">
-                        <td className="px-3 py-2 font-medium text-white">
-                          <Link href={pipelineLink(c.county)} className="hover:text-blue-300">{c.county}</Link>
-                          {!c.nal_ready && <span className="ml-1 text-[9px] text-red-500">no NAL</span>}
-                        </td>
-                        <td className="text-right px-2 py-2 text-gray-600 font-mono">{fmtNum(c.nal_total)}</td>
-                        <td className="text-right px-2 py-2 text-gray-500 font-mono">
-                          {c.type_passed != null && c.nal_total ? (
-                            <span title={`${c.type_passed} of ${c.nal_total} (${Math.round(c.type_passed / c.nal_total * 100)}%)`}>
-                              {fmtNum(c.type_passed)}
-                            </span>
-                          ) : "—"}
-                        </td>
-                        <td className="text-right px-2 py-2 text-gray-400 font-mono">
-                          {c.value_filtered != null && c.type_passed ? (
-                            <span title={`${c.value_filtered} of ${c.type_passed} (${Math.round(c.value_filtered / c.type_passed * 100)}%)`}>
-                              {fmtNum(c.value_filtered)}
-                              <span className="text-gray-600 text-[10px] ml-0.5">
-                                ({Math.round(c.value_filtered / c.type_passed * 100)}%)
-                              </span>
-                            </span>
-                          ) : "—"}
-                        </td>
-                        <td className="text-right px-2 py-2 font-mono">
-                          <Link href={pipelineLink(c.county)} className="text-white hover:text-blue-300">
-                            {fmtNum(c.total_entities)}
-                          </Link>
-                        </td>
-                        <td className="text-right px-2 py-2 font-mono">
-                          {c.stages.LEAD > 0 ? (
-                            <Link href={pipelineLink(c.county, "LEAD")} className="text-cyan-400 hover:underline">
-                              {fmtNum(c.stages.LEAD)}
-                            </Link>
-                          ) : <span className="text-gray-700">0</span>}
-                        </td>
-                        <td className="text-right px-2 py-2 font-mono">
-                          {c.stages.OPPORTUNITY > 0 ? (
-                            <Link href={pipelineLink(c.county, "OPPORTUNITY")} className="text-amber-400 hover:underline">
-                              {fmtNum(c.stages.OPPORTUNITY)}
-                            </Link>
-                          ) : <span className="text-gray-700">0</span>}
-                        </td>
-                        <td className="text-right px-2 py-2 font-mono">
-                          {c.stages.CUSTOMER > 0 ? (
-                            <Link href={pipelineLink(c.county, "CUSTOMER")} className="text-green-400 hover:underline">
-                              {fmtNum(c.stages.CUSTOMER)}
-                            </Link>
-                          ) : <span className="text-gray-700">0</span>}
-                        </td>
-                        <td className="text-right px-2 py-2">
-                          <div className="flex items-center justify-end gap-1.5">
-                            <div className="w-12 h-1.5 bg-gray-800 rounded-full overflow-hidden">
-                              <div className="h-full bg-blue-500 rounded-full" style={{ width: `${c.enriched_pct}%` }} />
-                            </div>
-                            <span className="text-gray-500 text-[10px] w-7 text-right">{c.enriched_pct}%</span>
-                          </div>
-                        </td>
-                        <td className="text-right px-2 py-2">
-                          <button onClick={() => seedCounty(c.county_no)} disabled={seeding !== null || !c.nal_ready}
-                            className="bg-gray-800 hover:bg-gray-700 disabled:opacity-30 text-gray-400 text-[10px] px-2 py-1 rounded">
-                            {seeding === c.county_no ? "..." : c.total_entities > 0 ? "Reseed" : "Seed"}
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+              {/* Stage totals */}
+              <div className="lg:col-span-1">
+                <h2 className="text-sm font-semibold text-gray-300 mb-2">Pipeline Totals</h2>
+                <div className="bg-gray-900 border border-gray-800 rounded-lg p-3 space-y-1.5">
+                  {(["TARGET", "LEAD", "OPPORTUNITY", "CUSTOMER", "ARCHIVED"] as const).map((stage) => (
+                    <div key={stage} className="flex items-center justify-between text-xs">
+                      <span className={`${
+                        stage === "LEAD" ? "text-cyan-400" :
+                        stage === "OPPORTUNITY" ? "text-amber-400" :
+                        stage === "CUSTOMER" ? "text-green-400" :
+                        stage === "ARCHIVED" ? "text-red-400" : "text-gray-400"
+                      }`}>{stage}</span>
+                      <Link href={pipelineLink("", stage === "ARCHIVED" ? "" : stage)}
+                        className="font-mono text-white hover:text-blue-300">
+                        {fmtNum(data.stage_counts[stage] ?? 0)}
+                      </Link>
+                    </div>
+                  ))}
+                </div>
 
-                    {/* Totals row */}
-                    {totals && (
-                      <tr className="border-t-2 border-gray-700 bg-gray-900/80 font-medium">
-                        <td className="px-3 py-2 text-gray-400">Totals</td>
-                        <td className="text-right px-2 py-2 text-gray-500 font-mono">{fmtNum(totals.nal_total || null)}</td>
-                        <td className="text-right px-2 py-2 text-gray-500 font-mono">{fmtNum(totals.type_passed || null)}</td>
-                        <td className="text-right px-2 py-2 text-gray-400 font-mono">{fmtNum(totals.value_filtered || null)}</td>
-                        <td className="text-right px-2 py-2 text-white font-mono">{fmtNum(totals.total_entities)}</td>
-                        <td className="text-right px-2 py-2 text-cyan-400 font-mono">{fmtNum(totals.lead)}</td>
-                        <td className="text-right px-2 py-2 text-amber-400 font-mono">{fmtNum(totals.opp)}</td>
-                        <td className="text-right px-2 py-2 text-green-400 font-mono">{fmtNum(totals.cust)}</td>
-                        <td className="px-2 py-2" />
-                        <td className="px-2 py-2" />
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
+                {/* Seed county quick-launch (compact) */}
+                <h3 className="text-[10px] uppercase tracking-wider text-gray-600 mt-3 mb-1">Seed Counties</h3>
+                <div className="bg-gray-900 border border-gray-800 rounded-lg p-2 space-y-1 max-h-[180px] overflow-y-auto">
+                  {data.counties.map((c) => (
+                    <div key={c.county_no} className="flex items-center justify-between text-[11px] py-0.5">
+                      <span className="text-gray-400">{c.county}</span>
+                      <div className="flex items-center gap-1.5">
+                        {c.value_filtered != null && (
+                          <span className="text-gray-600 font-mono">{fmtNum(c.value_filtered)}</span>
+                        )}
+                        <button onClick={() => seedCounty(c.county_no)} disabled={seeding !== null || !c.nal_ready}
+                          className="bg-gray-800 hover:bg-gray-700 disabled:opacity-30 text-gray-500 text-[9px] px-1.5 py-0.5 rounded">
+                          {seeding === c.county_no ? "..." : "Seed"}
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
               </div>
-            </div>
-
-            {/* ════════════════════════════════════════════════════════
-                SERVICES + ENRICHMENT COVERAGE (side by side on desktop)
-               ════════════════════════════════════════════════════════ */}
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
 
               {/* Services */}
-              <div>
+              <div className="lg:col-span-2">
                 <h2 className="text-sm font-semibold text-gray-300 mb-2">Services</h2>
-                <div className="space-y-2">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                   {data.services.map((svc) => (
                     <button key={svc.name}
                       onClick={() => setEventFilter(eventFilter === svc.name ? null : svc.name)}
-                      className={`w-full text-left bg-gray-900 border rounded-lg p-3 transition-colors ${
+                      className={`text-left bg-gray-900 border rounded-lg p-2 transition-colors ${
                         eventFilter === svc.name
                           ? "border-blue-600 ring-1 ring-blue-500/30"
                           : "border-gray-800 hover:border-gray-700"
                       }`}
                     >
-                      <div className="flex items-center justify-between mb-1">
-                        <div className="flex items-center gap-2">
-                          <span className={`w-2 h-2 rounded-full ${SERVICE_DOT[svc.status] ?? "bg-gray-600"}`} />
-                          <span className="text-white text-xs font-medium">{svc.name}</span>
+                      <div className="flex items-center justify-between mb-0.5">
+                        <div className="flex items-center gap-1.5">
+                          <span className={`w-1.5 h-1.5 rounded-full ${SERVICE_DOT[svc.status] ?? "bg-gray-600"}`} />
+                          <span className="text-white text-[11px] font-medium">{svc.name}</span>
                         </div>
-                        <span className="text-gray-600 text-[10px]">{svc.status}</span>
+                        <span className="text-gray-600 text-[9px]">{svc.status}</span>
                       </div>
                       <p className="text-gray-500 text-[10px] truncate">{svc.detail}</p>
-                      <p className="text-gray-700 text-[10px] mt-0.5">
-                        Last heartbeat: {new Date(svc.last_heartbeat).toLocaleTimeString()}
-                      </p>
                     </button>
                   ))}
                   {data.services.length === 0 && (
-                    <p className="text-gray-600 text-xs">No services registered.</p>
+                    <p className="text-gray-600 text-xs col-span-2">No services registered.</p>
                   )}
-                </div>
-              </div>
-
-              {/* Enrichment Coverage */}
-              <div>
-                <h2 className="text-sm font-semibold text-gray-300 mb-2">
-                  Enrichment Coverage
-                  <span className="text-gray-600 font-normal ml-2">({fmtNum(totalActive)} active entities)</span>
-                </h2>
-                <div className="bg-gray-900 border border-gray-800 rounded-lg p-3 space-y-2">
-                  {Object.entries(data.coverage).map(([key, val]) => (
-                    <button key={key}
-                      onClick={() => setEventFilter(eventFilter === key ? null : key)}
-                      className={`w-full flex items-center gap-2 py-1 rounded px-1 transition-colors ${
-                        eventFilter === key ? "bg-blue-950/50" : "hover:bg-gray-800/50"
-                      }`}
-                    >
-                      <span className="text-gray-400 text-[11px] w-28 text-left shrink-0 truncate">
-                        {ENRICHER_LABELS[key] ?? key}
-                      </span>
-                      <div className="flex-1 h-2 bg-gray-800 rounded-full overflow-hidden">
-                        <div
-                          className={`h-full rounded-full ${val.pct >= 80 ? "bg-green-500" : val.pct >= 40 ? "bg-blue-500" : val.pct > 0 ? "bg-amber-500" : "bg-gray-700"}`}
-                          style={{ width: `${Math.max(val.pct, val.count > 0 ? 2 : 0)}%` }}
-                        />
-                      </div>
-                      <span className="text-gray-500 text-[10px] w-16 text-right shrink-0">
-                        {fmtNum(val.count)} ({val.pct}%)
-                      </span>
-                    </button>
-                  ))}
                 </div>
               </div>
             </div>
@@ -621,12 +503,13 @@ export default function OpsCenter() {
               })}
             </div>
 
-            {/* Per-enricher breakdown */}
+            {/* Per-enricher breakdown — click row to expand county detail */}
             <div className="bg-gray-900 border border-gray-800 rounded-lg overflow-x-auto">
               <table className="w-full text-xs">
                 <thead>
                   <tr className="border-b border-gray-800 text-gray-500">
-                    <th className="text-left px-3 py-2">Enricher</th>
+                    <th className="text-left px-3 py-2 w-6"></th>
+                    <th className="text-left px-2 py-2">Enricher</th>
                     <th className="text-right px-2 py-2 text-blue-500">Pending</th>
                     <th className="text-right px-2 py-2 text-cyan-500">Running</th>
                     <th className="text-right px-2 py-2 text-green-500">Success</th>
@@ -640,25 +523,76 @@ export default function OpsCenter() {
                     const total = Object.values(statuses).reduce((s, n) => s + n, 0);
                     const done = (statuses.SUCCESS ?? 0) + (statuses.REJECTED ?? 0);
                     const pct = total > 0 ? Math.round(done / total * 100) : 0;
+                    const isOpen = expandedEnrichers.has(enricher);
+                    const counties = data.queue?.enricher_by_county[enricher] ?? {};
+                    const countyEntries = Object.entries(counties).sort(
+                      ([a], [b]) => a.localeCompare(b)
+                    );
+
                     return (
-                      <tr key={enricher} className="border-b border-gray-800/50 hover:bg-gray-800/20">
-                        <td className="px-3 py-1.5 font-medium text-gray-300">
-                          {ENRICHER_LABELS[enricher] ?? enricher}
-                        </td>
-                        <td className="text-right px-2 py-1.5 font-mono text-blue-400">{statuses.PENDING ?? 0}</td>
-                        <td className="text-right px-2 py-1.5 font-mono text-cyan-400">{statuses.RUNNING ?? 0}</td>
-                        <td className="text-right px-2 py-1.5 font-mono text-green-400">{statuses.SUCCESS ?? 0}</td>
-                        <td className="text-right px-2 py-1.5 font-mono text-amber-400">{statuses.FAILED ?? 0}</td>
-                        <td className="text-right px-2 py-1.5 font-mono text-red-400">{statuses.REJECTED ?? 0}</td>
-                        <td className="text-right px-2 py-1.5">
-                          <div className="flex items-center justify-end gap-1.5">
-                            <div className="w-14 h-1.5 bg-gray-800 rounded-full overflow-hidden">
-                              <div className="h-full bg-green-500 rounded-full" style={{ width: `${pct}%` }} />
+                      <Fragment key={enricher}>
+                        <tr
+                          onClick={() => toggleEnricher(enricher)}
+                          className="border-b border-gray-800/50 hover:bg-gray-800/30 cursor-pointer"
+                        >
+                          <td className="px-3 py-1.5 text-gray-500 text-[10px]">
+                            {isOpen ? "▼" : "▶"}
+                          </td>
+                          <td className="px-2 py-1.5 font-medium text-gray-300">
+                            {ENRICHER_LABELS[enricher] ?? enricher}
+                          </td>
+                          <td className="text-right px-2 py-1.5 font-mono text-blue-400">{statuses.PENDING ?? 0}</td>
+                          <td className="text-right px-2 py-1.5 font-mono text-cyan-400">{statuses.RUNNING ?? 0}</td>
+                          <td className="text-right px-2 py-1.5 font-mono text-green-400">{statuses.SUCCESS ?? 0}</td>
+                          <td className="text-right px-2 py-1.5 font-mono text-amber-400">{statuses.FAILED ?? 0}</td>
+                          <td className="text-right px-2 py-1.5 font-mono text-red-400">{statuses.REJECTED ?? 0}</td>
+                          <td className="text-right px-2 py-1.5">
+                            <div className="flex items-center justify-end gap-1.5">
+                              <div className="w-14 h-1.5 bg-gray-800 rounded-full overflow-hidden">
+                                <div className="h-full bg-green-500 rounded-full" style={{ width: `${pct}%` }} />
+                              </div>
+                              <span className="text-gray-500 text-[10px] w-7 text-right">{pct}%</span>
                             </div>
-                            <span className="text-gray-500 text-[10px] w-7 text-right">{pct}%</span>
-                          </div>
-                        </td>
-                      </tr>
+                          </td>
+                        </tr>
+
+                        {isOpen && countyEntries.length > 0 && countyEntries.map(([county, cstats]) => {
+                          const ctotal = Object.values(cstats).reduce((s, n) => s + n, 0);
+                          const cdone = (cstats.SUCCESS ?? 0) + (cstats.REJECTED ?? 0);
+                          const cpct = ctotal > 0 ? Math.round(cdone / ctotal * 100) : 0;
+                          return (
+                            <tr key={`${enricher}-${county}`} className="border-b border-gray-800/30 bg-gray-950/40">
+                              <td className="px-3 py-1"></td>
+                              <td className="px-2 py-1 pl-6 text-gray-500 text-[11px]">
+                                <Link href={pipelineLink(county)} className="hover:text-blue-300">
+                                  {county}
+                                </Link>
+                              </td>
+                              <td className="text-right px-2 py-1 font-mono text-blue-400/80">{cstats.PENDING ?? 0}</td>
+                              <td className="text-right px-2 py-1 font-mono text-cyan-400/80">{cstats.RUNNING ?? 0}</td>
+                              <td className="text-right px-2 py-1 font-mono text-green-400/80">{cstats.SUCCESS ?? 0}</td>
+                              <td className="text-right px-2 py-1 font-mono text-amber-400/80">{cstats.FAILED ?? 0}</td>
+                              <td className="text-right px-2 py-1 font-mono text-red-400/80">{cstats.REJECTED ?? 0}</td>
+                              <td className="text-right px-2 py-1">
+                                <div className="flex items-center justify-end gap-1.5">
+                                  <div className="w-12 h-1 bg-gray-800 rounded-full overflow-hidden">
+                                    <div className="h-full bg-green-500/70 rounded-full" style={{ width: `${cpct}%` }} />
+                                  </div>
+                                  <span className="text-gray-600 text-[9px] w-7 text-right">{cpct}%</span>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+
+                        {isOpen && countyEntries.length === 0 && (
+                          <tr className="border-b border-gray-800/30 bg-gray-950/40">
+                            <td colSpan={8} className="px-2 py-2 pl-9 text-gray-600 text-[10px] italic">
+                              No county data yet for this enricher.
+                            </td>
+                          </tr>
+                        )}
+                      </Fragment>
                     );
                   })}
                 </tbody>
