@@ -38,59 +38,94 @@ logger = logging.getLogger(__name__)
 SUNBIZ_QUARTERLY_URL = "https://dos.fl.gov/sunbiz/other-services/data-downloads/quarterly-data/"
 
 # Record is 1440 characters fixed-width ASCII.
-# Field positions per FL DoS Corporate File Definitions PDF.
+# Field positions from FL DoS Corporate File Definitions (official spec).
 # Positions in the spec are 1-indexed; Python slices are 0-indexed.
-#
-# CONFIRMED FROM SPEC (Corporate Data File):
-#   Field 1: Corporation Number, start 1, length 12  → [0:12]
-#   Field 2: Corporation Name,   start 13, length 192 → [12:204]
-#   Field 3: Status,             start 205, length 1  → [204:205]  ("A" or "I")
-#
-# UNVERIFIED — positions for fields 4 onward are best-effort and may
-# need adjustment after the full Corporate File Definitions PDF is shared.
-# Spec mentions fields for filing date, FEI, principal/mailing addresses,
-# registered agent, and up to 6 officers starting at field 37.
 RECORD_LENGTH = 1440
 
 FIELD_MAP = {
-    # CONFIRMED FROM SPEC
-    "document_number":    (0, 12),
-    "corp_name":          (12, 204),    # 192 chars (was wrongly at (22, 182))
-    "status_code":        (204, 205),   # 1 char: "A" active, "I" inactive
-    # UNVERIFIED — best-effort guesses, may produce garbage until spec is confirmed
-    "filing_date":        (205, 213),   # 8 chars guess (MMDDYYYY?)
-    "fei_number":         (213, 222),   # 9 chars guess
-    "principal_street":   (222, 342),   # 120 chars guess
-    "principal_city":     (342, 402),   # 60 chars guess
-    "principal_state":    (402, 404),   # 2 chars
-    "principal_zip":      (404, 414),   # 10 chars
-    "principal_country":  (414, 416),   # 2 chars
-    "mailing_street":     (416, 536),   # 120 chars
-    "mailing_city":       (536, 596),   # 60 chars
-    "mailing_state":      (596, 598),   # 2 chars
-    "mailing_zip":        (598, 608),   # 10 chars
-    "mailing_country":    (608, 610),   # 2 chars
-    "registered_agent":   (610, 670),   # 60 chars
-    "ra_street":          (670, 730),   # 60 chars
-    "ra_city":             (730, 770),   # 40 chars
-    "ra_state":           (770, 772),   # 2 chars
-    "ra_zip":             (772, 782),   # 10 chars
+    # Core identification (fields 1-3)
+    "document_number":    (0, 12),       # Field 1: Corporation Number, len 12
+    "corp_name":          (12, 204),     # Field 2: Corporation Name, len 192
+    "status_code":        (204, 205),    # Field 3: Status, 1 char "A"/"I"
+    # Filing type (field 4)
+    "filing_type":        (205, 220),    # Field 4: Filing Type, len 15 (DOMP, DOMNP, etc.)
+    # Principal address (fields 5-10)
+    "principal_address1": (220, 262),    # Field 5: Address 1, len 42
+    "principal_address2": (262, 304),    # Field 6: Address 2, len 42
+    "principal_city":     (304, 332),    # Field 7: City, len 28
+    "principal_state":    (332, 334),    # Field 8: State, len 2
+    "principal_zip":      (334, 344),    # Field 9: Zip, len 10
+    "principal_country":  (344, 346),    # Field 10: Country, len 2
+    # Mailing address (fields 11-16)
+    "mailing_address1":   (346, 388),    # Field 11: Mail Address 1, len 42
+    "mailing_address2":   (388, 430),    # Field 12: Mail Address 2, len 42
+    "mailing_city":       (430, 458),    # Field 13: Mail City, len 28
+    "mailing_state":      (458, 460),    # Field 14: Mail State, len 2
+    "mailing_zip":        (460, 470),    # Field 15: Mail Zip, len 10
+    "mailing_country":    (470, 472),    # Field 16: Mail Country, len 2
+    # Filing dates and FEI (fields 17-20)
+    "file_date":          (472, 480),    # Field 17: File Date, len 8 (formation date)
+    "fei_number":         (480, 494),    # Field 18: FEI Number, len 14
+    "more_than_six_off":  (494, 495),    # Field 19: More-than-6-officers flag, 1 char Y/blank
+    "last_txn_date":      (495, 503),    # Field 20: Last Transaction Date, len 8
+    "state_country":      (503, 505),    # Field 21: State Country, len 2
+    # Annual report history (fields 22-30)
+    "report_year_1":      (505, 509),    # Field 22, len 4
+    # Field 23 filler (509, 510) skipped
+    "report_date_1":      (510, 518),    # Field 24, len 8
+    "report_year_2":      (518, 522),    # Field 25, len 4
+    # Field 26 filler (522, 523) skipped
+    "report_date_2":      (523, 531),    # Field 27, len 8
+    "report_year_3":      (531, 535),    # Field 28, len 4
+    # Field 29 filler (535, 536) skipped
+    "report_date_3":      (536, 544),    # Field 30, len 8
+    # Registered agent (fields 31-36)
+    "registered_agent":   (544, 586),    # Field 31: RA Name, len 42
+    "ra_type":            (586, 587),    # Field 32: RA Type, 1 char P/C
+    "ra_street":          (587, 629),    # Field 33: RA Address, len 42
+    "ra_city":            (629, 657),    # Field 34: RA City, len 28
+    "ra_state":           (657, 659),    # Field 35: RA State, len 2
+    "ra_zip":             (659, 668),    # Field 36: RA Zip+4, len 9
 }
 
-# Officers start after the registered agent fields, up to 6 officers.
-# Spec says officers begin at field 37 — exact byte position UNVERIFIED.
-# Best estimate: after ra_zip (ends at 782), officers begin around 782.
-# Each officer block: title(4) + name(50) + street(50) + city(40) + state(2) + zip(10) = ~156 chars
-# But record length only allows (1440 - 782) / 6 ≈ 109 chars per officer.
-OFFICER_START = 782
-OFFICER_BLOCK_SIZE = 109
+# Filing type codes (Field 4) — useful for filtering condo associations
+FILING_TYPE_CODES = {
+    "DOMP":  "Domestic Profit",
+    "DOMNP": "Domestic Non-Profit",      # Most condo associations
+    "FORP":  "Foreign Profit",
+    "FORNP": "Foreign Non-Profit",
+    "DOMLP": "Domestic Limited Partnership",
+    "FORLP": "Foreign Limited Partnership",
+    "FLAL":  "Florida LLC",
+    "FORL":  "Foreign LLC",
+    "NPREG": "Non-Profit Registration",
+    "TRUST": "Declaration of Trust",
+    "AGENT": "Designation of Registered Agent",
+}
+
+# Officer title codes (Officer Title field, fields 37/44/51/58/65/72)
+OFFICER_TITLE_CODES = {
+    "P": "President",
+    "T": "Treasurer",
+    "C": "Chairman",
+    "V": "Vice President",
+    "S": "Secretary",
+    "D": "Director",
+}
+
+# Officers (fields 37-78): 6 officer blocks each 128 chars wide
+# Officer 1 starts at position 669 (Python index 668), ends at 796.
+# Officer 2 starts at 797, etc. (797 - 669 = 128 chars per block)
+OFFICER_START = 668
+OFFICER_BLOCK_SIZE = 128
 OFFICER_FIELDS = {
-    "title":  (0, 4),
-    "name":   (4, 54),
-    "street": (54, 94),
-    "city":   (94, 109),     # truncated to fit
-    "state":  (109, 111),
-    "zip":    (111, 116),
+    "title":   (0, 4),       # Officer N Title, 4 chars
+    "type":    (4, 5),       # Officer N Type, 1 char (P=Person, C=Corp)
+    "name":    (5, 47),      # Officer N Name, 42 chars
+    "address": (47, 89),     # Officer N Address, 42 chars
+    "city":    (89, 117),    # Officer N City, 28 chars
+    "state":   (117, 119),   # Officer N State, 2 chars
+    "zip":     (119, 128),   # Officer N Zip+4, 9 chars
 }
 MAX_OFFICERS = 6
 
@@ -157,22 +192,49 @@ def parse_record(line: str) -> dict | None:
             officers.append(officer)
     record["officers"] = officers
 
-    # Build composite fields
-    addr_parts = [record["principal_street"], record["principal_city"],
-                  record["principal_state"], record["principal_zip"]]
+    # Build composite address strings
+    addr_parts = [
+        record.get("principal_address1", ""),
+        record.get("principal_address2", ""),
+        record.get("principal_city", ""),
+        record.get("principal_state", ""),
+        record.get("principal_zip", ""),
+    ]
     record["principal_address"] = ", ".join(p for p in addr_parts if p)
 
-    ra_parts = [record["ra_street"], record["ra_city"],
-                record["ra_state"], record["ra_zip"]]
+    mail_parts = [
+        record.get("mailing_address1", ""),
+        record.get("mailing_address2", ""),
+        record.get("mailing_city", ""),
+        record.get("mailing_state", ""),
+        record.get("mailing_zip", ""),
+    ]
+    record["mailing_address"] = ", ".join(p for p in mail_parts if p)
+
+    ra_parts = [
+        record.get("ra_street", ""),
+        record.get("ra_city", ""),
+        record.get("ra_state", ""),
+        record.get("ra_zip", ""),
+    ]
     record["ra_address"] = ", ".join(p for p in ra_parts if p)
+
+    # Decode filing type
+    filing_type_code = record.get("filing_type", "").strip()
+    record["filing_type_label"] = FILING_TYPE_CODES.get(filing_type_code, filing_type_code)
+
+    # Decode officer titles
+    for officer in record.get("officers", []):
+        title_code = officer.get("title", "").strip()
+        officer["title_label"] = OFFICER_TITLE_CODES.get(title_code, title_code)
 
     # Decode status
     record["status"] = STATUS_CODES.get(record["status_code"], record["status_code"])
 
-    # Format filing date from MMYY to MM/YY
-    fd = record["filing_date"]
-    if len(fd) == 4 and fd.isdigit():
-        record["filing_date_formatted"] = f"{fd[:2]}/{fd[2:]}"
+    # Format file date from MMDDYYYY (per spec field 17) into MM/DD/YYYY display
+    fd = record.get("file_date", "")
+    if len(fd) == 8 and fd.isdigit():
+        record["filing_date_formatted"] = f"{fd[:2]}/{fd[2:4]}/{fd[4:]}"
     else:
         record["filing_date_formatted"] = fd
 
@@ -450,35 +512,54 @@ def _log_sample_record(line: str):
         logger.debug(f"Sample record too short ({len(line)} chars)")
         return
 
-    logger.info("=== Sample Record (field position debugging) ===")
-    logger.info(f"  Document #:    [{record['document_number']}]")
-    logger.info(f"  Filing Type:   [{record['filing_type_code']}]")
-    logger.info(f"  Filing Date:   [{record['filing_date']}]")
-    logger.info(f"  Status:        [{record['status_code']}] = {record['status']}")
-    logger.info(f"  Corp Name:     [{record['corp_name'][:80]}]")
-    logger.info(f"  Principal Addr:[{record['principal_address'][:80]}]")
-    logger.info(f"  Reg Agent:     [{record['registered_agent']}]")
-    logger.info(f"  RA Address:    [{record['ra_address'][:60]}]")
+    logger.info("=== Sample Record (field position verification) ===")
+    logger.info(f"  Document #:    [{record.get('document_number', '')}]")
+    logger.info(f"  Corp Name:     [{record.get('corp_name', '')[:80]}]")
+    logger.info(f"  Status:        [{record.get('status_code', '')}] = {record.get('status', '')}")
+    logger.info(f"  Filing Type:   [{record.get('filing_type', '')}] = {record.get('filing_type_label', '')}")
+    logger.info(f"  File Date:     [{record.get('file_date', '')}]")
+    logger.info(f"  FEI Number:    [{record.get('fei_number', '')}]")
+    logger.info(f"  Principal:     [{record.get('principal_address', '')[:80]}]")
+    logger.info(f"  Mailing:       [{record.get('mailing_address', '')[:80]}]")
+    logger.info(f"  Reg Agent:     [{record.get('registered_agent', '')}]")
+    logger.info(f"  RA Type:       [{record.get('ra_type', '')}]")
+    logger.info(f"  RA Address:    [{record.get('ra_address', '')[:60]}]")
     for i, officer in enumerate(record.get("officers", [])[:3]):
-        logger.info(f"  Officer {i+1}:     [{officer['title']}] {officer['name']}")
+        logger.info(
+            f"  Officer {i+1}:     [{officer.get('title', '')}={officer.get('title_label', '')}] "
+            f"{officer.get('name', '')}"
+        )
     logger.info("=== End Sample ===")
 
 
 # ─── CSV Output ───
 
 CSV_HEADERS = [
-    "document_number", "filing_date", "filing_date_formatted",
+    "document_number",
+    "corp_name",
+    "status_code", "status",
+    "filing_type", "filing_type_label",
+    "file_date", "filing_date_formatted", "last_txn_date",
     "fei_number",
-    "status_code", "status", "corp_name",
-    "principal_street", "principal_city", "principal_state", "principal_zip",
+    # Principal address
+    "principal_address1", "principal_address2",
+    "principal_city", "principal_state", "principal_zip", "principal_country",
     "principal_address",
-    "registered_agent", "ra_street", "ra_city", "ra_state", "ra_zip", "ra_address",
-    "officer_1_title", "officer_1_name",
-    "officer_2_title", "officer_2_name",
-    "officer_3_title", "officer_3_name",
-    "officer_4_title", "officer_4_name",
-    "officer_5_title", "officer_5_name",
-    "officer_6_title", "officer_6_name",
+    # Mailing address
+    "mailing_address1", "mailing_address2",
+    "mailing_city", "mailing_state", "mailing_zip", "mailing_country",
+    "mailing_address",
+    # Registered agent
+    "registered_agent", "ra_type",
+    "ra_street", "ra_city", "ra_state", "ra_zip", "ra_address",
+    # Officers (each: title, type, name, address, city, state, zip)
+    "officer_1_title", "officer_1_title_label", "officer_1_name", "officer_1_type",
+    "officer_2_title", "officer_2_title_label", "officer_2_name", "officer_2_type",
+    "officer_3_title", "officer_3_title_label", "officer_3_name", "officer_3_type",
+    "officer_4_title", "officer_4_title_label", "officer_4_name", "officer_4_type",
+    "officer_5_title", "officer_5_title_label", "officer_5_name", "officer_5_type",
+    "officer_6_title", "officer_6_title_label", "officer_6_name", "officer_6_type",
+    "more_than_six_off",
 ]
 
 
@@ -491,10 +572,14 @@ def _flatten_record(record: dict) -> dict:
         if i < len(record.get("officers", [])):
             officer = record["officers"][i]
             row[f"{prefix}_title"] = officer.get("title", "")
+            row[f"{prefix}_title_label"] = officer.get("title_label", "")
             row[f"{prefix}_name"] = officer.get("name", "")
+            row[f"{prefix}_type"] = officer.get("type", "")
         else:
             row[f"{prefix}_title"] = ""
+            row[f"{prefix}_title_label"] = ""
             row[f"{prefix}_name"] = ""
+            row[f"{prefix}_type"] = ""
 
     return row
 
