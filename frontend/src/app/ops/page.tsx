@@ -346,6 +346,7 @@ export default function OpsCenter() {
         <div className="flex items-center gap-2">
           <Link href="/files" className="text-gray-500 hover:text-white text-xs">Files</Link>
           <Link href="/ref" className="text-gray-500 hover:text-white text-xs">Ref</Link>
+          <Link href="/help" className="text-blue-400 hover:text-blue-300 text-xs font-medium">? Help</Link>
         </div>
       </header>
 
