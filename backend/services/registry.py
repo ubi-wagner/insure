@@ -78,6 +78,64 @@ def set_status(name: str, status: str, detail: str):
         db.close()
 
 
+def prune_legacy_services(legacy_names: list[str] | None = None) -> int:
+    """Remove known-legacy service rows from the registry.
+
+    These are services that existed in earlier architectures but are no
+    longer started by the app (e.g. 'enrichment_worker' was replaced by
+    'job_consumer' + 'queue_manager'). Their stale DB rows clutter the
+    Ops page with ghost 'red' statuses forever.
+    """
+    if legacy_names is None:
+        legacy_names = ["enrichment_worker", "hunter"]
+
+    db = SessionLocal()
+    try:
+        count = db.query(ServiceRegistry).filter(
+            ServiceRegistry.name.in_(legacy_names)
+        ).delete(synchronize_session=False)
+        db.commit()
+        if count:
+            logger.info(f"Pruned {count} legacy service rows: {legacy_names}")
+        return count
+    except Exception as e:
+        db.rollback()
+        logger.warning(f"Failed to prune legacy services: {e}")
+        return 0
+    finally:
+        db.close()
+
+
+def prune_stale_services(max_age_seconds: int = 3600) -> int:
+    """Remove service rows that haven't heartbeated in more than max_age_seconds.
+
+    This is safer than prune_legacy_services because it only deletes rows
+    that have clearly gone away (no heartbeat in an hour by default).
+    """
+    db = SessionLocal()
+    try:
+        now = datetime.utcnow()
+        services = db.query(ServiceRegistry).all()
+        to_delete = [
+            svc.name for svc in services
+            if (now - svc.last_heartbeat).total_seconds() > max_age_seconds
+        ]
+        if not to_delete:
+            return 0
+        count = db.query(ServiceRegistry).filter(
+            ServiceRegistry.name.in_(to_delete)
+        ).delete(synchronize_session=False)
+        db.commit()
+        logger.info(f"Pruned {count} stale service rows: {to_delete}")
+        return count
+    except Exception as e:
+        db.rollback()
+        logger.warning(f"Failed to prune stale services: {e}")
+        return 0
+    finally:
+        db.close()
+
+
 def get_all_statuses() -> list[dict]:
     """Get all registered services and their status."""
     db = SessionLocal()
