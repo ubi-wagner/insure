@@ -52,10 +52,24 @@ ENRICHER_CHAIN = [
     {"enricher": "cream_score",         "priority": -1, "depends_on": "__all__"},  # Runs last
 ]
 
-CONSUMER_BATCH_SIZE = int(os.getenv("JOB_BATCH_SIZE", "10"))
-CONSUMER_POLL_INTERVAL = int(os.getenv("JOB_POLL_INTERVAL", "15"))  # seconds
+CONSUMER_BATCH_SIZE = int(os.getenv("JOB_BATCH_SIZE", "25"))
+CONSUMER_POLL_INTERVAL = int(os.getenv("JOB_POLL_INTERVAL", "10"))  # seconds
 STALE_LOCK_MINUTES = 10  # Jobs locked longer than this are considered stale
 MAX_ATTEMPTS = 3
+
+# Enrichers that only read local files / do pure computation — no need
+# for the per-job sleep throttle that protects external APIs.
+FAST_LOCAL_ENRICHERS = {
+    "dbpr_bulk", "dbpr_payments", "dbpr_kfi", "dbpr_sirs", "dbpr_noic",
+    "cam_license", "sunbiz_bulk", "dor_nal",
+    "oir_market", "citizens_insurance", "cream_score",
+}
+
+# Enrichers that hit external APIs — keep the throttle so we don't get
+# rate-limited or blocked.
+NETWORK_ENRICHERS = {
+    "fema_flood", "property_appraiser", "fdot_parcels", "dbpr_building",
+}
 
 
 # ─── Producer ───────────────────────────────────────────────────────
@@ -267,8 +281,10 @@ def consume_batch(db: Session) -> int:
 
             processed += 1
 
-        # Brief pause between jobs to not hammer external APIs
-        time.sleep(0.5)
+        # Only throttle when the job hit an external API. File-based and
+        # pure-compute enrichers can run flat-out.
+        if job.enricher in NETWORK_ENRICHERS:
+            time.sleep(0.5)
 
     # After processing, update enrichment_status for affected entities
     _update_entity_statuses(db, [j.entity_id for j in job_objects[:processed]])

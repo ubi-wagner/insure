@@ -568,6 +568,14 @@ def recalibrate_all(db: Session = Depends(get_db)):
     # loop that generated ~N queries × 9 enrichers which would HTTP-timeout
     # on large datasets.
 
+    # Import the canonical ENRICHER_CHAIN so we use the SAME priorities
+    # the producer uses. Hardcoding priority=5 meant new jobs landed at a
+    # lower tier than the original producer priorities, which caused
+    # dbpr_kfi/noic/oir_market/citizens/cream_score to stall behind the
+    # priority-10 dbpr_bulk backlog.
+    from services.job_queue import ENRICHER_CHAIN
+    priority_map = {spec["enricher"]: spec["priority"] for spec in ENRICHER_CHAIN}
+
     # Order matters because of dependencies:
     #   dbpr_bulk → dbpr_payments / dbpr_kfi / dbpr_sirs / dbpr_building
     #   oir_market → citizens_insurance
@@ -598,6 +606,9 @@ def recalibrate_all(db: Session = Depends(get_db)):
 
     requeue_summary: dict[str, dict] = {}
     for enricher in enrichers_to_rerun:
+        # Pull the correct priority from the producer chain. Default to 5
+        # for anything unknown (shouldn't happen, but safe).
+        priority = priority_map.get(enricher, 5)
         try:
             # Step 1: Remove this enricher from enrichment_sources on every
             # entity that had it (single UPDATE).
@@ -626,25 +637,29 @@ def recalibrate_all(db: Session = Depends(get_db)):
             # Step 3: Bulk upsert job_queue entries for every LEAD-stage
             # entity. Uses the unique index (entity_id, enricher) so
             # existing jobs get reset and missing ones get created in a
-            # single statement.
+            # single statement. CRITICAL: the DO UPDATE clause sets both
+            # priority AND created_at from EXCLUDED so requeued jobs
+            # sort correctly in the consumer's batch query.
             upsert_res = db.execute(sa.text("""
                 INSERT INTO job_queue
                     (entity_id, enricher, status, priority, attempts,
                      max_attempts, last_error, locked_by, locked_at,
                      completed_at, created_at)
-                SELECT e.id, :enricher, 'PENDING', 5, 0,
+                SELECT e.id, :enricher, 'PENDING', :priority, 0,
                        3, NULL, NULL, NULL,
                        NULL, NOW()
                 FROM entities e
                 WHERE e.pipeline_stage = 'LEAD'
                 ON CONFLICT (entity_id, enricher) DO UPDATE SET
                     status = 'PENDING',
+                    priority = EXCLUDED.priority,
                     attempts = 0,
                     last_error = NULL,
                     locked_by = NULL,
                     locked_at = NULL,
-                    completed_at = NULL
-            """), {"enricher": enricher})
+                    completed_at = NULL,
+                    created_at = EXCLUDED.created_at
+            """), {"enricher": enricher, "priority": priority})
             requeued = upsert_res.rowcount or 0
 
             db.commit()
@@ -652,6 +667,7 @@ def recalibrate_all(db: Session = Depends(get_db)):
             requeue_summary[enricher] = {
                 "cleared": cleared,
                 "requeued": requeued,
+                "priority": priority,
             }
         except Exception as e:
             db.rollback()
