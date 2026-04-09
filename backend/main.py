@@ -44,7 +44,14 @@ async def lifespan(app: FastAPI):
     # Register services in the registry (only if migrations ran)
     if migration_ok:
         try:
-            from services.registry import register
+            from services.registry import register, prune_legacy_services
+
+            # Remove ghost rows from retired architectures so the Ops page
+            # doesn't show permanently-stale services (enrichment_worker
+            # was replaced by job_consumer + queue_manager; hunter is an
+            # older legacy worker).
+            prune_legacy_services()
+
             has_anthropic = bool(os.getenv("ANTHROPIC_API_KEY"))
             register("api", capabilities={
                 "version": "0.1.0",

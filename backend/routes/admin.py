@@ -478,6 +478,23 @@ def purge_rejected(db: Session = Depends(get_db)):
     return {"success": True, "purged": count}
 
 
+@router.post("/api/admin/services/prune")
+def prune_services(stale_only: bool = Query(False, description="Only prune services with no heartbeat in an hour")):
+    """Remove ghost / stale service rows from the registry.
+
+    - Default: deletes known-legacy services (enrichment_worker, hunter).
+      Safe because we know these were replaced by job_consumer + queue_manager.
+    - With stale_only=true: deletes any service that hasn't heartbeated in
+      over an hour. Useful after architecture changes.
+    """
+    from services.registry import prune_legacy_services, prune_stale_services
+    if stale_only:
+        count = prune_stale_services()
+    else:
+        count = prune_legacy_services()
+    return {"success": True, "pruned": count}
+
+
 @router.post("/api/admin/auto-seed-scan")
 def manual_auto_seed_scan(min_value: int = Query(None, description="Min market value override")):
     """Manually trigger the auto-seed scanner to look for NAL+SDF pairs.

@@ -12,8 +12,8 @@ if DATABASE_URL.startswith("postgres://"):
 engine = create_engine(
     DATABASE_URL,
     pool_pre_ping=True,       # Test connections before use (handles DB restarts)
-    pool_size=5,
-    max_overflow=10,
+    pool_size=20,              # Enough for ~15 per-enricher workers + API + assoc
+    max_overflow=20,
     pool_recycle=1800,         # Recycle connections every 30min
 )
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
