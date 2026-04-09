@@ -177,24 +177,41 @@ def _dependency_met(job: JobQueue, db: Session) -> bool:
     return dep_job.status in ("SUCCESS", "REJECTED")
 
 
-def consume_batch(db: Session) -> int:
+def consume_batch(db: Session, enricher_filter: str | None = None) -> int:
     """Pick up to CONSUMER_BATCH_SIZE PENDING jobs and run them.
 
     Uses FOR UPDATE SKIP LOCKED to prevent multiple workers from grabbing
     the same job. Each job is processed in its own try/except so one failure
     doesn't block the batch.
+
+    If enricher_filter is set, only picks jobs for that specific enricher.
+    This lets per-enricher worker threads run in parallel without stepping
+    on each other's toes.
     """
     # Fetch candidate jobs — PENDING, ordered by priority DESC (highest first)
-    jobs = db.execute(
-        sa.text("""
-            SELECT id FROM job_queue
-            WHERE status = 'PENDING'
-            ORDER BY priority DESC, created_at ASC
-            LIMIT :limit
-            FOR UPDATE SKIP LOCKED
-        """),
-        {"limit": CONSUMER_BATCH_SIZE * 2}  # Fetch extra in case some have unmet deps
-    ).fetchall()
+    if enricher_filter:
+        jobs = db.execute(
+            sa.text("""
+                SELECT id FROM job_queue
+                WHERE status = 'PENDING'
+                  AND enricher = :enricher
+                ORDER BY priority DESC, created_at ASC
+                LIMIT :limit
+                FOR UPDATE SKIP LOCKED
+            """),
+            {"enricher": enricher_filter, "limit": CONSUMER_BATCH_SIZE * 2}
+        ).fetchall()
+    else:
+        jobs = db.execute(
+            sa.text("""
+                SELECT id FROM job_queue
+                WHERE status = 'PENDING'
+                ORDER BY priority DESC, created_at ASC
+                LIMIT :limit
+                FOR UPDATE SKIP LOCKED
+            """),
+            {"limit": CONSUMER_BATCH_SIZE * 2}
+        ).fetchall()
 
     if not jobs:
         return 0
@@ -457,7 +474,11 @@ def get_queue_stats(db: Session) -> dict:
 # ─── Background Loops ───────────────────────────────────────────────
 
 def _consumer_loop():
-    """Background thread: continuously consume jobs from the queue."""
+    """Background thread: continuously consume jobs from the queue.
+
+    Legacy catch-all loop — kept for backward compatibility. Active
+    deployment uses per-enricher workers (see _enricher_worker_loop).
+    """
     from services.registry import register, heartbeat
 
     register("job_consumer", capabilities={
@@ -473,7 +494,6 @@ def _consumer_loop():
         try:
             processed = consume_batch(db)
             if processed > 0:
-                # Get pending count for heartbeat
                 pending = db.query(JobQueue).filter(JobQueue.status == "PENDING").count()
                 heartbeat("job_consumer",
                           detail=f"Processed {processed} jobs, {pending} pending")
@@ -488,6 +508,59 @@ def _consumer_loop():
             db.close()
 
         time.sleep(CONSUMER_POLL_INTERVAL)
+
+
+def _enricher_worker_loop(enricher: str):
+    """Background thread dedicated to ONE enricher.
+
+    This is how we get parallelism: spawn one of these per enricher, and
+    each polls independently for its own enricher's jobs. No more
+    single-threaded serial processing — DBPR Bulk, Sunbiz, OIR Market,
+    Citizens, Cream Score, etc. all run simultaneously.
+    """
+    from services.registry import register, heartbeat
+
+    service_name = f"worker_{enricher}"
+    register(service_name, capabilities={
+        "worker_id": f"{WORKER_ID}-{enricher}",
+        "enricher": enricher,
+        "batch_size": CONSUMER_BATCH_SIZE,
+        "poll_interval": CONSUMER_POLL_INTERVAL,
+    }, detail=f"Starting {enricher} worker")
+
+    logger.info(f"Enricher worker started: {enricher}")
+
+    # File-based enrichers often have expensive one-time cache loads.
+    # Stagger worker startups by a few seconds so they don't all slam
+    # the filesystem/DB at once.
+    time.sleep(hash(enricher) % 5)
+
+    while True:
+        db = SessionLocal()
+        try:
+            processed = consume_batch(db, enricher_filter=enricher)
+            pending = db.query(JobQueue).filter(
+                JobQueue.status == "PENDING",
+                JobQueue.enricher == enricher,
+            ).count()
+            if processed > 0:
+                heartbeat(service_name,
+                          detail=f"Processed {processed}, {pending} pending")
+            else:
+                heartbeat(service_name,
+                          detail=f"Idle, {pending} pending" if pending > 0 else "Idle, done")
+        except Exception as e:
+            logger.error(f"[{enricher}] worker error: {e}")
+            heartbeat(service_name, status="degraded", detail=f"Error: {str(e)[:100]}")
+        finally:
+            db.close()
+
+        # File-based enrichers can poll fast since there's no rate limit.
+        # Network enrichers wait the full poll interval.
+        if enricher in FAST_LOCAL_ENRICHERS:
+            time.sleep(max(CONSUMER_POLL_INTERVAL // 3, 2))
+        else:
+            time.sleep(CONSUMER_POLL_INTERVAL)
 
 
 def _manager_loop():
@@ -531,10 +604,32 @@ def _manager_loop():
 
 
 def start_job_consumer():
-    """Start the job consumer as a daemon thread."""
-    thread = threading.Thread(target=_consumer_loop, daemon=True, name="job-consumer")
-    thread.start()
-    return thread
+    """Spawn one worker thread per enricher for parallel processing.
+
+    With ~15 enrichers running in their own threads, the pipeline is
+    truly parallel: DBPR Condo, Sunbiz, OIR Market, Citizens, Cream
+    Score, KFI, NOIC, etc. all process at the same time instead of
+    waiting serially behind a single priority-ordered queue.
+
+    Each worker only picks jobs for its own enricher, so FOR UPDATE
+    SKIP LOCKED contention is minimal (workers never compete for the
+    same row).
+    """
+    # Every enricher that's registered in the chain gets its own worker
+    all_enrichers = [spec["enricher"] for spec in ENRICHER_CHAIN]
+    threads = []
+    for enricher in all_enrichers:
+        t = threading.Thread(
+            target=_enricher_worker_loop,
+            args=(enricher,),
+            daemon=True,
+            name=f"worker-{enricher}",
+        )
+        t.start()
+        threads.append(t)
+
+    logger.info(f"Started {len(threads)} per-enricher worker threads")
+    return threads
 
 
 def start_queue_manager():

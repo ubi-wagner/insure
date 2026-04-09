@@ -82,12 +82,14 @@ def prune_legacy_services(legacy_names: list[str] | None = None) -> int:
     """Remove known-legacy service rows from the registry.
 
     These are services that existed in earlier architectures but are no
-    longer started by the app (e.g. 'enrichment_worker' was replaced by
-    'job_consumer' + 'queue_manager'). Their stale DB rows clutter the
-    Ops page with ghost 'red' statuses forever.
+    longer started by the app. Their stale DB rows clutter the Ops page
+    with ghost 'red' statuses forever.
     """
     if legacy_names is None:
-        legacy_names = ["enrichment_worker", "hunter"]
+        # enrichment_worker -> replaced by per-enricher workers
+        # hunter            -> legacy naming from an older worker
+        # job_consumer      -> replaced by worker_{enricher} threads
+        legacy_names = ["enrichment_worker", "hunter", "job_consumer"]
 
     db = SessionLocal()
     try:
