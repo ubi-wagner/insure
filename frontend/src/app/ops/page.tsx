@@ -256,14 +256,18 @@ export default function OpsCenter() {
       if (d.error) {
         setActionMsg(`Error: ${d.error}`);
       } else {
-        const p1 = d.phase_1_inplace ?? {};
+        // New shape: d.totals = { fields_patched, sources_cleared, jobs_requeued }
+        const t = d.totals ?? {};
         const p2 = d.phase_2_requeue ?? {};
-        const fields = (p1.dor_construction_class_patched ?? 0) + (p1.dor_use_description_patched ?? 0);
-        const totalRequeued = Object.values(p2).reduce((s: number, r: unknown) => {
-          const rec = r as { requeued?: number; new_jobs?: number };
-          return s + (rec.requeued ?? 0) + (rec.new_jobs ?? 0);
-        }, 0);
-        setActionMsg(`Recalibrated: patched ${fields.toLocaleString()} fields, requeued ${totalRequeued.toLocaleString()} jobs across ${Object.keys(p2).length} enrichers`);
+        const fields = t.fields_patched ?? 0;
+        const totalRequeued = t.jobs_requeued ?? 0;
+        const totalCleared = t.sources_cleared ?? 0;
+        const enricherCount = Object.keys(p2).length;
+        setActionMsg(
+          `Recalibrated: patched ${fields.toLocaleString()} fields, ` +
+          `cleared ${totalCleared.toLocaleString()} enrichment entries, ` +
+          `requeued ${totalRequeued.toLocaleString()} jobs across ${enricherCount} enrichers`
+        );
       }
       fetchDashboard();
     } catch (err) { setActionMsg(`Error: ${err}`); }

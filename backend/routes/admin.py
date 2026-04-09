@@ -510,7 +510,6 @@ def recalibrate_all(db: Session = Depends(get_db)):
 
     Returns a summary of what was patched and how many jobs were requeued.
     """
-    from database.models import Entity, JobQueue
     from agents.seeder import DOR_CONSTRUCTION_CLASSES, TARGET_USE_CODES
 
     summary: dict = {
@@ -563,6 +562,11 @@ def recalibrate_all(db: Session = Depends(get_db)):
     db.commit()
 
     # ── Phase 2: force-rerun enrichers whose logic changed ──
+    #
+    # Implemented in bulk SQL (not ORM loops) so this finishes in seconds
+    # instead of minutes. Previously each enricher did a per-entity Python
+    # loop that generated ~N queries × 9 enrichers which would HTTP-timeout
+    # on large datasets.
 
     # Order matters because of dependencies:
     #   dbpr_bulk → dbpr_payments / dbpr_kfi / dbpr_sirs / dbpr_building
@@ -580,8 +584,8 @@ def recalibrate_all(db: Session = Depends(get_db)):
         "cream_score",     # New financial-distress + hurricane signals
     ]
 
-    # Field cleanups for force-rerun (mirrors the per-enricher logic in
-    # the existing /queue/force-rerun/{enricher} endpoint)
+    # Per-enricher characteristic fields to clear when re-running
+    # (so the new enricher logic repopulates them cleanly)
     field_cleanups: dict[str, list[str]] = {
         "citizens_insurance": [
             "citizens_likelihood", "citizens_likelihood_tier",
@@ -595,86 +599,59 @@ def recalibrate_all(db: Session = Depends(get_db)):
     requeue_summary: dict[str, dict] = {}
     for enricher in enrichers_to_rerun:
         try:
-            entities = db.query(Entity).filter(
-                Entity.enrichment_sources.op("?")(enricher)
-            ).all()
+            # Step 1: Remove this enricher from enrichment_sources on every
+            # entity that had it (single UPDATE).
+            cleared_res = db.execute(sa.text("""
+                UPDATE entities
+                SET enrichment_sources = enrichment_sources - :enricher
+                WHERE enrichment_sources ? :enricher
+            """), {"enricher": enricher})
+            cleared = cleared_res.rowcount or 0
 
-            cleared = 0
-            for entity in entities:
-                sources = dict(entity.enrichment_sources or {})
-                if enricher in sources:
-                    del sources[enricher]
-                    entity.enrichment_sources = sources
-                    if enricher in field_cleanups:
-                        chars = dict(entity.characteristics or {})
-                        for key in field_cleanups[enricher]:
-                            chars.pop(key, None)
-                        entity.characteristics = chars
-                    cleared += 1
-            db.commit()
+            # Step 2: For enrichers with derived characteristic fields
+            # (currently only citizens_insurance), strip those fields in
+            # one bulk UPDATE. We chain `- 'key'` operators because the
+            # field names are hardcoded constants (no SQL injection risk)
+            # and this avoids psycopg2 array binding edge cases.
+            if enricher in field_cleanups:
+                fields = field_cleanups[enricher]
+                # Safe: all field names are internal Python constants
+                chain = " ".join(f"- '{f}'" for f in fields)
+                db.execute(sa.text(f"""
+                    UPDATE entities
+                    SET characteristics = characteristics {chain}
+                    WHERE pipeline_stage = 'LEAD'
+                """))
 
-            # Reset / create queue jobs
-            requeued = 0
-            for entity in entities:
-                existing_job = db.query(JobQueue).filter(
-                    JobQueue.entity_id == entity.id,
-                    JobQueue.enricher == enricher,
-                ).first()
-                if existing_job:
-                    existing_job.status = "PENDING"
-                    existing_job.attempts = 0
-                    existing_job.last_error = None
-                    existing_job.locked_by = None
-                    existing_job.locked_at = None
-                    existing_job.completed_at = None
-                else:
-                    new_job = JobQueue(
-                        entity_id=entity.id,
-                        enricher=enricher,
-                        status="PENDING",
-                        priority=5,
-                    )
-                    db.add(new_job)
-                requeued += 1
-
-            # Also create jobs for entities that NEVER ran this enricher
-            # (mostly relevant for the brand-new dbpr_kfi and dbpr_noic)
-            from sqlalchemy import not_
-            never_ran = db.query(Entity).filter(
-                Entity.pipeline_stage == "LEAD",
-                not_(Entity.enrichment_sources.op("?")(enricher)),
-            ).all()
-            new_jobs = 0
-            for entity in never_ran:
-                existing = db.query(JobQueue).filter(
-                    JobQueue.entity_id == entity.id,
-                    JobQueue.enricher == enricher,
-                ).first()
-                if not existing:
-                    db.add(JobQueue(
-                        entity_id=entity.id,
-                        enricher=enricher,
-                        status="PENDING",
-                        priority=5,
-                    ))
-                    new_jobs += 1
-                else:
-                    # Mark for retry if it was failed/rejected
-                    if existing.status in ("FAILED", "REJECTED"):
-                        existing.status = "PENDING"
-                        existing.attempts = 0
-                        existing.last_error = None
-                        existing.locked_by = None
-                        existing.locked_at = None
-                        existing.completed_at = None
-                        new_jobs += 1
+            # Step 3: Bulk upsert job_queue entries for every LEAD-stage
+            # entity. Uses the unique index (entity_id, enricher) so
+            # existing jobs get reset and missing ones get created in a
+            # single statement.
+            upsert_res = db.execute(sa.text("""
+                INSERT INTO job_queue
+                    (entity_id, enricher, status, priority, attempts,
+                     max_attempts, last_error, locked_by, locked_at,
+                     completed_at, created_at)
+                SELECT e.id, :enricher, 'PENDING', 5, 0,
+                       3, NULL, NULL, NULL,
+                       NULL, NOW()
+                FROM entities e
+                WHERE e.pipeline_stage = 'LEAD'
+                ON CONFLICT (entity_id, enricher) DO UPDATE SET
+                    status = 'PENDING',
+                    attempts = 0,
+                    last_error = NULL,
+                    locked_by = NULL,
+                    locked_at = NULL,
+                    completed_at = NULL
+            """), {"enricher": enricher})
+            requeued = upsert_res.rowcount or 0
 
             db.commit()
 
             requeue_summary[enricher] = {
                 "cleared": cleared,
                 "requeued": requeued,
-                "new_jobs": new_jobs,
             }
         except Exception as e:
             db.rollback()
@@ -683,9 +660,26 @@ def recalibrate_all(db: Session = Depends(get_db)):
 
     summary["phase_2_requeue"] = requeue_summary
 
+    total_requeued = sum(
+        r.get("requeued", 0)
+        for r in requeue_summary.values()
+        if isinstance(r, dict)
+    )
+    total_cleared = sum(
+        r.get("cleared", 0)
+        for r in requeue_summary.values()
+        if isinstance(r, dict)
+    )
+
     emit(EventType.SYSTEM, "recalibrate_all", EventStatus.SUCCESS,
          detail=f"Patched {construction_patched + use_desc_patched} fields, "
-                f"requeued {sum(r.get('requeued', 0) + r.get('new_jobs', 0) for r in requeue_summary.values() if isinstance(r, dict))} jobs")
+                f"cleared {total_cleared}, requeued {total_requeued} jobs")
+
+    summary["totals"] = {
+        "fields_patched": construction_patched + use_desc_patched,
+        "sources_cleared": total_cleared,
+        "jobs_requeued": total_requeued,
+    }
 
     return {"success": True, **summary}
 
