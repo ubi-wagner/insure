@@ -523,18 +523,19 @@ def recalibrate_all(db: Session = Depends(get_db)):
     # 1a. DOR construction class numeric → label
     construction_patched = 0
     for raw_code, label in DOR_CONSTRUCTION_CLASSES.items():
-        # Only update entities where the raw numeric code is currently stored
+        # Only update entities where the raw numeric code is currently stored.
+        # Explicit ::text casts so PostgreSQL can infer the jsonb scalar type.
         result = db.execute(sa.text("""
             UPDATE entities
             SET characteristics = jsonb_set(
                 jsonb_set(
                     characteristics,
                     '{dor_construction_class_raw}',
-                    to_jsonb(:raw),
+                    to_jsonb(CAST(:raw AS text)),
                     true
                 ),
                 '{dor_construction_class}',
-                to_jsonb(:label),
+                to_jsonb(CAST(:label AS text)),
                 true
             )
             WHERE characteristics->>'dor_construction_class' = :raw
@@ -550,7 +551,7 @@ def recalibrate_all(db: Session = Depends(get_db)):
             SET characteristics = jsonb_set(
                 characteristics,
                 '{dor_use_description}',
-                to_jsonb(:label),
+                to_jsonb(CAST(:label AS text)),
                 true
             )
             WHERE characteristics->>'dor_use_code' = :raw
