@@ -86,9 +86,22 @@ async def lifespan(app: FastAPI):
              detail="Job consumer and queue manager running")
 
         # Backfill: create jobs for any LEADs that don't have queue entries yet
+        # Also extract any DOR zips restored from S3 that haven't been unzipped
         def _backfill():
             import time as _t
             _t.sleep(10)  # Wait for migrations to settle
+
+            # Extract DOR zips first (S3 sync restores zips, not CSVs)
+            try:
+                from routes.admin import _extract_dor_zips, FILE_STORE_ROOT
+                import os as _os
+                dor_dir = _os.path.join(FILE_STORE_ROOT, "System Data", "DOR")
+                extracted = _extract_dor_zips(dor_dir)
+                if extracted:
+                    logger.info(f"Startup: extracted {len(extracted)} DOR zips")
+            except Exception as _e:
+                logger.warning(f"Startup DOR zip extraction failed: {_e}")
+
             _db = SessionLocal()
             try:
                 created = produce_jobs_for_all_leads(_db)
