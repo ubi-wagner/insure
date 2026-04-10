@@ -781,6 +781,33 @@ def prune_services(stale_only: bool = Query(False, description="Only prune servi
     return {"success": True, "pruned": count}
 
 
+@router.post("/api/admin/extract-dor-zips")
+def extract_dor_zips_endpoint():
+    """Manually trigger extraction of DOR NAL/SDF zip files in System Data/DOR/.
+
+    Scans for zip files matching '{County} {code} Final {NAL|SDF} {year}.zip',
+    extracts the CSV inside, renames to standard format, then runs the auto-seed
+    scanner. Skips TPP (tangible personal property) zips.
+    """
+    dor_dir = os.path.join(FILE_STORE_ROOT, "System Data", "DOR")
+    extracted = _extract_dor_zips(dor_dir)
+
+    # Auto-seed after extraction
+    seed_result = {}
+    if extracted:
+        try:
+            from agents.seeder import scan_dor_dir_and_auto_seed
+            seed_result = scan_dor_dir_and_auto_seed()
+        except Exception as e:
+            seed_result = {"error": str(e)[:200]}
+
+    return {
+        "success": True,
+        "extracted": extracted,
+        "auto_seed": seed_result,
+    }
+
+
 @router.post("/api/admin/auto-seed-scan")
 def manual_auto_seed_scan(min_value: int = Query(None, description="Min market value override")):
     """Manually trigger the auto-seed scanner to look for NAL+SDF pairs.
@@ -1255,6 +1282,89 @@ def list_bucket_files():
 FILE_STORE_ROOT = os.path.join(os.path.dirname(__file__), "..", "filestore")
 
 
+def _extract_dor_zips(dor_dir: str) -> list[str]:
+    """Extract DOR NAL/SDF zip files into standard-named CSVs.
+
+    DOR DataPortal downloads are named like:
+      'Broward 16 Final NAL 2025.zip'
+      'Miami-Dade 23 Final SDF 2025 (1).zip'
+
+    We extract the CSV inside, rename it to the standard format that the
+    seeder expects (NAL{code}F202501.csv / SDF{code}F202501.csv), and
+    leave the zip in place (so re-extraction is idempotent).
+
+    TPP (Tangible Personal Property) zips are silently skipped.
+    """
+    import re
+    import zipfile
+
+    if not os.path.isdir(dor_dir):
+        return []
+
+    extracted = []
+    for fname in os.listdir(dor_dir):
+        if not fname.lower().endswith(".zip"):
+            continue
+
+        # Parse: "{County} {code} Final {NAL|SDF|TPP} 2025*.zip"
+        match = re.search(r'(\d+)\s+Final\s+(NAL|SDF|TPP)\s+(\d{4})', fname, re.IGNORECASE)
+        if not match:
+            continue
+
+        county_code = match.group(1)
+        roll_type = match.group(2).upper()
+        year = match.group(3)
+
+        # Skip TPP — tangible personal property, not real estate
+        if roll_type == "TPP":
+            continue
+
+        # Check if we already extracted this one
+        standard_name = f"{roll_type}{county_code}F{year}01.csv"
+        standard_path = os.path.join(dor_dir, standard_name)
+        if os.path.exists(standard_path):
+            continue  # Already extracted
+
+        zip_path = os.path.join(dor_dir, fname)
+        try:
+            with zipfile.ZipFile(zip_path, "r") as zf:
+                # Find the CSV inside — usually just one file
+                csv_files = [n for n in zf.namelist()
+                             if n.lower().endswith(".csv") and not n.startswith("__")]
+                if not csv_files:
+                    logger.warning(f"DOR zip has no CSV: {fname}")
+                    continue
+
+                # Extract the largest CSV (in case of multiple)
+                target = max(csv_files, key=lambda n: zf.getinfo(n).file_size)
+                # Extract to a temp name, then rename to standard
+                zf.extract(target, dor_dir)
+                extracted_path = os.path.join(dor_dir, target)
+
+                # Rename to standard format
+                if extracted_path != standard_path:
+                    if os.path.exists(standard_path):
+                        os.remove(standard_path)
+                    os.rename(extracted_path, standard_path)
+
+                size_mb = os.path.getsize(standard_path) / (1024 * 1024)
+                logger.info(f"Extracted DOR {roll_type} for county {county_code}: "
+                            f"{standard_name} ({size_mb:.1f} MB)")
+                extracted.append(standard_name)
+
+        except zipfile.BadZipFile:
+            logger.warning(f"Bad zip file: {fname}")
+        except Exception as e:
+            logger.warning(f"Failed to extract {fname}: {e}")
+
+    if extracted:
+        emit(EventType.SYSTEM, "dor_zip_extract", EventStatus.SUCCESS,
+             detail=f"Extracted {len(extracted)} DOR files: {', '.join(extracted[:5])}"
+                    + (f"... +{len(extracted)-5} more" if len(extracted) > 5 else ""))
+
+    return extracted
+
+
 def _ensure_filestore():
     """Create default folder structure and sync CSV data files."""
     import shutil
@@ -1431,15 +1541,21 @@ async def upload_file(
         except Exception as e:
             logger.warning(f"S3 upload failed: {e}")
 
-    # Auto-seed: if a NAL or SDF file landed in System Data/DOR/, scan
-    # the directory and trigger a background seed for any county that now
-    # has both files and isn't already seeded.
+    # Auto-process: if a DOR zip was uploaded, extract the CSV inside and
+    # rename to standard format (NAL{code}F202501.csv / SDF{code}F202501.csv).
+    # Then the auto-seed scanner picks up the extracted CSVs.
     auto_seed_result: dict | None = None
     is_dor_upload = (
         path.replace("\\", "/").lower().startswith("system data/dor")
-        or filename.upper().startswith(("NAL", "SDF"))
     )
     if is_dor_upload:
+        # Extract any zips that just landed
+        try:
+            _extract_dor_zips(os.path.dirname(filepath))
+        except Exception as e:
+            logger.warning(f"DOR zip extraction failed: {e}")
+
+        # Scan for complete NAL+SDF pairs and auto-seed
         try:
             from agents.seeder import scan_dor_dir_and_auto_seed
             auto_seed_result = scan_dor_dir_and_auto_seed()
