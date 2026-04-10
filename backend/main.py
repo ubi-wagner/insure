@@ -169,6 +169,26 @@ app.include_router(status_router)
 app.include_router(email_router)
 
 
+@app.get("/")
+def root():
+    """Friendly root response so hitting the backend URL directly doesn't
+    just return a confusing 404. The real UI is served by the frontend
+    service; this is an API-only endpoint."""
+    return {
+        "service": "insure-api",
+        "status": "ok",
+        "description": "FL commercial property insurance lead generation API",
+        "endpoints": {
+            "health": "/health",
+            "api_docs": "/docs",
+            "leads": "/api/leads",
+            "ops_dashboard": "/api/admin/ops-dashboard",
+            "queue_status": "/api/admin/queue",
+        },
+        "note": "The user interface lives on the frontend Railway service.",
+    }
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}

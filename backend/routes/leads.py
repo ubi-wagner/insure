@@ -2,6 +2,7 @@ import logging
 import os
 import re
 import time
+from datetime import datetime
 from typing import Optional, List
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
@@ -578,6 +579,8 @@ def get_readiness(entity_id: int, db: Session = Depends(get_db)):
 class StageChangeRequest(BaseModel):
     stage: str
     force: bool = False
+    assigned_by: str | None = None   # Display name of user making the change
+    assigned_role: str | None = None # "admin" or "user"
 
 
 @router.post("/api/leads/{entity_id}/stage")
@@ -606,12 +609,25 @@ def change_stage(entity_id: int, req: StageChangeRequest, db: Session = Depends(
     old_stage = entity.pipeline_stage
     entity.pipeline_stage = req.stage
 
-    ledger = LeadLedger(entity_id=entity_id, action_type="STAGE_CHANGE", detail=f"{old_stage} → {req.stage}")
+    # When moving to OPPORTUNITY or CUSTOMER, tag who claimed it
+    if req.stage in ("OPPORTUNITY", "CUSTOMER") and req.assigned_by:
+        chars = dict(entity.characteristics or {})
+        chars["assigned_to"] = req.assigned_by
+        chars["assigned_at"] = datetime.utcnow().isoformat()
+        if req.assigned_role:
+            chars["assigned_role"] = req.assigned_role
+        entity.characteristics = chars
+
+    detail_text = f"{old_stage} → {req.stage}"
+    if req.assigned_by:
+        detail_text += f" (by {req.assigned_by})"
+
+    ledger = LeadLedger(entity_id=entity_id, action_type="STAGE_CHANGE", detail=detail_text)
     db.add(ledger)
     db.commit()
 
     emit(EventType.DB_OPERATION, "stage_change", EventStatus.SUCCESS,
-         detail=f"'{entity.name}': {old_stage} → {req.stage}", entity_id=entity_id)
+         detail=f"'{entity.name}': {detail_text}", entity_id=entity_id)
 
     if req.stage == "LEAD":
         try:
