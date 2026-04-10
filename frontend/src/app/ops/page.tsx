@@ -2,6 +2,7 @@
 
 import { Fragment, useEffect, useState, useRef, useCallback } from "react";
 import Link from "next/link";
+import { useAuth } from "@/hooks/useAuth";
 
 /* ================================================================
    Types
@@ -56,6 +57,7 @@ interface EventItem {
   detail: string;
   timestamp: number;
   duration_ms?: number;
+  metadata?: Record<string, unknown>;
 }
 
 /* ================================================================
@@ -92,6 +94,7 @@ const SERVICE_DOT: Record<string, string> = {
    ================================================================ */
 
 export default function OpsCenter() {
+  const { isAdmin } = useAuth();
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -109,10 +112,7 @@ export default function OpsCenter() {
   const [eventsLive, setEventsLive] = useState(false);
   const eventSourceRef = useRef<EventSource | null>(null);
 
-  // Query
-  const [showQuery, setShowQuery] = useState(false);
-  const [queryText, setQueryText] = useState("");
-  const [queryResult, setQueryResult] = useState<{ table: string; total: number; results: Record<string, unknown>[] } | null>(null);
+  // Query (moved to /admin/query page)
 
   // Queue per-enricher expansion
   const [expandedEnrichers, setExpandedEnrichers] = useState<Set<string>>(new Set());
@@ -305,14 +305,6 @@ export default function OpsCenter() {
     } catch (err) { setActionMsg(`Error: ${err}`); }
   }
 
-  async function runQuery() {
-    if (!queryText.trim()) return;
-    try {
-      const res = await fetch(`/api/proxy/admin/query?q=${encodeURIComponent(queryText)}&limit=50`);
-      if (res.ok) setQueryResult(await res.json());
-    } catch {}
-  }
-
   /* ── Helpers ── */
   function fmtTime(ts: number | string) {
     const d = typeof ts === "number" ? new Date(ts * 1000) : new Date(ts);
@@ -356,8 +348,8 @@ export default function OpsCenter() {
 
       <div className="px-4 md:px-6 py-4 space-y-6">
 
-        {/* ── Action bar ── */}
-        <div className="flex flex-wrap items-center gap-2">
+        {/* ── Action bar (admin only) ── */}
+        {isAdmin && <div className="flex flex-wrap items-center gap-2">
           <div className="flex items-center gap-1.5 bg-gray-900 border border-gray-700 rounded px-2 py-1">
             <label className="text-[10px] text-gray-500 shrink-0">Min $</label>
             <select value={seedMinValue} onChange={(e) => setSeedMinValue(e.target.value)}
@@ -413,6 +405,8 @@ export default function OpsCenter() {
             </div>
           )}
         </div>
+
+        }
 
         {actionMsg && (
           <div className={`text-xs px-4 py-2 rounded ${
@@ -514,7 +508,7 @@ export default function OpsCenter() {
                   ({fmtNum(data.queue.total_jobs)} total)
                 </span>
               </h2>
-              <div className="flex gap-2">
+              {isAdmin && <div className="flex gap-2">
                 <button onClick={queueBackfill}
                   className="bg-gray-800 hover:bg-gray-700 text-gray-400 text-[10px] px-2.5 py-1.5 rounded">
                   Backfill
@@ -527,7 +521,7 @@ export default function OpsCenter() {
                   className="bg-red-900/50 hover:bg-red-900 text-red-300 text-[10px] px-2.5 py-1.5 rounded border border-red-800">
                   Purge Rejected
                 </button>
-              </div>
+              </div>}
             </div>
 
             {/* Status summary bar */}
@@ -720,11 +714,14 @@ export default function OpsCenter() {
                     <th className="text-left px-3 py-2 text-gray-500 w-20">Time</th>
                     <th className="text-left px-3 py-2 text-gray-500 w-14">Status</th>
                     <th className="text-left px-3 py-2 text-gray-500 w-24">Source</th>
+                    <th className="text-left px-3 py-2 text-gray-500 w-32">Action</th>
                     <th className="text-left px-3 py-2 text-gray-500">Detail</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredEvents.map((evt, i) => (
+                  {filteredEvents.map((evt, i) => {
+                    const entityId = evt.metadata?.entity_id as number | undefined;
+                    return (
                     <tr key={i} className="border-b border-gray-800/50 hover:bg-gray-800/20">
                       <td className="px-3 py-1.5 text-gray-600 font-mono whitespace-nowrap">{fmtTime(evt.timestamp)}</td>
                       <td className="px-3 py-1.5">
@@ -739,64 +736,44 @@ export default function OpsCenter() {
                           {evt.event_type}
                         </button>
                       </td>
-                      <td className="px-3 py-1.5 text-gray-400 truncate max-w-[400px]">{evt.detail}</td>
+                      <td className="px-3 py-1.5 text-gray-500 text-[11px] truncate max-w-[200px]">
+                        {evt.action}
+                      </td>
+                      <td className="px-3 py-1.5 text-gray-400 text-[11px]">
+                        <span className="truncate max-w-[300px] inline-block align-middle">{evt.detail}</span>
+                        {entityId && (
+                          <Link
+                            href={`/lead/${entityId}`}
+                            className="ml-2 text-blue-400 hover:underline text-[10px] shrink-0"
+                            target="_blank"
+                          >
+                            #{String(entityId)}
+                          </Link>
+                        )}
+                      </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
           )}
         </div>
 
-        {/* ════════════════════════════════════════════════════════
-            QUERY (collapsible)
-           ════════════════════════════════════════════════════════ */}
-        <div>
-          <button onClick={() => setShowQuery(!showQuery)}
-            className="text-sm font-semibold text-gray-500 hover:text-gray-300 flex items-center gap-1">
-            <span className={`text-[10px] transition-transform ${showQuery ? "rotate-90" : ""}`}>&#9654;</span>
-            Data Explorer
-          </button>
-          {showQuery && (
-            <div className="mt-2 bg-gray-900 border border-gray-800 rounded-lg p-4 space-y-3">
-              <div className="flex gap-2">
-                <input type="text" value={queryText} onChange={(e) => setQueryText(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && runQuery()}
-                  placeholder="SQL-like query or preset: condos, citizens, hot_leads, platinum..."
-                  className="flex-1 bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-blue-600" />
-                <button onClick={runQuery}
-                  className="bg-blue-600 hover:bg-blue-700 text-white text-xs px-4 py-2 rounded font-medium">
-                  Run
-                </button>
-              </div>
-              {queryResult && (
-                <div className="overflow-auto max-h-[35vh]">
-                  <p className="text-[10px] text-gray-600 mb-1">{queryResult.total} results from {queryResult.table}</p>
-                  <table className="w-full text-xs">
-                    <thead className="sticky top-0 bg-gray-900">
-                      <tr className="border-b border-gray-800">
-                        {queryResult.results.length > 0 && Object.keys(queryResult.results[0]).map((col) => (
-                          <th key={col} className="text-left px-2 py-1.5 text-gray-500 whitespace-nowrap">{col}</th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {queryResult.results.map((row, i) => (
-                        <tr key={i} className="border-b border-gray-800/50">
-                          {Object.values(row).map((val, j) => (
-                            <td key={j} className="px-2 py-1 text-gray-400 truncate max-w-[200px]">
-                              {val != null ? String(val) : "—"}
-                            </td>
-                          ))}
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </div>
-          )}
-        </div>
+        {/* Query tool link (admin only — full page at /admin/query) */}
+        {isAdmin && (
+          <div className="flex items-center gap-2">
+            <Link href="/admin/query"
+              className="text-sm font-semibold text-blue-400 hover:text-blue-300 flex items-center gap-1">
+              &#9654; SQL Query Tool
+            </Link>
+            <Link href={`${typeof window !== "undefined" ? window.location.origin.replace(/:\d+$/, ":8000") : ""}/api/admin/dataset-diagnostics`}
+              className="text-xs text-gray-500 hover:text-gray-300"
+              target="_blank">
+              Dataset Diagnostics (JSON)
+            </Link>
+          </div>
+        )}
 
       </div>
     </div>

@@ -1,12 +1,32 @@
 import { NextRequest, NextResponse } from "next/server";
 
+/**
+ * Users and roles.
+ *
+ * admin: full access — seed, refresh, recalibrate, upload, download, query, reset DB
+ * user:  read-only pipeline + card review — can add contacts, move stages, record
+ *        engagements, but CANNOT seed, reset, upload system files, or run admin actions
+ */
+const USERS: Record<string, { password: string; role: "admin" | "user"; displayName: string }> = {
+  eric: { password: "eric123", role: "admin", displayName: "Eric" },
+  jason: { password: "jason123", role: "user", displayName: "Jason" },
+};
+
 export async function POST(request: NextRequest) {
   const body = await request.json();
   const { username, password } = body;
 
-  if (username === "jason" && password === "jackass") {
-    const response = NextResponse.json({ success: true });
-    response.cookies.set("insure_auth", "authenticated", {
+  const user = USERS[username?.toLowerCase()];
+  if (user && user.password === password) {
+    // Cookie value encodes role + display name so middleware and pages can
+    // check without a DB round-trip.  Format: "role:displayName"
+    const cookieValue = `${user.role}:${user.displayName}`;
+    const response = NextResponse.json({
+      success: true,
+      role: user.role,
+      displayName: user.displayName,
+    });
+    response.cookies.set("insure_auth", cookieValue, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
       sameSite: "lax",
@@ -20,6 +40,20 @@ export async function POST(request: NextRequest) {
     { success: false, error: "Invalid credentials" },
     { status: 401 }
   );
+}
+
+export async function GET(request: NextRequest) {
+  /** Return current user info from the cookie (no DB round-trip). */
+  const authCookie = request.cookies.get("insure_auth");
+  if (!authCookie?.value) {
+    return NextResponse.json({ authenticated: false }, { status: 401 });
+  }
+  const [role, displayName] = authCookie.value.split(":");
+  return NextResponse.json({
+    authenticated: true,
+    role: role || "user",
+    displayName: displayName || "Unknown",
+  });
 }
 
 export async function DELETE() {

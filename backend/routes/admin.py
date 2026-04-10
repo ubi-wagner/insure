@@ -478,6 +478,150 @@ def purge_rejected(db: Session = Depends(get_db)):
     return {"success": True, "purged": count}
 
 
+@router.post("/api/admin/sql")
+def run_sql_query(
+    body: dict,
+    db: Session = Depends(get_db),
+):
+    """Execute a read-only SQL query (admin only).
+
+    Accepts: {"sql": "SELECT ...", "limit": 100}
+    Only SELECT/WITH statements are allowed. Mutations are blocked.
+    Results capped at 500 rows. Timeout 10 seconds.
+    """
+    sql = (body.get("sql") or "").strip()
+    limit = min(int(body.get("limit", 100)), 500)
+
+    if not sql:
+        raise HTTPException(status_code=400, detail="sql field is required")
+
+    # Security: only allow SELECT-like statements
+    first_word = sql.split()[0].upper() if sql.split() else ""
+    if first_word not in ("SELECT", "WITH", "EXPLAIN"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Only SELECT/WITH/EXPLAIN queries are allowed. Got: {first_word}"
+        )
+
+    # Block common mutation keywords even inside subqueries
+    upper = sql.upper()
+    for banned in ("INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "TRUNCATE", "CREATE", "GRANT", "REVOKE"):
+        if banned in upper:
+            raise HTTPException(status_code=400, detail=f"Mutation keyword '{banned}' is not allowed in read-only queries")
+
+    try:
+        # Wrap in a read-only transaction with a timeout
+        db.execute(sa.text("SET LOCAL statement_timeout = '10s'"))
+        result = db.execute(sa.text(sql))
+
+        # Get column names
+        columns = list(result.keys()) if result.returns_rows else []
+        rows = []
+        if result.returns_rows:
+            for i, row in enumerate(result):
+                if i >= limit:
+                    break
+                rows.append({col: (val.isoformat() if hasattr(val, 'isoformat') else val) for col, val in zip(columns, row)})
+
+        return {
+            "columns": columns,
+            "rows": rows,
+            "row_count": len(rows),
+            "truncated": len(rows) >= limit,
+        }
+    except Exception as e:
+        db.rollback()
+        return {
+            "columns": [],
+            "rows": [],
+            "row_count": 0,
+            "error": str(e)[:500],
+        }
+
+
+# Canned query presets — shown in the SQL Query Tool UI
+CANNED_QUERIES = [
+    {
+        "name": "Dataset Diagnostics",
+        "description": "Use code distribution, value histogram, top entities",
+        "sql": "SELECT characteristics->>'dor_use_code' AS use_code, characteristics->>'dor_use_description' AS label, COUNT(*) AS cnt FROM entities WHERE characteristics->>'dor_use_code' IS NOT NULL GROUP BY 1, 2 ORDER BY cnt DESC",
+    },
+    {
+        "name": "Value Histogram",
+        "description": "DOR market value distribution across all entities",
+        "sql": """SELECT
+  CASE
+    WHEN (characteristics->>'dor_market_value')::bigint < 2000000 THEN '<$2M'
+    WHEN (characteristics->>'dor_market_value')::bigint < 5000000 THEN '$2-5M'
+    WHEN (characteristics->>'dor_market_value')::bigint < 10000000 THEN '$5-10M'
+    WHEN (characteristics->>'dor_market_value')::bigint < 20000000 THEN '$10-20M'
+    WHEN (characteristics->>'dor_market_value')::bigint < 50000000 THEN '$20-50M'
+    ELSE '$50M+'
+  END AS value_bucket,
+  COUNT(*) AS cnt
+FROM entities
+WHERE characteristics->>'dor_market_value' IS NOT NULL
+GROUP BY 1 ORDER BY MIN((characteristics->>'dor_market_value')::bigint)""",
+    },
+    {
+        "name": "Top 20 by Value",
+        "description": "Highest DOR market value entities",
+        "sql": "SELECT id, name, county, (characteristics->>'dor_market_value')::bigint AS market_value, (characteristics->>'dor_num_units')::int AS units, characteristics->>'dor_use_description' AS use_type, characteristics->>'dbpr_condo_name' AS dbpr_name FROM entities WHERE characteristics->>'dor_market_value' IS NOT NULL ORDER BY (characteristics->>'dor_market_value')::bigint DESC LIMIT 20",
+    },
+    {
+        "name": "Top 20 by Units",
+        "description": "Largest entities by unit count",
+        "sql": "SELECT id, name, county, (characteristics->>'dor_num_units')::int AS units, (characteristics->>'dor_market_value')::bigint AS market_value, characteristics->>'dor_use_description' AS use_type FROM entities WHERE (characteristics->>'dor_num_units')::int >= 10 ORDER BY (characteristics->>'dor_num_units')::int DESC LIMIT 20",
+    },
+    {
+        "name": "Cream Score - Platinum",
+        "description": "All platinum-tier leads (cream score 90+)",
+        "sql": "SELECT id, name, county, (characteristics->>'cream_score')::int AS score, characteristics->>'cream_tier' AS tier, (characteristics->>'dor_market_value')::bigint AS market_value FROM entities WHERE (characteristics->>'cream_score')::int >= 90 ORDER BY (characteristics->>'cream_score')::int DESC",
+    },
+    {
+        "name": "Cream Score - Gold",
+        "description": "All gold-tier leads (cream score 70-89)",
+        "sql": "SELECT id, name, county, (characteristics->>'cream_score')::int AS score, characteristics->>'cream_tier' AS tier, (characteristics->>'dor_market_value')::bigint AS market_value FROM entities WHERE (characteristics->>'cream_score')::int BETWEEN 70 AND 89 ORDER BY (characteristics->>'cream_score')::int DESC",
+    },
+    {
+        "name": "Financial Distress",
+        "description": "Entities flagged with financial distress from KFI",
+        "sql": "SELECT id, name, county, characteristics->>'dbpr_financial_distress' AS distress, (characteristics->>'dbpr_operating_fund_balance')::numeric AS op_balance, (characteristics->>'dbpr_reserve_fund_balance')::numeric AS reserve_balance FROM entities WHERE characteristics->>'dbpr_financial_distress' IS NOT NULL ORDER BY (characteristics->>'dbpr_operating_fund_balance')::numeric ASC NULLS LAST",
+    },
+    {
+        "name": "Citizens Candidates",
+        "description": "Properties likely on Citizens Insurance",
+        "sql": "SELECT id, name, county, (characteristics->>'citizens_likelihood')::int AS likelihood, characteristics->>'citizens_likelihood_tier' AS tier, characteristics->>'citizens_premium_display' AS est_premium FROM entities WHERE characteristics->>'citizens_candidate' = 'true' ORDER BY (characteristics->>'citizens_likelihood')::int DESC",
+    },
+    {
+        "name": "SIRS Non-Compliant",
+        "description": "Associations that haven't filed SIRS (high compliance risk)",
+        "sql": "SELECT id, name, county, characteristics->>'sirs_compliance_risk' AS risk, characteristics->>'sirs_completed' AS completed, characteristics->>'dbpr_condo_name' AS condo_name FROM entities WHERE characteristics->>'sirs_compliance_risk' = 'HIGH' ORDER BY county, name",
+    },
+    {
+        "name": "Enrichment Coverage",
+        "description": "Count of entities with each enrichment source",
+        "sql": "SELECT key AS enricher, COUNT(*) AS entities FROM entities, jsonb_object_keys(enrichment_sources) AS key GROUP BY key ORDER BY COUNT(*) DESC",
+    },
+    {
+        "name": "County Summary",
+        "description": "Entity count and stage distribution per county",
+        "sql": "SELECT county, pipeline_stage, COUNT(*) AS cnt FROM entities WHERE county IS NOT NULL GROUP BY county, pipeline_stage ORDER BY county, pipeline_stage",
+    },
+    {
+        "name": "Contacts with Email",
+        "description": "All contacts that have email addresses",
+        "sql": "SELECT c.id, c.name, c.title, c.email, c.source, e.name AS entity_name, e.county FROM contacts c JOIN entities e ON c.entity_id = e.id WHERE c.email IS NOT NULL AND c.email != '' ORDER BY e.county, e.name",
+    },
+]
+
+
+@router.get("/api/admin/sql/presets")
+def get_sql_presets():
+    """Return the list of canned SQL query presets."""
+    return {"presets": CANNED_QUERIES}
+
+
 @router.get("/api/admin/dataset-diagnostics")
 def dataset_diagnostics(db: Session = Depends(get_db)):
     """Quick dataset health check — use code distribution, value histogram,

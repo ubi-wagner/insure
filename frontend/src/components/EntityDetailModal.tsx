@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
+import { useAuth } from "@/hooks/useAuth";
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -377,6 +378,7 @@ export default function EntityDetailModal({
   onActivate,
   onFlyTo,
 }: EntityDetailModalProps) {
+  const { displayName, role } = useAuth();
   const [lead, setLead] = useState<LeadDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<TabName>("overview");
@@ -415,7 +417,7 @@ export default function EntityDetailModal({
       const res = await fetch(`/api/proxy/leads/${entityId}/stage`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ stage, force: true }),
+        body: JSON.stringify({ stage, force: true, assigned_by: displayName, assigned_role: role }),
       });
       if (res.ok) await reload();
       else {
