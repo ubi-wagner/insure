@@ -478,6 +478,148 @@ def purge_rejected(db: Session = Depends(get_db)):
     return {"success": True, "purged": count}
 
 
+@router.get("/api/admin/dataset-diagnostics")
+def dataset_diagnostics(db: Session = Depends(get_db)):
+    """Quick dataset health check — use code distribution, value histogram,
+    unit count distribution, county breakdown, and a few canned spot-checks.
+
+    Useful for confirming whether the seeded dataset actually contains the
+    kinds of properties we think it does (e.g. are we getting real
+    condo master parcels or just small apartment buildings).
+    """
+    # 1. DOR use code distribution — how many of each type
+    use_code_rows = db.execute(sa.text("""
+        SELECT
+            characteristics->>'dor_use_code' AS use_code,
+            characteristics->>'dor_use_description' AS use_label,
+            COUNT(*) AS cnt
+        FROM entities
+        WHERE characteristics->>'dor_use_code' IS NOT NULL
+        GROUP BY 1, 2
+        ORDER BY cnt DESC
+    """)).fetchall()
+    use_codes = [
+        {"code": r[0], "label": r[1], "count": r[2]}
+        for r in use_code_rows
+    ]
+
+    # 2. Value histogram by DOR market value — tells us if the dataset is
+    # dominated by small properties or has real high-value buildings
+    value_buckets = [
+        ("<$2M",     0,           2_000_000),
+        ("$2-5M",    2_000_000,   5_000_000),
+        ("$5-10M",   5_000_000,   10_000_000),
+        ("$10-20M",  10_000_000,  20_000_000),
+        ("$20-50M",  20_000_000,  50_000_000),
+        ("$50-100M", 50_000_000,  100_000_000),
+        (">$100M",   100_000_000, 999_999_999_999),
+    ]
+    value_hist = []
+    for label, low, high in value_buckets:
+        cnt = db.execute(sa.text("""
+            SELECT COUNT(*) FROM entities
+            WHERE (characteristics->>'dor_market_value')::bigint >= :low
+              AND (characteristics->>'dor_market_value')::bigint < :high
+        """), {"low": low, "high": high}).scalar() or 0
+        value_hist.append({"bucket": label, "count": cnt})
+
+    # 3. Unit count histogram — distinguishes individual unit parcels from
+    # building-level parcels
+    unit_buckets = [
+        ("1 unit",     1,    2),
+        ("2-9 units",  2,    10),
+        ("10-24",      10,   25),
+        ("25-49",      25,   50),
+        ("50-99",      50,   100),
+        ("100-199",    100,  200),
+        ("200+",       200,  100000),
+    ]
+    unit_hist = []
+    for label, low, high in unit_buckets:
+        cnt = db.execute(sa.text("""
+            SELECT COUNT(*) FROM entities
+            WHERE (characteristics->>'dor_num_units')::int >= :low
+              AND (characteristics->>'dor_num_units')::int < :high
+        """), {"low": low, "high": high}).scalar() or 0
+        unit_hist.append({"bucket": label, "count": cnt})
+
+    # 4. County breakdown — how many entities per county
+    county_rows = db.execute(sa.text("""
+        SELECT county, COUNT(*) AS cnt
+        FROM entities
+        WHERE county IS NOT NULL
+        GROUP BY county
+        ORDER BY cnt DESC
+    """)).fetchall()
+    counties = [{"county": r[0], "count": r[1]} for r in county_rows]
+
+    # 5. Spot checks — highest-value entities in the dataset
+    top_value_rows = db.execute(sa.text("""
+        SELECT
+            id,
+            name,
+            county,
+            (characteristics->>'dor_market_value')::bigint AS jv,
+            (characteristics->>'dor_num_units')::int AS units,
+            characteristics->>'dor_use_code' AS use_code,
+            characteristics->>'dor_use_description' AS use_label,
+            characteristics->>'dbpr_condo_name' AS dbpr_name
+        FROM entities
+        WHERE characteristics->>'dor_market_value' IS NOT NULL
+        ORDER BY (characteristics->>'dor_market_value')::bigint DESC
+        LIMIT 20
+    """)).fetchall()
+    top_by_value = [
+        {
+            "id": r[0], "name": r[1], "county": r[2],
+            "market_value": r[3], "units": r[4],
+            "use_code": r[5], "use_label": r[6],
+            "dbpr_condo_name": r[7],
+        }
+        for r in top_value_rows
+    ]
+
+    # 6. Spot checks — largest by unit count
+    top_unit_rows = db.execute(sa.text("""
+        SELECT
+            id,
+            name,
+            county,
+            (characteristics->>'dor_num_units')::int AS units,
+            (characteristics->>'dor_market_value')::bigint AS jv,
+            characteristics->>'dor_use_code' AS use_code,
+            characteristics->>'dbpr_condo_name' AS dbpr_name
+        FROM entities
+        WHERE characteristics->>'dor_num_units' IS NOT NULL
+          AND (characteristics->>'dor_num_units')::int >= 10
+        ORDER BY (characteristics->>'dor_num_units')::int DESC
+        LIMIT 20
+    """)).fetchall()
+    top_by_units = [
+        {
+            "id": r[0], "name": r[1], "county": r[2],
+            "units": r[3], "market_value": r[4],
+            "use_code": r[5], "dbpr_condo_name": r[6],
+        }
+        for r in top_unit_rows
+    ]
+
+    # 7. Total counts
+    total_entities = db.query(Entity).count()
+    lead_count = db.query(Entity).filter(Entity.pipeline_stage == "LEAD").count()
+
+    return {
+        "total_entities": total_entities,
+        "lead_count": lead_count,
+        "use_codes": use_codes,
+        "value_histogram": value_hist,
+        "unit_histogram": unit_hist,
+        "counties": counties,
+        "top_20_by_value": top_by_value,
+        "top_20_by_units": top_by_units,
+    }
+
+
 @router.post("/api/admin/services/prune")
 def prune_services(stale_only: bool = Query(False, description="Only prune services with no heartbeat in an hour")):
     """Remove ghost / stale service rows from the registry.
