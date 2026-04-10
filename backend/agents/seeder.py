@@ -118,6 +118,63 @@ MIN_UNITS_FOR_OTHER = 10
 MIN_MARKET_VALUE = int(os.environ.get("MIN_MARKET_VALUE", 2_000_000))  # Default $2M, configurable
 MIN_UNITS_TARGET = 10            # At least 10 units for condos/multi-family
 
+# Replacement cost per sqft by construction class (FL 2026 baseline)
+REPLACEMENT_COST_PER_SQFT = {
+    "Frame": 200,
+    "Masonry": 275,
+    "Non-Combustible": 325,
+    "Fire Resistive": 400,
+    "Fire Resistive (Premium)": 450,
+}
+
+# Per-unit replacement cost by county tier
+HIGH_COST_COUNTIES = {"Miami-Dade", "Palm Beach", "Monroe", "Broward", "Collier"}
+MID_COST_COUNTIES = {"Lee", "Sarasota", "Manatee", "Pinellas", "Martin", "Indian River",
+                      "St. Lucie", "Walton", "Okaloosa", "Bay", "Nassau"}
+
+
+def _compute_replacement_tiv(
+    num_units: int | None,
+    living_sqft: int | None,
+    construction_class: str | None,
+    county: str | None,
+    jv: int | None,
+) -> int | None:
+    """Compute replacement cost TIV from physical characteristics.
+
+    DOR "Just Value" on condo master parcels is severely understated because
+    the real building value is split across individual unit parcels. This
+    function computes a more realistic TIV from:
+      1. Square footage × replacement cost per sqft (by construction type)
+      2. Unit count × per-unit replacement cost (by county tier)
+      3. DOR Just Value × 1.3 (traditional markup, used as floor)
+
+    Returns the highest of the three estimates.
+    """
+    # 1. Sqft-based estimate
+    sqft_tiv = 0
+    if living_sqft and living_sqft > 0:
+        const = str(construction_class or "").strip()
+        per_sqft = REPLACEMENT_COST_PER_SQFT.get(const, 275)  # Default masonry
+        sqft_tiv = living_sqft * per_sqft
+
+    # 2. Unit-based estimate (most reliable for condos where sqft = common area only)
+    unit_tiv = 0
+    if num_units and num_units > 0:
+        if county in HIGH_COST_COUNTIES:
+            per_unit = 500_000
+        elif county in MID_COST_COUNTIES:
+            per_unit = 400_000
+        else:
+            per_unit = 300_000
+        unit_tiv = num_units * per_unit
+
+    # 3. JV-based fallback (traditional 1.3x markup)
+    jv_tiv = round(jv * 1.3, -3) if jv and jv > 0 else 0
+
+    best = max(sqft_tiv, unit_tiv, jv_tiv)
+    return int(round(best, -3)) if best > 0 else None
+
 
 SEED_STATS_PATH = os.path.join(os.path.dirname(__file__), "..", "filestore", "System Data", "seed_stats.json")
 
@@ -300,10 +357,29 @@ def seed_county(county_no: str, db: Session, min_value: int | None = None) -> di
 
                 type_passed += 1
 
-                # Weed out non-starters: too small or too low value
+                # Extract value and construction data for TIV computation
                 jv_raw = _safe_int(_get_col(row, col_map, "JV"))
+                living_sqft = _safe_int(_get_col(row, col_map, "TOT_LVG_AREA"))
+                const_class_raw = _get_col(row, col_map, "CONST_CLASS").strip() or None
+                const_class = DOR_CONSTRUCTION_CLASSES.get(const_class_raw, const_class_raw)
+
+                # Compute replacement cost TIV — more reliable than DOR JV for
+                # condo master parcels where the building value is split across
+                # individual unit parcels.
+                tiv_estimate = _compute_replacement_tiv(
+                    num_units=num_units,
+                    living_sqft=living_sqft,
+                    construction_class=const_class,
+                    county=county_name,
+                    jv=jv_raw,
+                )
+
+                # Filter on computed TIV (not raw DOR JV) — this lets condo
+                # master parcels with understated JV but real physical characteristics
+                # pass through the filter.
                 threshold = min_value if min_value is not None else MIN_MARKET_VALUE
-                if threshold > 0 and jv_raw is not None and 0 < jv_raw < threshold:
+                effective_value = tiv_estimate or jv_raw or 0
+                if threshold > 0 and 0 < effective_value < threshold:
                     continue
                 if dor_uc in ("004", "005", "008") and num_units and num_units < MIN_UNITS_TARGET:
                     continue
@@ -339,11 +415,9 @@ def seed_county(county_no: str, db: Session, min_value: int | None = None) -> di
                         continue
 
                 # Build characteristics from NAL data
-                jv = jv_raw  # Already extracted above for filtering
-                tiv_estimate = round(jv * 1.3, -3) if jv and jv > 0 else None
-                const_class_raw = _get_col(row, col_map, "CONST_CLASS").strip() or None
-                # Map numeric DOR construction code to readable label
-                const_class = DOR_CONSTRUCTION_CLASSES.get(const_class_raw, const_class_raw)
+                # (jv_raw, living_sqft, const_class_raw, const_class, tiv_estimate
+                #  already computed above for the value filter)
+                jv = jv_raw
                 act_yr_blt = _safe_int(_get_col(row, col_map, "ACT_YR_BLT"))
 
                 characteristics = {
@@ -366,6 +440,14 @@ def seed_county(county_no: str, db: Session, min_value: int | None = None) -> di
                     "dor_special_features_value": _safe_int(_get_col(row, col_map, "SPEC_FEAT_VAL")),
                     "tiv_estimate": tiv_estimate,
                     "tiv": f"${tiv_estimate:,.0f}" if tiv_estimate else None,
+                    "tiv_method": (
+                        "unit_replacement" if (num_units and num_units > 0 and tiv_estimate and
+                            tiv_estimate == (num_units * (500_000 if county_name in HIGH_COST_COUNTIES
+                                else 400_000 if county_name in MID_COST_COUNTIES else 300_000)))
+                        else "sqft_replacement" if (living_sqft and living_sqft > 0 and tiv_estimate and
+                            tiv_estimate > (jv * 1.3 if jv else 0))
+                        else "jv_markup"
+                    ) if tiv_estimate else None,
                     "construction_class": const_class,
                     "imp_qual": _get_col(row, col_map, "IMP_QUAL").strip() or None,
                     "phy_city": phy_city or None,
