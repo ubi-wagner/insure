@@ -213,6 +213,16 @@ def enrich_citizens_insurance(entity: Entity, db: Session) -> bool:
     DOES NOT set on_citizens=True — that requires actual policy evidence.
     Sets citizens_candidate and citizens_likelihood for screening.
     """
+    # Refresh from DB so we pick up the latest characteristics (especially
+    # oir_estimated_premium_low/high written by the OIR enricher worker).
+    # Without this, parallel worker threads can read stale entity objects
+    # and fall back to the Citizens rate table instead of applying the
+    # OIR market × 1.35 markup.
+    try:
+        db.refresh(entity)
+    except Exception:
+        pass  # If refresh fails (e.g. detached instance), use loaded data
+
     chars = entity.characteristics or {}
 
     if not entity.county:

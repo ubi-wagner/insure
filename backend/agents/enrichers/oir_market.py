@@ -659,8 +659,10 @@ def _get_code_era(year_built: int | None) -> str:
 
 
 def _get_age_multiplier(year_built: int | None) -> float:
+    # Unknown age returns neutral 1.0 (don't penalize unknowns — DOR NAL
+    # frequently has blank year fields on condo master parcels).
     if year_built is None:
-        return 1.15  # unknown age → slightly penalised
+        return 1.00
     for threshold, mult in AGE_BRACKETS:
         if year_built >= threshold:
             return mult
@@ -669,8 +671,9 @@ def _get_age_multiplier(year_built: int | None) -> float:
 
 def _get_stories_info(stories: int | None) -> tuple[int, str, float]:
     """Return (wind_tier, label, multiplier) for the given story count."""
+    # Unknown stories returns neutral 1.0 (same rationale as age)
     if stories is None:
-        return (2, "unknown", 1.05)
+        return (2, "unknown", 1.00)
     for min_stories, tier, label, mult in STORIES_TIERS:
         if stories >= min_stories:
             return (tier, label, mult)
@@ -788,7 +791,12 @@ def enrich_oir_market(entity: Entity, db: Session) -> bool:
     )
     construction = _normalise_construction(raw_construction)
 
-    raw_year = chars.get("year_built") or chars.get("dor_year_built")
+    raw_year = (
+        chars.get("year_built")
+        or chars.get("dor_year_built")
+        or chars.get("dor_effective_year_built")
+        or chars.get("pa_year_built")
+    )
     year_built: int | None = None
     if raw_year is not None:
         try:
@@ -796,7 +804,12 @@ def enrich_oir_market(entity: Entity, db: Session) -> bool:
         except (ValueError, TypeError):
             pass
 
-    raw_stories = chars.get("stories")
+    raw_stories = (
+        chars.get("stories")
+        or chars.get("dbpr_max_stories")
+        or chars.get("dbpr_building_stories")
+        or chars.get("dor_num_buildings")  # not ideal but better than None
+    )
     stories: int | None = None
     if raw_stories is not None:
         try:

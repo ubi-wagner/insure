@@ -363,6 +363,27 @@ def seed_county(county_no: str, db: Session, min_value: int | None = None) -> di
                 const_class_raw = _get_col(row, col_map, "CONST_CLASS").strip() or None
                 const_class = DOR_CONSTRUCTION_CLASSES.get(const_class_raw, const_class_raw)
 
+                # Pull owner and parcel_id early — needed for the condo master
+                # parcel detection below
+                parcel_id_early = _get_col(row, col_map, "PARCEL_ID").strip()
+                owner_early = _get_col(row, col_map, "OWN_NAME").strip()
+                owner_upper = owner_early.upper()
+
+                # Condo master parcel detection: Miami-Dade and other counties
+                # assess master parcels with near-zero JV and blank num_units,
+                # so they fail both the value filter and the unit filter. Detect
+                # them via owner name patterns and parcel ID conventions so they
+                # pass through the filter even without a realistic JV or unit count.
+                is_condo_master = dor_uc == "004" and (
+                    any(kw in owner_upper for kw in [
+                        "CONDO", "CONDOMINIUM", "ASSN", "ASSOCIATION",
+                        "ASSOC", "HOMEOWNERS", "OWNERS ASSOC",
+                    ])
+                    or (parcel_id_early and parcel_id_early.endswith(
+                        ("9999", "99990", "99999", "0000")
+                    ))
+                )
+
                 # Compute replacement cost TIV — more reliable than DOR JV for
                 # condo master parcels where the building value is split across
                 # individual unit parcels.
@@ -377,12 +398,17 @@ def seed_county(county_no: str, db: Session, min_value: int | None = None) -> di
                 # Filter on computed TIV (not raw DOR JV) — this lets condo
                 # master parcels with understated JV but real physical characteristics
                 # pass through the filter.
+                #
+                # EXCEPTION: if this is an identifiable condo master parcel with
+                # near-zero JV, let it through even below the threshold — it will
+                # be revalued after DBPR enrichment provides the real unit count.
                 threshold = min_value if min_value is not None else MIN_MARKET_VALUE
                 effective_value = tiv_estimate or jv_raw or 0
-                if threshold > 0 and 0 < effective_value < threshold:
-                    continue
-                if dor_uc in ("004", "005", "008") and num_units and num_units < MIN_UNITS_TARGET:
-                    continue
+                if not is_condo_master:
+                    if threshold > 0 and 0 < effective_value < threshold:
+                        continue
+                    if dor_uc in ("004", "005", "008") and num_units and num_units < MIN_UNITS_TARGET:
+                        continue
 
                 filtered += 1
 
@@ -448,6 +474,7 @@ def seed_county(county_no: str, db: Session, min_value: int | None = None) -> di
                             tiv_estimate > (jv * 1.3 if jv else 0))
                         else "jv_markup"
                     ) if tiv_estimate else None,
+                    "is_condo_master": is_condo_master,
                     "construction_class": const_class,
                     "imp_qual": _get_col(row, col_map, "IMP_QUAL").strip() or None,
                     "phy_city": phy_city or None,
