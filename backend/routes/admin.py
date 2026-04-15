@@ -846,53 +846,68 @@ def backfill_tiv(db: Session = Depends(get_db)):
     """
     from agents.seeder import _compute_replacement_tiv
 
-    entities = db.execute(sa.text("""
-        SELECT id, county, characteristics
-        FROM entities
-        WHERE characteristics ? 'dbpr_official_units'
-          AND (characteristics->>'dbpr_official_units')::int > 1
-    """)).fetchall()
+    # Use ORM with the JSONB ? operator — more reliable than raw SQL
+    # cast syntax which has tripped over psycopg2 type inference before.
+    entities = db.query(Entity).filter(
+        Entity.characteristics.op("?")("dbpr_official_units")
+    ).all()
 
+    scanned = 0
     updated = 0
-    for row in entities:
-        entity_id, county, chars = row
-        if not chars:
-            continue
+    errors: list[str] = []
+
+    for entity in entities:
+        scanned += 1
         try:
-            unit_count = int(chars.get("dbpr_official_units") or 0)
+            chars = dict(entity.characteristics or {})
+            unit_count_raw = chars.get("dbpr_official_units")
+            if unit_count_raw is None:
+                continue
+            unit_count = int(unit_count_raw)
             if unit_count <= 1:
                 continue
-            living_sqft = chars.get("dor_living_sqft")
+
+            living_sqft_raw = chars.get("dor_living_sqft")
+            living_sqft = int(living_sqft_raw) if living_sqft_raw else None
             const_class = chars.get("dor_construction_class") or chars.get("construction_class")
-            jv = chars.get("dor_market_value")
+            jv_raw = chars.get("dor_market_value")
+            jv = int(jv_raw) if jv_raw else None
+
             new_tiv = _compute_replacement_tiv(
                 num_units=unit_count,
-                living_sqft=int(living_sqft) if living_sqft else None,
+                living_sqft=living_sqft,
                 construction_class=const_class,
-                county=county,
-                jv=int(jv) if jv else None,
+                county=entity.county,
+                jv=jv,
             )
-            existing_tiv = int(chars.get("tiv_estimate") or 0)
-            if new_tiv and new_tiv > existing_tiv:
-                db.execute(sa.text("""
-                    UPDATE entities
-                    SET characteristics = characteristics
-                        || jsonb_build_object(
-                            'tiv_estimate', :tiv::int,
-                            'tiv', :tiv_str,
-                            'tiv_method', 'unit_replacement_backfill'
-                        )
-                    WHERE id = :eid
-                """), {"tiv": new_tiv, "tiv_str": f"${new_tiv:,.0f}", "eid": entity_id})
-                updated += 1
-        except (ValueError, TypeError):
-            continue
 
-    db.commit()
+            existing_tiv_raw = chars.get("tiv_estimate")
+            existing_tiv = int(existing_tiv_raw) if existing_tiv_raw else 0
+
+            if new_tiv and new_tiv > existing_tiv:
+                # Shallow copy already done above — SQLAlchemy will detect
+                # the mutation when we reassign entity.characteristics
+                chars["tiv_estimate"] = new_tiv
+                chars["tiv"] = f"${new_tiv:,.0f}"
+                chars["tiv_method"] = "unit_replacement_backfill"
+                entity.characteristics = chars
+                updated += 1
+        except Exception as e:
+            errors.append(f"Entity {entity.id}: {str(e)[:100]}")
+            if len(errors) >= 10:
+                break
+
+    try:
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        return {"success": False, "error": f"Commit failed: {str(e)[:300]}"}
+
     return {
         "success": True,
-        "scanned": len(entities),
+        "scanned": scanned,
         "updated": updated,
+        "errors": errors if errors else None,
     }
 
 
