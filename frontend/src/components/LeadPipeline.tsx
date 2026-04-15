@@ -122,8 +122,10 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
   const [maxDistance, setMaxDistance] = useState("");
   const [showFilters, setShowFilters] = useState(false);
 
-  // Saved filter presets (persisted in localStorage)
-  interface SavedFilter {
+  // Saved filter presets — persisted server-side via /api/user/filters.
+  // Each user has their own filters; is_shared=true filters are visible
+  // to the whole team but only editable by the owner.
+  interface SavedFilterData {
     county: string;
     sortKey: string;
     minValue: string;
@@ -138,57 +140,76 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
     maxYear: string;
     maxDistance: string;
   }
-  const [savedFilters, setSavedFilters] = useState<Record<string, SavedFilter>>({});
+  interface SavedFilterRow {
+    id: number;
+    name: string;
+    filter_json: SavedFilterData;
+    is_shared: boolean;
+    is_own: boolean;
+    owner_display: string;
+  }
+  const [savedFilters, setSavedFilters] = useState<SavedFilterRow[]>([]);
 
-  // Load saved filters from localStorage on mount
-  useEffect(() => {
+  async function refreshSavedFilters() {
     try {
-      const raw = localStorage.getItem("insure_saved_filters");
-      if (raw) setSavedFilters(JSON.parse(raw));
-    } catch {}
-  }, []);
-
-  function persistSavedFilters(next: Record<string, SavedFilter>) {
-    setSavedFilters(next);
-    try {
-      localStorage.setItem("insure_saved_filters", JSON.stringify(next));
+      const res = await fetch("/api/proxy/user/filters");
+      if (res.ok) {
+        const d = await res.json();
+        setSavedFilters(d.filters ?? []);
+      }
     } catch {}
   }
 
-  function saveCurrentFilter() {
+  // Load saved filters on mount
+  useEffect(() => { refreshSavedFilters(); }, []);
+
+  async function saveCurrentFilter() {
     const name = window.prompt("Name this filter set:");
     if (!name?.trim()) return;
-    const snapshot: SavedFilter = {
+    const shared = window.confirm(
+      `Share "${name}" with the whole team?\n\n` +
+      `OK = Shared (visible to everyone, editable by you)\n` +
+      `Cancel = Private (only visible to you)`
+    );
+    const snapshot: SavedFilterData = {
       county, sortKey, minValue, maxValue, minUnits, minStories,
       useCode, heatFilter, citizensOnly, creamTier,
       minYear, maxYear, maxDistance,
     };
-    persistSavedFilters({ ...savedFilters, [name.trim()]: snapshot });
+    try {
+      await fetch("/api/proxy/user/filters", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: name.trim(), filter_json: snapshot, is_shared: shared }),
+      });
+      await refreshSavedFilters();
+    } catch {}
   }
 
-  function loadSavedFilter(name: string) {
-    const f = savedFilters[name];
-    if (!f) return;
-    setCounty(f.county ?? "");
-    setSortKey(f.sortKey ?? "value-desc");
-    setMinValue(f.minValue ?? "");
-    setMaxValue(f.maxValue ?? "");
-    setMinUnits(f.minUnits ?? "");
-    setMinStories(f.minStories ?? "");
-    setUseCode(f.useCode ?? "");
-    setHeatFilter(f.heatFilter ?? "");
-    setCitizensOnly(!!f.citizensOnly);
-    setCreamTier(f.creamTier ?? "");
-    setMinYear(f.minYear ?? "");
-    setMaxYear(f.maxYear ?? "");
-    setMaxDistance(f.maxDistance ?? "");
+  function loadSavedFilter(f: SavedFilterRow) {
+    const d = f.filter_json || ({} as SavedFilterData);
+    setCounty(d.county ?? "");
+    setSortKey(d.sortKey ?? "value-desc");
+    setMinValue(d.minValue ?? "");
+    setMaxValue(d.maxValue ?? "");
+    setMinUnits(d.minUnits ?? "");
+    setMinStories(d.minStories ?? "");
+    setUseCode(d.useCode ?? "");
+    setHeatFilter(d.heatFilter ?? "");
+    setCitizensOnly(!!d.citizensOnly);
+    setCreamTier(d.creamTier ?? "");
+    setMinYear(d.minYear ?? "");
+    setMaxYear(d.maxYear ?? "");
+    setMaxDistance(d.maxDistance ?? "");
   }
 
-  function deleteSavedFilter(name: string) {
-    if (!window.confirm(`Delete saved filter "${name}"?`)) return;
-    const next = { ...savedFilters };
-    delete next[name];
-    persistSavedFilters(next);
+  async function deleteSavedFilter(f: SavedFilterRow) {
+    if (!f.is_own) return; // Can only delete your own
+    if (!window.confirm(`Delete saved filter "${f.name}"?`)) return;
+    try {
+      await fetch(`/api/proxy/user/filters/${f.id}`, { method: "DELETE" });
+      await refreshSavedFilters();
+    } catch {}
   }
 
   // Pagination
@@ -454,28 +475,39 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
         {/* Expandable filter panel */}
         {showFilters && (
           <div className="bg-gray-900 border border-gray-800 rounded-lg p-2.5 space-y-2">
-            {/* Saved filter presets */}
+            {/* Saved filter presets (server-side) */}
             <div className="flex items-start gap-1.5 pb-2 border-b border-gray-800/60">
               <span className="text-[10px] text-gray-500 pt-1 shrink-0">Saved:</span>
               <div className="flex-1 flex flex-wrap gap-1">
-                {Object.keys(savedFilters).length === 0 ? (
+                {savedFilters.length === 0 ? (
                   <span className="text-[10px] text-gray-600 italic pt-1">none yet</span>
                 ) : (
-                  Object.keys(savedFilters).sort().map((name) => (
-                    <span key={name}
-                      className="inline-flex items-center gap-0.5 bg-blue-950/50 border border-blue-800 rounded overflow-hidden text-[10px]">
-                      <button onClick={() => loadSavedFilter(name)}
-                        className="px-2 py-0.5 text-blue-300 hover:bg-blue-900/60"
-                        title={`Load "${name}"`}>
-                        {name}
-                      </button>
-                      <button onClick={() => deleteSavedFilter(name)}
-                        className="px-1 py-0.5 text-blue-600 hover:text-red-400 hover:bg-red-900/30"
-                        title={`Delete "${name}"`}>
-                        ×
-                      </button>
-                    </span>
-                  ))
+                  savedFilters.map((f) => {
+                    const styleOwn = "bg-blue-950/50 border-blue-800 text-blue-300";
+                    const styleShared = "bg-purple-950/50 border-purple-800 text-purple-300";
+                    const wrap = f.is_own ? styleOwn : styleShared;
+                    return (
+                      <span key={f.id}
+                        className={`inline-flex items-center gap-0.5 ${wrap} border rounded overflow-hidden text-[10px]`}>
+                        <button onClick={() => loadSavedFilter(f)}
+                          className="px-2 py-0.5 hover:bg-black/30"
+                          title={
+                            f.is_own
+                              ? `Load "${f.name}"${f.is_shared ? " (shared)" : ""}`
+                              : `Load "${f.name}" (shared by ${f.owner_display})`
+                          }>
+                          {f.name}{!f.is_own && <span className="ml-1 opacity-60">·{f.owner_display}</span>}
+                        </button>
+                        {f.is_own && (
+                          <button onClick={() => deleteSavedFilter(f)}
+                            className="px-1 py-0.5 opacity-60 hover:opacity-100 hover:bg-red-900/30 hover:text-red-400"
+                            title={`Delete "${f.name}"`}>
+                            ×
+                          </button>
+                        )}
+                      </span>
+                    );
+                  })
                 )}
               </div>
               <button onClick={saveCurrentFilter}

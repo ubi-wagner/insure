@@ -15,6 +15,7 @@ from routes.admin import router as admin_router
 from routes.events import router as events_router, EventLoggingMiddleware
 from routes.status import router as status_router
 from routes.email import router as email_router
+from routes.user import router as user_router, ensure_default_users
 from services.event_bus import EventStatus, EventType, emit, event_bus
 
 logger = logging.getLogger(__name__)
@@ -51,6 +52,16 @@ async def lifespan(app: FastAPI):
             # was replaced by job_consumer + queue_manager; hunter is an
             # older legacy worker).
             prune_legacy_services()
+
+            # Seed default users (eric=admin, jason=user) if missing
+            try:
+                _seed_db = SessionLocal()
+                try:
+                    ensure_default_users(_seed_db)
+                finally:
+                    _seed_db.close()
+            except Exception as _e:
+                logger.warning(f"User seeding failed: {_e}")
 
             has_anthropic = bool(os.getenv("ANTHROPIC_API_KEY"))
             register("api", capabilities={
@@ -180,6 +191,7 @@ app.include_router(admin_router)
 app.include_router(events_router)
 app.include_router(status_router)
 app.include_router(email_router)
+app.include_router(user_router)
 
 
 @app.get("/")
