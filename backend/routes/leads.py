@@ -198,11 +198,25 @@ def list_leads(
     if min_cream is not None:
         query = query.filter(_jsonb_int("cream_score") >= min_cream)
 
-    # Market value filter (dor_market_value is stored as integer in JSONB)
+    # Market value filter — uses GREATEST(tiv_estimate, dor_market_value)
+    # because condo master parcels have severely understated DOR Just Values
+    # (the real building value is split across individual unit parcels). The
+    # tiv_estimate field holds the computed replacement cost from the seeder,
+    # which is the right comparator for "filter by value".
     if min_value is not None:
-        query = query.filter(_jsonb_int("dor_market_value") >= min_value)
+        query = query.filter(
+            func.greatest(
+                func.coalesce(_jsonb_int("tiv_estimate"), 0),
+                func.coalesce(_jsonb_int("dor_market_value"), 0),
+            ) >= min_value
+        )
     if max_value is not None:
-        query = query.filter(_jsonb_int("dor_market_value") <= max_value)
+        query = query.filter(
+            func.greatest(
+                func.coalesce(_jsonb_int("tiv_estimate"), 0),
+                func.coalesce(_jsonb_int("dor_market_value"), 0),
+            ) <= max_value
+        )
 
     # TIV filter
     if min_tiv is not None:
@@ -218,17 +232,31 @@ def list_leads(
     if min_units is not None:
         query = query.filter(_jsonb_int("dor_num_units") >= min_units)
 
-    # Year built filter
-    if min_year is not None:
-        query = query.filter(_jsonb_int("dor_year_built") >= min_year)
-    if max_year is not None:
-        query = query.filter(_jsonb_int("dor_year_built") <= max_year)
-
-    # Distance from ocean filter (precomputed during seed/geocode)
-    if max_distance_miles is not None:
-        query = query.filter(
-            _jsonb_float("distance_to_ocean_miles") <= max_distance_miles
+    # Year built filter — falls back through dor_year_built ->
+    # dor_effective_year_built -> pa_year_built so condo master parcels
+    # with blank dor_year_built can still be matched. Properties with NO
+    # year info anywhere are NOT excluded — we filter only on properties
+    # we have year data for.
+    def _best_year_col():
+        return func.coalesce(
+            _jsonb_int("dor_year_built"),
+            _jsonb_int("dor_effective_year_built"),
+            _jsonb_int("pa_year_built"),
         )
+    if min_year is not None:
+        year_col = _best_year_col()
+        query = query.filter(or_(year_col.is_(None), year_col >= min_year))
+    if max_year is not None:
+        year_col = _best_year_col()
+        query = query.filter(or_(year_col.is_(None), year_col <= max_year))
+
+    # Distance from ocean filter — entities without this field
+    # (pre-geocoded or geocoded before the geo utility shipped) are NOT
+    # excluded; they pass through and the user can backfill via
+    # POST /api/admin/backfill-ocean-distance.
+    if max_distance_miles is not None:
+        dist_col = _jsonb_float("distance_to_ocean_miles")
+        query = query.filter(or_(dist_col.is_(None), dist_col <= max_distance_miles))
 
     # Construction class filter (SQL)
     if construction:
