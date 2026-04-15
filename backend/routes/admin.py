@@ -835,6 +835,67 @@ def extract_dor_zips_endpoint():
     }
 
 
+@router.post("/api/admin/backfill-tiv")
+def backfill_tiv(db: Session = Depends(get_db)):
+    """Recompute tiv_estimate for entities that already have a DBPR
+    official unit count but were seeded before the post-DBPR TIV
+    recomputation logic shipped.
+
+    Walks every entity with dbpr_official_units > 1 and recomputes TIV
+    from the unit count, taking the larger of the new and existing TIV.
+    """
+    from agents.seeder import _compute_replacement_tiv
+
+    entities = db.execute(sa.text("""
+        SELECT id, county, characteristics
+        FROM entities
+        WHERE characteristics ? 'dbpr_official_units'
+          AND (characteristics->>'dbpr_official_units')::int > 1
+    """)).fetchall()
+
+    updated = 0
+    for row in entities:
+        entity_id, county, chars = row
+        if not chars:
+            continue
+        try:
+            unit_count = int(chars.get("dbpr_official_units") or 0)
+            if unit_count <= 1:
+                continue
+            living_sqft = chars.get("dor_living_sqft")
+            const_class = chars.get("dor_construction_class") or chars.get("construction_class")
+            jv = chars.get("dor_market_value")
+            new_tiv = _compute_replacement_tiv(
+                num_units=unit_count,
+                living_sqft=int(living_sqft) if living_sqft else None,
+                construction_class=const_class,
+                county=county,
+                jv=int(jv) if jv else None,
+            )
+            existing_tiv = int(chars.get("tiv_estimate") or 0)
+            if new_tiv and new_tiv > existing_tiv:
+                db.execute(sa.text("""
+                    UPDATE entities
+                    SET characteristics = characteristics
+                        || jsonb_build_object(
+                            'tiv_estimate', :tiv::int,
+                            'tiv', :tiv_str,
+                            'tiv_method', 'unit_replacement_backfill'
+                        )
+                    WHERE id = :eid
+                """), {"tiv": new_tiv, "tiv_str": f"${new_tiv:,.0f}", "eid": entity_id})
+                updated += 1
+        except (ValueError, TypeError):
+            continue
+
+    db.commit()
+    return {
+        "success": True,
+        "scanned": len(entities),
+        "updated": updated,
+    }
+
+
 @router.post("/api/admin/seed-users")
 def manual_seed_users():
     """Manually trigger user + canned filter seeding.
