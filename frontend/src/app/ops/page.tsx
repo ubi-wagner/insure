@@ -3,6 +3,7 @@
 import { Fragment, useEffect, useState, useRef, useCallback } from "react";
 import Link from "next/link";
 import { useAuth } from "@/hooks/useAuth";
+import UserMenu from "@/components/UserMenu";
 
 /* ================================================================
    Types
@@ -343,6 +344,7 @@ export default function OpsCenter() {
           <Link href="/files" className="text-gray-500 hover:text-white text-xs">Files</Link>
           <Link href="/ref" className="text-gray-500 hover:text-white text-xs">Ref</Link>
           <Link href="/help" className="text-blue-400 hover:text-blue-300 text-xs font-medium">? Help</Link>
+          <UserMenu />
         </div>
       </header>
 

@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useAuth } from "@/hooks/useAuth";
+import UserMenu from "@/components/UserMenu";
 
 interface Preset { name: string; description: string; sql: string }
 interface QueryResult {
@@ -66,6 +67,7 @@ export default function SqlQueryPage() {
         <div className="flex items-center gap-2">
           <Link href="/" className="text-gray-500 hover:text-white text-xs">Dashboard</Link>
           <Link href="/help" className="text-blue-400 hover:text-blue-300 text-xs font-medium">? Help</Link>
+          <UserMenu />
         </div>
       </header>
 

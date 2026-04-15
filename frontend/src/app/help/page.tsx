@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import UserMenu from "@/components/UserMenu";
 
 interface Section {
   id: string;
@@ -58,6 +59,7 @@ export default function HelpPage() {
         <div className="flex items-center gap-3">
           <Link href="/ops" className="text-gray-500 hover:text-white text-xs">Ops</Link>
           <button onClick={() => window.print()} className="text-gray-500 hover:text-white text-xs">Print</button>
+          <UserMenu />
         </div>
       </header>
 
