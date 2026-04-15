@@ -505,8 +505,35 @@ def enrich_dbpr_bulk(entity: Entity, db: Session) -> bool:
 
     units = get(match, "Units")
     if units and units.isdigit():
-        updates["dbpr_official_units"] = int(units)
-        updates["units_estimate"] = int(units)  # Override OSM estimate
+        unit_count = int(units)
+        updates["dbpr_official_units"] = unit_count
+        updates["units_estimate"] = unit_count  # Override OSM estimate
+
+        # Recompute TIV using the now-known authoritative unit count.
+        # This is critical for condo master parcels seeded with no
+        # num_units (DOR leaves the field blank for masters in many
+        # counties), where the seed-time TIV defaulted to a tiny value
+        # based only on JV * 1.3.
+        try:
+            from agents.seeder import _compute_replacement_tiv
+            chars = entity.characteristics or {}
+            living_sqft = chars.get("dor_living_sqft")
+            const_class = chars.get("dor_construction_class") or chars.get("construction_class")
+            jv = chars.get("dor_market_value")
+            new_tiv = _compute_replacement_tiv(
+                num_units=unit_count,
+                living_sqft=int(living_sqft) if living_sqft else None,
+                construction_class=const_class,
+                county=entity.county,
+                jv=int(jv) if jv else None,
+            )
+            existing_tiv = chars.get("tiv_estimate") or 0
+            if new_tiv and new_tiv > existing_tiv:
+                updates["tiv_estimate"] = new_tiv
+                updates["tiv"] = f"${new_tiv:,.0f}"
+                updates["tiv_method"] = "unit_replacement_dbpr"
+        except Exception as _e:
+            logger.debug(f"TIV recompute failed for entity {entity.id}: {_e}")
 
     recorded = get(match, "Recorded Date")
     if recorded:
