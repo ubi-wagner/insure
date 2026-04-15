@@ -122,6 +122,75 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
   const [maxDistance, setMaxDistance] = useState("");
   const [showFilters, setShowFilters] = useState(false);
 
+  // Saved filter presets (persisted in localStorage)
+  interface SavedFilter {
+    county: string;
+    sortKey: string;
+    minValue: string;
+    maxValue: string;
+    minUnits: string;
+    minStories: string;
+    useCode: string;
+    heatFilter: string;
+    citizensOnly: boolean;
+    creamTier: string;
+    minYear: string;
+    maxYear: string;
+    maxDistance: string;
+  }
+  const [savedFilters, setSavedFilters] = useState<Record<string, SavedFilter>>({});
+
+  // Load saved filters from localStorage on mount
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem("insure_saved_filters");
+      if (raw) setSavedFilters(JSON.parse(raw));
+    } catch {}
+  }, []);
+
+  function persistSavedFilters(next: Record<string, SavedFilter>) {
+    setSavedFilters(next);
+    try {
+      localStorage.setItem("insure_saved_filters", JSON.stringify(next));
+    } catch {}
+  }
+
+  function saveCurrentFilter() {
+    const name = window.prompt("Name this filter set:");
+    if (!name?.trim()) return;
+    const snapshot: SavedFilter = {
+      county, sortKey, minValue, maxValue, minUnits, minStories,
+      useCode, heatFilter, citizensOnly, creamTier,
+      minYear, maxYear, maxDistance,
+    };
+    persistSavedFilters({ ...savedFilters, [name.trim()]: snapshot });
+  }
+
+  function loadSavedFilter(name: string) {
+    const f = savedFilters[name];
+    if (!f) return;
+    setCounty(f.county ?? "");
+    setSortKey(f.sortKey ?? "value-desc");
+    setMinValue(f.minValue ?? "");
+    setMaxValue(f.maxValue ?? "");
+    setMinUnits(f.minUnits ?? "");
+    setMinStories(f.minStories ?? "");
+    setUseCode(f.useCode ?? "");
+    setHeatFilter(f.heatFilter ?? "");
+    setCitizensOnly(!!f.citizensOnly);
+    setCreamTier(f.creamTier ?? "");
+    setMinYear(f.minYear ?? "");
+    setMaxYear(f.maxYear ?? "");
+    setMaxDistance(f.maxDistance ?? "");
+  }
+
+  function deleteSavedFilter(name: string) {
+    if (!window.confirm(`Delete saved filter "${name}"?`)) return;
+    const next = { ...savedFilters };
+    delete next[name];
+    persistSavedFilters(next);
+  }
+
   // Pagination
   const [page, setPage] = useState(0);
   const PAGE_SIZE = 50;
@@ -385,6 +454,35 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
         {/* Expandable filter panel */}
         {showFilters && (
           <div className="bg-gray-900 border border-gray-800 rounded-lg p-2.5 space-y-2">
+            {/* Saved filter presets */}
+            <div className="flex items-start gap-1.5 pb-2 border-b border-gray-800/60">
+              <span className="text-[10px] text-gray-500 pt-1 shrink-0">Saved:</span>
+              <div className="flex-1 flex flex-wrap gap-1">
+                {Object.keys(savedFilters).length === 0 ? (
+                  <span className="text-[10px] text-gray-600 italic pt-1">none yet</span>
+                ) : (
+                  Object.keys(savedFilters).sort().map((name) => (
+                    <span key={name}
+                      className="inline-flex items-center gap-0.5 bg-blue-950/50 border border-blue-800 rounded overflow-hidden text-[10px]">
+                      <button onClick={() => loadSavedFilter(name)}
+                        className="px-2 py-0.5 text-blue-300 hover:bg-blue-900/60"
+                        title={`Load "${name}"`}>
+                        {name}
+                      </button>
+                      <button onClick={() => deleteSavedFilter(name)}
+                        className="px-1 py-0.5 text-blue-600 hover:text-red-400 hover:bg-red-900/30"
+                        title={`Delete "${name}"`}>
+                        ×
+                      </button>
+                    </span>
+                  ))
+                )}
+              </div>
+              <button onClick={saveCurrentFilter}
+                className="shrink-0 px-2 py-0.5 text-[10px] rounded bg-green-900/50 border border-green-800 text-green-300 hover:bg-green-900">
+                + Save
+              </button>
+            </div>
             <div className="flex gap-2">
               <div className="flex-1">
                 <label className="text-[10px] text-gray-500 block mb-0.5">Use Code</label>
