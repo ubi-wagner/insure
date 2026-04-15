@@ -133,6 +133,8 @@ def list_leads(
     min_stories: Optional[int] = Query(None),
     min_units: Optional[int] = Query(None),
     min_year: Optional[int] = Query(None),
+    max_year: Optional[int] = Query(None),
+    max_distance_miles: Optional[float] = Query(None, description="Max distance from ocean in miles"),
     use_code: Optional[str] = Query(None),
     heat: Optional[str] = Query(None),
     on_citizens: Optional[bool] = Query(None),
@@ -219,6 +221,14 @@ def list_leads(
     # Year built filter
     if min_year is not None:
         query = query.filter(_jsonb_int("dor_year_built") >= min_year)
+    if max_year is not None:
+        query = query.filter(_jsonb_int("dor_year_built") <= max_year)
+
+    # Distance from ocean filter (precomputed during seed/geocode)
+    if max_distance_miles is not None:
+        query = query.filter(
+            _jsonb_float("distance_to_ocean_miles") <= max_distance_miles
+        )
 
     # Construction class filter (SQL)
     if construction:

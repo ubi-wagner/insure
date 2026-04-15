@@ -117,6 +117,9 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
   const [heatFilter, setHeatFilter] = useState("");
   const [citizensOnly, setCitizensOnly] = useState(false);
   const [creamTier, setCreamTier] = useState("");
+  const [minYear, setMinYear] = useState("");
+  const [maxYear, setMaxYear] = useState("");
+  const [maxDistance, setMaxDistance] = useState("");
   const [showFilters, setShowFilters] = useState(false);
 
   // Pagination
@@ -176,6 +179,9 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
       if (heatFilter) params.set("heat", heatFilter);
       if (citizensOnly) params.set("on_citizens", "true");
       if (creamTier) params.set("cream_tier", creamTier);
+      if (minYear) params.set("min_year", minYear);
+      if (maxYear) params.set("max_year", maxYear);
+      if (maxDistance) params.set("max_distance_miles", maxDistance);
 
       const res = await fetch(`/api/proxy/leads?${params}`);
       if (res.ok) {
@@ -198,7 +204,7 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
       setFetchError("Unable to connect");
     }
     setLoading(false);
-  }, [activeStage, search, county, sortKey, page, minValue, maxValue, minUnits, minStories, useCode, heatFilter, citizensOnly, creamTier, onLeadsLoaded]);
+  }, [activeStage, search, county, sortKey, page, minValue, maxValue, minUnits, minStories, useCode, heatFilter, citizensOnly, creamTier, minYear, maxYear, maxDistance, onLeadsLoaded]);
 
   // Fetch stage counts for the tab badges
   const fetchStageCounts = useCallback(async () => {
@@ -220,7 +226,7 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
   }, [fetchStageCounts, refreshKey]);
 
   // Reset page when filters change
-  useEffect(() => { setPage(0); }, [activeStage, search, county, sortKey, minValue, maxValue, minUnits, minStories, useCode, heatFilter, citizensOnly, creamTier]);
+  useEffect(() => { setPage(0); }, [activeStage, search, county, sortKey, minValue, maxValue, minUnits, minStories, useCode, heatFilter, citizensOnly, creamTier, minYear, maxYear, maxDistance]);
 
   // Clear selection when stage changes
   useEffect(() => { setSelected(new Set()); setSelectMode(false); setBulkMsg(null); }, [activeStage]);
@@ -426,6 +432,27 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
                   className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-white" />
               </div>
             </div>
+            {/* Year built range + distance to ocean */}
+            <div className="flex gap-2">
+              <div className="flex-1">
+                <label className="text-[10px] text-gray-500 block mb-0.5">Year Built (Min)</label>
+                <input type="number" value={minYear} onChange={(e) => setMinYear(e.target.value)}
+                  placeholder="1900"
+                  className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-white" />
+              </div>
+              <div className="flex-1">
+                <label className="text-[10px] text-gray-500 block mb-0.5">Year Built (Max)</label>
+                <input type="number" value={maxYear} onChange={(e) => setMaxYear(e.target.value)}
+                  placeholder={`${new Date().getFullYear()}`}
+                  className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-white" />
+              </div>
+              <div className="flex-1">
+                <label className="text-[10px] text-gray-500 block mb-0.5">Max Distance (mi)</label>
+                <input type="number" step="0.25" value={maxDistance} onChange={(e) => setMaxDistance(e.target.value)}
+                  placeholder="e.g. 1"
+                  className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-white" />
+              </div>
+            </div>
             <div className="flex gap-2 items-center">
               <div className="flex-1">
                 <label className="text-[10px] text-gray-500 block mb-0.5">Opportunity Tier</label>
@@ -445,7 +472,7 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
             </div>
             <div className="flex gap-2 items-center">
               <div className="flex-1" />
-              <button onClick={() => { setMinValue(""); setMaxValue(""); setMinUnits(""); setMinStories(""); setUseCode(""); setHeatFilter(""); setCitizensOnly(false); setCreamTier(""); }}
+              <button onClick={() => { setMinValue(""); setMaxValue(""); setMinUnits(""); setMinStories(""); setUseCode(""); setHeatFilter(""); setCitizensOnly(false); setCreamTier(""); setMinYear(""); setMaxYear(""); setMaxDistance(""); }}
                 className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-400 hover:text-white">
                 Clear All
               </button>

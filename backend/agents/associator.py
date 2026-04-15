@@ -120,11 +120,17 @@ def _create_entity_folder(entity: Entity) -> str:
 def _promote_geocoded(entity: Entity, lat: float, lon: float, db: Session, source: str = "census") -> bool:
     """Promote a geocoded TARGET to LEAD."""
     try:
+        from utils.geo import distance_to_ocean_miles
+
         entity.latitude = lat
         entity.longitude = lon
 
         chars = dict(entity.characteristics or {})
         chars["geocode_source"] = source
+        # Compute distance to ocean now that we have coordinates
+        ocean_dist = distance_to_ocean_miles(lat, lon)
+        if ocean_dist is not None:
+            chars["distance_to_ocean_miles"] = ocean_dist
         entity.characteristics = chars
 
         entity.pipeline_stage = "LEAD"
