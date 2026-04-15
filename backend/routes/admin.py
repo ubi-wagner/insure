@@ -835,6 +835,35 @@ def extract_dor_zips_endpoint():
     }
 
 
+@router.post("/api/admin/seed-users")
+def manual_seed_users():
+    """Manually trigger user + canned filter seeding.
+
+    Useful when the startup-time seeding silently failed or when the
+    canned filter list has been updated and you want them re-inserted
+    without a redeploy.
+    """
+    from routes.user import ensure_default_users
+    db = SessionLocal()
+    try:
+        ensure_default_users(db)
+        # Report current state
+        from database.models import User, UserSavedFilter
+        users = db.query(User).all()
+        filters = db.query(UserSavedFilter).all()
+        return {
+            "success": True,
+            "users": [{"username": u.username, "role": u.role, "uuid": u.uuid} for u in users],
+            "filters_count": len(filters),
+            "filters": [{"name": f.name, "is_shared": bool(f.is_shared)} for f in filters],
+        }
+    except Exception as e:
+        db.rollback()
+        return {"success": False, "error": str(e)[:500]}
+    finally:
+        db.close()
+
+
 @router.post("/api/admin/auto-seed-scan")
 def manual_auto_seed_scan(min_value: int = Query(None, description="Min market value override")):
     """Manually trigger the auto-seed scanner to look for NAL+SDF pairs.
