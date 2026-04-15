@@ -781,6 +781,33 @@ def prune_services(stale_only: bool = Query(False, description="Only prune servi
     return {"success": True, "pruned": count}
 
 
+@router.post("/api/admin/backfill-ocean-distance")
+def backfill_ocean_distance(db: Session = Depends(get_db)):
+    """Compute distance_to_ocean_miles for every geocoded entity that's
+    missing it. Useful after shipping the geo utility to enrich existing
+    LEADs without a full reseed."""
+    from utils.geo import distance_to_ocean_miles
+
+    entities = db.query(Entity).filter(
+        Entity.latitude.isnot(None),
+        Entity.longitude.isnot(None),
+    ).all()
+
+    updated = 0
+    for entity in entities:
+        chars = dict(entity.characteristics or {})
+        if "distance_to_ocean_miles" in chars:
+            continue
+        d = distance_to_ocean_miles(entity.latitude, entity.longitude)
+        if d is not None:
+            chars["distance_to_ocean_miles"] = d
+            entity.characteristics = chars
+            updated += 1
+
+    db.commit()
+    return {"success": True, "updated": updated, "total_geocoded": len(entities)}
+
+
 @router.post("/api/admin/extract-dor-zips")
 def extract_dor_zips_endpoint():
     """Manually trigger extraction of DOR NAL/SDF zip files in System Data/DOR/.

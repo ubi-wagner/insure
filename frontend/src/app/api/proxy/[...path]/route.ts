@@ -29,6 +29,23 @@ async function proxyRequest(request: NextRequest, params: Promise<{ path: string
   }
   headers.set("Accept", request.headers.get("Accept") || "application/json");
 
+  // Forward user identity from the auth cookie so backend endpoints can
+  // resolve the current user. Cookie value is "role:displayName" — we
+  // pass the displayName as-is and the backend looks up by either
+  // username (lowercased) or display name.
+  const authCookie = request.cookies.get("insure_auth");
+  if (authCookie?.value) {
+    const [role, displayName] = authCookie.value.split(":");
+    if (displayName) {
+      headers.set("X-User-Name", displayName);
+      // Fallback — some backend endpoints might prefer lowercased username
+      headers.set("X-User-Username", displayName.toLowerCase());
+    }
+    if (role) {
+      headers.set("X-User-Role", role);
+    }
+  }
+
   const fetchOptions: RequestInit = {
     method: request.method,
     headers,

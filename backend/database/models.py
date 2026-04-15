@@ -289,3 +289,50 @@ class ServiceRegistry(Base):
     version = Column(String, nullable=True)
     detail = Column(String, nullable=True)
 
+
+class User(Base):
+    """Application user — brokers, admins, staff.
+
+    UUID is the canonical external reference; every per-user child table
+    uses user_uuid (not integer id) so UUIDs can travel between environments
+    without collision.
+    """
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    uuid = Column(String(36), nullable=False, unique=True, index=True)
+    username = Column(String(64), nullable=False, unique=True, index=True)
+    display_name = Column(String(128), nullable=False)
+    password_hash = Column(String(256), nullable=True)
+    role = Column(String(16), nullable=False, default="user")  # "admin" or "user"
+    email = Column(String(128), nullable=True)
+    is_active = Column(Integer, default=1, nullable=False)  # SQLA doesn't have Boolean consistently
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    last_login = Column(DateTime, nullable=True)
+
+    saved_filters = relationship("UserSavedFilter", back_populates="user",
+                                  cascade="all, delete-orphan")
+
+
+class UserSavedFilter(Base):
+    """Saved lead-page filter preset — first of many per-user child tables.
+
+    Pattern to follow for future tables (watchlist, notes, preferences):
+      - user_uuid (FK to users.uuid, ON DELETE CASCADE)
+      - is_shared flag for team visibility (default private)
+      - UNIQUE constraint on (user_uuid, name) to prevent duplicates
+      - created_at / updated_at for audit
+    """
+    __tablename__ = "user_saved_filters"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_uuid = Column(String(36), ForeignKey("users.uuid", ondelete="CASCADE"),
+                        nullable=False, index=True)
+    name = Column(String(128), nullable=False)
+    filter_json = Column(JSONB, nullable=False)
+    is_shared = Column(Integer, default=0, nullable=False)  # 1 = visible to whole team
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+    user = relationship("User", back_populates="saved_filters")
+

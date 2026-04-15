@@ -117,7 +117,100 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
   const [heatFilter, setHeatFilter] = useState("");
   const [citizensOnly, setCitizensOnly] = useState(false);
   const [creamTier, setCreamTier] = useState("");
+  const [minYear, setMinYear] = useState("");
+  const [maxYear, setMaxYear] = useState("");
+  const [maxDistance, setMaxDistance] = useState("");
   const [showFilters, setShowFilters] = useState(false);
+
+  // Saved filter presets — persisted server-side via /api/user/filters.
+  // Each user has their own filters; is_shared=true filters are visible
+  // to the whole team but only editable by the owner.
+  interface SavedFilterData {
+    county: string;
+    sortKey: string;
+    minValue: string;
+    maxValue: string;
+    minUnits: string;
+    minStories: string;
+    useCode: string;
+    heatFilter: string;
+    citizensOnly: boolean;
+    creamTier: string;
+    minYear: string;
+    maxYear: string;
+    maxDistance: string;
+  }
+  interface SavedFilterRow {
+    id: number;
+    name: string;
+    filter_json: SavedFilterData;
+    is_shared: boolean;
+    is_own: boolean;
+    owner_display: string;
+  }
+  const [savedFilters, setSavedFilters] = useState<SavedFilterRow[]>([]);
+
+  async function refreshSavedFilters() {
+    try {
+      const res = await fetch("/api/proxy/user/filters");
+      if (res.ok) {
+        const d = await res.json();
+        setSavedFilters(d.filters ?? []);
+      }
+    } catch {}
+  }
+
+  // Load saved filters on mount
+  useEffect(() => { refreshSavedFilters(); }, []);
+
+  async function saveCurrentFilter() {
+    const name = window.prompt("Name this filter set:");
+    if (!name?.trim()) return;
+    const shared = window.confirm(
+      `Share "${name}" with the whole team?\n\n` +
+      `OK = Shared (visible to everyone, editable by you)\n` +
+      `Cancel = Private (only visible to you)`
+    );
+    const snapshot: SavedFilterData = {
+      county, sortKey, minValue, maxValue, minUnits, minStories,
+      useCode, heatFilter, citizensOnly, creamTier,
+      minYear, maxYear, maxDistance,
+    };
+    try {
+      await fetch("/api/proxy/user/filters", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: name.trim(), filter_json: snapshot, is_shared: shared }),
+      });
+      await refreshSavedFilters();
+    } catch {}
+  }
+
+  function loadSavedFilter(f: SavedFilterRow) {
+    const d = f.filter_json || ({} as SavedFilterData);
+    setCounty(d.county ?? "");
+    setSortKey(d.sortKey ?? "value-desc");
+    setMinValue(d.minValue ?? "");
+    setMaxValue(d.maxValue ?? "");
+    setMinUnits(d.minUnits ?? "");
+    setMinStories(d.minStories ?? "");
+    setUseCode(d.useCode ?? "");
+    setHeatFilter(d.heatFilter ?? "");
+    setCitizensOnly(!!d.citizensOnly);
+    setCreamTier(d.creamTier ?? "");
+    setMinYear(d.minYear ?? "");
+    setMaxYear(d.maxYear ?? "");
+    setMaxDistance(d.maxDistance ?? "");
+  }
+
+  async function deleteSavedFilter(f: SavedFilterRow) {
+    if (!f.is_own) return; // Can only delete your own
+    if (!window.confirm(`Delete saved filter "${f.name}"?`)) return;
+    try {
+      await fetch(`/api/proxy/user/filters/${f.id}`, { method: "DELETE" });
+      await refreshSavedFilters();
+    } catch {}
+  }
 
   // Pagination
   const [page, setPage] = useState(0);
@@ -176,6 +269,9 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
       if (heatFilter) params.set("heat", heatFilter);
       if (citizensOnly) params.set("on_citizens", "true");
       if (creamTier) params.set("cream_tier", creamTier);
+      if (minYear) params.set("min_year", minYear);
+      if (maxYear) params.set("max_year", maxYear);
+      if (maxDistance) params.set("max_distance_miles", maxDistance);
 
       const res = await fetch(`/api/proxy/leads?${params}`);
       if (res.ok) {
@@ -198,7 +294,7 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
       setFetchError("Unable to connect");
     }
     setLoading(false);
-  }, [activeStage, search, county, sortKey, page, minValue, maxValue, minUnits, minStories, useCode, heatFilter, citizensOnly, creamTier, onLeadsLoaded]);
+  }, [activeStage, search, county, sortKey, page, minValue, maxValue, minUnits, minStories, useCode, heatFilter, citizensOnly, creamTier, minYear, maxYear, maxDistance, onLeadsLoaded]);
 
   // Fetch stage counts for the tab badges
   const fetchStageCounts = useCallback(async () => {
@@ -220,7 +316,7 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
   }, [fetchStageCounts, refreshKey]);
 
   // Reset page when filters change
-  useEffect(() => { setPage(0); }, [activeStage, search, county, sortKey, minValue, maxValue, minUnits, minStories, useCode, heatFilter, citizensOnly, creamTier]);
+  useEffect(() => { setPage(0); }, [activeStage, search, county, sortKey, minValue, maxValue, minUnits, minStories, useCode, heatFilter, citizensOnly, creamTier, minYear, maxYear, maxDistance]);
 
   // Clear selection when stage changes
   useEffect(() => { setSelected(new Set()); setSelectMode(false); setBulkMsg(null); }, [activeStage]);
@@ -379,6 +475,46 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
         {/* Expandable filter panel */}
         {showFilters && (
           <div className="bg-gray-900 border border-gray-800 rounded-lg p-2.5 space-y-2">
+            {/* Saved filter presets (server-side) */}
+            <div className="flex items-start gap-1.5 pb-2 border-b border-gray-800/60">
+              <span className="text-[10px] text-gray-500 pt-1 shrink-0">Saved:</span>
+              <div className="flex-1 flex flex-wrap gap-1">
+                {savedFilters.length === 0 ? (
+                  <span className="text-[10px] text-gray-600 italic pt-1">none yet</span>
+                ) : (
+                  savedFilters.map((f) => {
+                    const styleOwn = "bg-blue-950/50 border-blue-800 text-blue-300";
+                    const styleShared = "bg-purple-950/50 border-purple-800 text-purple-300";
+                    const wrap = f.is_own ? styleOwn : styleShared;
+                    return (
+                      <span key={f.id}
+                        className={`inline-flex items-center gap-0.5 ${wrap} border rounded overflow-hidden text-[10px]`}>
+                        <button onClick={() => loadSavedFilter(f)}
+                          className="px-2 py-0.5 hover:bg-black/30"
+                          title={
+                            f.is_own
+                              ? `Load "${f.name}"${f.is_shared ? " (shared)" : ""}`
+                              : `Load "${f.name}" (shared by ${f.owner_display})`
+                          }>
+                          {f.name}{!f.is_own && <span className="ml-1 opacity-60">·{f.owner_display}</span>}
+                        </button>
+                        {f.is_own && (
+                          <button onClick={() => deleteSavedFilter(f)}
+                            className="px-1 py-0.5 opacity-60 hover:opacity-100 hover:bg-red-900/30 hover:text-red-400"
+                            title={`Delete "${f.name}"`}>
+                            ×
+                          </button>
+                        )}
+                      </span>
+                    );
+                  })
+                )}
+              </div>
+              <button onClick={saveCurrentFilter}
+                className="shrink-0 px-2 py-0.5 text-[10px] rounded bg-green-900/50 border border-green-800 text-green-300 hover:bg-green-900">
+                + Save
+              </button>
+            </div>
             <div className="flex gap-2">
               <div className="flex-1">
                 <label className="text-[10px] text-gray-500 block mb-0.5">Use Code</label>
@@ -426,6 +562,27 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
                   className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-white" />
               </div>
             </div>
+            {/* Year built range + distance to ocean */}
+            <div className="flex gap-2">
+              <div className="flex-1">
+                <label className="text-[10px] text-gray-500 block mb-0.5">Year Built (Min)</label>
+                <input type="number" value={minYear} onChange={(e) => setMinYear(e.target.value)}
+                  placeholder="1900"
+                  className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-white" />
+              </div>
+              <div className="flex-1">
+                <label className="text-[10px] text-gray-500 block mb-0.5">Year Built (Max)</label>
+                <input type="number" value={maxYear} onChange={(e) => setMaxYear(e.target.value)}
+                  placeholder={`${new Date().getFullYear()}`}
+                  className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-white" />
+              </div>
+              <div className="flex-1">
+                <label className="text-[10px] text-gray-500 block mb-0.5">Max Distance (mi)</label>
+                <input type="number" step="0.25" value={maxDistance} onChange={(e) => setMaxDistance(e.target.value)}
+                  placeholder="e.g. 1"
+                  className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-white" />
+              </div>
+            </div>
             <div className="flex gap-2 items-center">
               <div className="flex-1">
                 <label className="text-[10px] text-gray-500 block mb-0.5">Opportunity Tier</label>
@@ -445,7 +602,7 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
             </div>
             <div className="flex gap-2 items-center">
               <div className="flex-1" />
-              <button onClick={() => { setMinValue(""); setMaxValue(""); setMinUnits(""); setMinStories(""); setUseCode(""); setHeatFilter(""); setCitizensOnly(false); setCreamTier(""); }}
+              <button onClick={() => { setMinValue(""); setMaxValue(""); setMinUnits(""); setMinStories(""); setUseCode(""); setHeatFilter(""); setCitizensOnly(false); setCreamTier(""); setMinYear(""); setMaxYear(""); setMaxDistance(""); }}
                 className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-400 hover:text-white">
                 Clear All
               </button>
