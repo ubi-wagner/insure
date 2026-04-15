@@ -96,7 +96,7 @@ def list_saved_filters(
     shared = db.query(UserSavedFilter, User).join(
         User, UserSavedFilter.user_uuid == User.uuid
     ).filter(
-        UserSavedFilter.is_shared == 1,
+        UserSavedFilter.is_shared.is_(True),
         UserSavedFilter.user_uuid != user.uuid,
     ).order_by(UserSavedFilter.name).all()
 
@@ -136,7 +136,7 @@ def create_saved_filter(
 
     if existing:
         existing.filter_json = body.filter_json
-        existing.is_shared = 1 if body.is_shared else 0
+        existing.is_shared = bool(body.is_shared)
         existing.updated_at = datetime.utcnow()
         db.commit()
         return {"success": True, "id": existing.id, "action": "updated"}
@@ -145,7 +145,7 @@ def create_saved_filter(
         user_uuid=user.uuid,
         name=name,
         filter_json=body.filter_json,
-        is_shared=1 if body.is_shared else 0,
+        is_shared=bool(body.is_shared),
     )
     db.add(row)
     db.commit()
@@ -172,7 +172,7 @@ def update_saved_filter(
     if body.filter_json is not None:
         row.filter_json = body.filter_json
     if body.is_shared is not None:
-        row.is_shared = 1 if body.is_shared else 0
+        row.is_shared = bool(body.is_shared)
     row.updated_at = datetime.utcnow()
 
     db.commit()
@@ -228,7 +228,7 @@ def ensure_default_users(db: Session):
             username=spec["username"],
             display_name=spec["display_name"],
             role=spec["role"],
-            is_active=1,
+            is_active=True,
         )
         db.add(user)
         logger.info(f"Seeded default user: {spec['username']} ({spec['role']})")
@@ -356,7 +356,7 @@ def _seed_canned_system_filters(db: Session):
             user_uuid=SYSTEM_USER_UUID,
             name=preset["name"],
             filter_json=preset["filter_json"],
-            is_shared=1,
+            is_shared=True,
         )
         db.add(row)
         logger.info(f"Seeded canned system filter: {preset['name']}")
