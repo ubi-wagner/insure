@@ -120,6 +120,7 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
   const [minYear, setMinYear] = useState("");
   const [maxYear, setMaxYear] = useState("");
   const [maxDistance, setMaxDistance] = useState("");
+  const [construction, setConstruction] = useState("");
   const [showFilters, setShowFilters] = useState(false);
 
   // Saved filter presets — persisted server-side via /api/user/filters.
@@ -139,6 +140,7 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
     minYear: string;
     maxYear: string;
     maxDistance: string;
+    construction: string;
   }
   interface SavedFilterRow {
     id: number;
@@ -174,7 +176,7 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
     const snapshot: SavedFilterData = {
       county, sortKey, minValue, maxValue, minUnits, minStories,
       useCode, heatFilter, citizensOnly, creamTier,
-      minYear, maxYear, maxDistance,
+      minYear, maxYear, maxDistance, construction,
     };
     try {
       await fetch("/api/proxy/user/filters", {
@@ -201,6 +203,7 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
     setMinYear(d.minYear ?? "");
     setMaxYear(d.maxYear ?? "");
     setMaxDistance(d.maxDistance ?? "");
+    setConstruction(d.construction ?? "");
   }
 
   async function deleteSavedFilter(f: SavedFilterRow) {
@@ -272,6 +275,7 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
       if (minYear) params.set("min_year", minYear);
       if (maxYear) params.set("max_year", maxYear);
       if (maxDistance) params.set("max_distance_miles", maxDistance);
+      if (construction) params.set("construction", construction);
 
       const res = await fetch(`/api/proxy/leads?${params}`);
       if (res.ok) {
@@ -294,7 +298,7 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
       setFetchError("Unable to connect");
     }
     setLoading(false);
-  }, [activeStage, search, county, sortKey, page, minValue, maxValue, minUnits, minStories, useCode, heatFilter, citizensOnly, creamTier, minYear, maxYear, maxDistance, onLeadsLoaded]);
+  }, [activeStage, search, county, sortKey, page, minValue, maxValue, minUnits, minStories, useCode, heatFilter, citizensOnly, creamTier, minYear, maxYear, maxDistance, construction, onLeadsLoaded]);
 
   // Fetch stage counts for the tab badges
   const fetchStageCounts = useCallback(async () => {
@@ -316,7 +320,7 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
   }, [fetchStageCounts, refreshKey]);
 
   // Reset page when filters change
-  useEffect(() => { setPage(0); }, [activeStage, search, county, sortKey, minValue, maxValue, minUnits, minStories, useCode, heatFilter, citizensOnly, creamTier, minYear, maxYear, maxDistance]);
+  useEffect(() => { setPage(0); }, [activeStage, search, county, sortKey, minValue, maxValue, minUnits, minStories, useCode, heatFilter, citizensOnly, creamTier, minYear, maxYear, maxDistance, construction]);
 
   // Clear selection when stage changes
   useEffect(() => { setSelected(new Set()); setSelectMode(false); setBulkMsg(null); }, [activeStage]);
@@ -583,6 +587,19 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
                   className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-white" />
               </div>
             </div>
+            <div className="flex gap-2">
+              <div className="flex-1">
+                <label className="text-[10px] text-gray-500 block mb-0.5">Construction</label>
+                <select value={construction} onChange={(e) => setConstruction(e.target.value)}
+                  className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-white">
+                  <option value="">Any</option>
+                  <option value="fire_resistive">Fire Resistive</option>
+                  <option value="non_combustible">Non-Combustible</option>
+                  <option value="masonry">Masonry</option>
+                  <option value="frame">Frame</option>
+                </select>
+              </div>
+            </div>
             <div className="flex gap-2 items-center">
               <div className="flex-1">
                 <label className="text-[10px] text-gray-500 block mb-0.5">Opportunity Tier</label>
@@ -602,7 +619,7 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
             </div>
             <div className="flex gap-2 items-center">
               <div className="flex-1" />
-              <button onClick={() => { setMinValue(""); setMaxValue(""); setMinUnits(""); setMinStories(""); setUseCode(""); setHeatFilter(""); setCitizensOnly(false); setCreamTier(""); setMinYear(""); setMaxYear(""); setMaxDistance(""); }}
+              <button onClick={() => { setMinValue(""); setMaxValue(""); setMinUnits(""); setMinStories(""); setUseCode(""); setHeatFilter(""); setCitizensOnly(false); setCreamTier(""); setMinYear(""); setMaxYear(""); setMaxDistance(""); setConstruction(""); }}
                 className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-400 hover:text-white">
                 Clear All
               </button>

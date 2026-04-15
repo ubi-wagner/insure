@@ -199,21 +199,32 @@ def delete_saved_filter(
 
 # ─── User seeding (called from app startup) ──────────────────────────
 
+# Reserved UUID for the System pseudo-user that owns canned filter presets.
+# Using a fixed UUID ensures system filters survive across reseeds and that
+# we can reliably identify them in queries.
+SYSTEM_USER_UUID = "00000000-0000-0000-0000-000000000001"
+
+
 def ensure_default_users(db: Session):
-    """Create eric (admin) and jason (user) if they don't exist yet.
+    """Create eric (admin), jason (user), and the System pseudo-user if they
+    don't exist yet. Also seeds the canned shared filter presets.
 
     Called from the startup lifespan. Idempotent — safe to run on every boot.
     """
     defaults = [
-        {"username": "eric",  "display_name": "Eric",  "role": "admin"},
-        {"username": "jason", "display_name": "Jason", "role": "user"},
+        {"username": "eric",  "display_name": "Eric",  "role": "admin",
+         "uuid": str(uuid_lib.uuid4())},
+        {"username": "jason", "display_name": "Jason", "role": "user",
+         "uuid": str(uuid_lib.uuid4())},
+        {"username": "__system__", "display_name": "System", "role": "admin",
+         "uuid": SYSTEM_USER_UUID},
     ]
     for spec in defaults:
         existing = db.query(User).filter(User.username == spec["username"]).first()
         if existing:
             continue
         user = User(
-            uuid=str(uuid_lib.uuid4()),
+            uuid=spec["uuid"],
             username=spec["username"],
             display_name=spec["display_name"],
             role=spec["role"],
@@ -221,4 +232,132 @@ def ensure_default_users(db: Session):
         )
         db.add(user)
         logger.info(f"Seeded default user: {spec['username']} ({spec['role']})")
+    db.commit()
+
+    # Seed canned system filter presets — appear as shared filters in every
+    # user's saved-filter list with owner_display="System".
+    _seed_canned_system_filters(db)
+
+
+# Canned filter presets visible to all users.
+# Each preset is a complete SavedFilterData payload — empty strings mean
+# "no filter on that field". Field shapes match the frontend SavedFilterData.
+_CANNED_FILTERS: list[dict] = [
+    {
+        "name": "Coastal Luxury — Any Type",
+        "filter_json": {
+            "county": "",
+            "sortKey": "value-desc",
+            "minValue": "20000000",
+            "maxValue": "",
+            "minUnits": "",
+            "minStories": "",
+            "useCode": "",
+            "heatFilter": "",
+            "citizensOnly": False,
+            "creamTier": "",
+            "minYear": "1980",
+            "maxYear": "",
+            "maxDistance": "5",
+            "construction": "fire_resistive",
+        },
+    },
+    {
+        "name": "Coastal Luxury — Condos Only",
+        "filter_json": {
+            "county": "",
+            "sortKey": "value-desc",
+            "minValue": "20000000",
+            "maxValue": "",
+            "minUnits": "",
+            "minStories": "",
+            "useCode": "004",
+            "heatFilter": "",
+            "citizensOnly": False,
+            "creamTier": "",
+            "minYear": "1980",
+            "maxYear": "",
+            "maxDistance": "5",
+            "construction": "fire_resistive",
+        },
+    },
+    {
+        "name": "Citizens Swap Targets",
+        "filter_json": {
+            "county": "",
+            "sortKey": "cream-desc",
+            "minValue": "10000000",
+            "maxValue": "",
+            "minUnits": "",
+            "minStories": "",
+            "useCode": "",
+            "heatFilter": "",
+            "citizensOnly": True,
+            "creamTier": "",
+            "minYear": "",
+            "maxYear": "",
+            "maxDistance": "10",
+            "construction": "",
+        },
+    },
+    {
+        "name": "Pre-FBC Beach Risk",
+        "filter_json": {
+            "county": "",
+            "sortKey": "value-desc",
+            "minValue": "5000000",
+            "maxValue": "",
+            "minUnits": "",
+            "minStories": "",
+            "useCode": "",
+            "heatFilter": "",
+            "citizensOnly": False,
+            "creamTier": "",
+            "minYear": "",
+            "maxYear": "1992",
+            "maxDistance": "1",
+            "construction": "",
+        },
+    },
+    {
+        "name": "High-Rise Platinum",
+        "filter_json": {
+            "county": "",
+            "sortKey": "cream-desc",
+            "minValue": "20000000",
+            "maxValue": "",
+            "minUnits": "",
+            "minStories": "7",
+            "useCode": "",
+            "heatFilter": "",
+            "citizensOnly": False,
+            "creamTier": "platinum",
+            "minYear": "",
+            "maxYear": "",
+            "maxDistance": "2",
+            "construction": "",
+        },
+    },
+]
+
+
+def _seed_canned_system_filters(db: Session):
+    """Insert any canned filter presets that don't already exist for the
+    System user. Existing presets with the same name are NOT overwritten so
+    admins can edit them after seeding if they want different defaults."""
+    for preset in _CANNED_FILTERS:
+        existing = db.query(UserSavedFilter).filter(
+            UserSavedFilter.user_uuid == SYSTEM_USER_UUID,
+            UserSavedFilter.name == preset["name"],
+        ).first()
+        if existing:
+            continue
+        row = UserSavedFilter(
+            user_uuid=SYSTEM_USER_UUID,
+            name=preset["name"],
+            filter_json=preset["filter_json"],
+            is_shared=1,
+        )
+        db.add(row)
+        logger.info(f"Seeded canned system filter: {preset['name']}")
     db.commit()
