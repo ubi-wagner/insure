@@ -4,6 +4,26 @@ import { useEffect, useRef, useState } from "react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 
+// Dark-theme overrides for the Leaflet layer control
+const LAYER_CONTROL_STYLE = `
+  .leaflet-control-layers {
+    background: rgba(17, 24, 39, 0.92) !important;
+    border: 1px solid #374151 !important;
+    border-radius: 6px !important;
+    color: #d1d5db !important;
+    font-size: 12px !important;
+    padding: 6px 10px !important;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.5) !important;
+  }
+  .leaflet-control-layers label {
+    color: #d1d5db !important;
+    margin-bottom: 2px;
+  }
+  .leaflet-control-layers-separator {
+    border-top-color: #374151 !important;
+  }
+`;
+
 // Fallback center — Pinellas Park, FL
 const FALLBACK_CENTER: [number, number] = [27.8428, -82.6993];
 const FALLBACK_ZOOM = 12;
@@ -94,11 +114,20 @@ export default function MapViewInner({
   useEffect(() => {
     if (!mapRef.current || mapInstance.current) return;
 
+    // Inject dark-theme layer control styles once
+    if (!document.getElementById("leaflet-dark-layers")) {
+      const style = document.createElement("style");
+      style.id = "leaflet-dark-layers";
+      style.textContent = LAYER_CONTROL_STYLE;
+      document.head.appendChild(style);
+    }
+
     const { center, zoom } = getSavedView();
 
     const map = L.map(mapRef.current, {
       center,
       zoom,
+      maxZoom: 21,
       zoomSnap: 1,
       zoomAnimation: false,
       fadeAnimation: false,
@@ -107,9 +136,48 @@ export default function MapViewInner({
       zoomControl: false, // We use custom controls
     });
 
-    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a>',
-      maxZoom: 19,
+    // ─── Base layers ───
+    const osmStreets = L.tileLayer(
+      "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+      {
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a>',
+        maxZoom: 21,
+        maxNativeZoom: 19,
+      },
+    );
+
+    const esriSatellite = L.tileLayer(
+      "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+      {
+        attribution: '&copy; Esri, Maxar, Earthstar Geographics',
+        maxZoom: 21,
+        maxNativeZoom: 19,
+      },
+    );
+
+    const esriHybrid = L.layerGroup([
+      esriSatellite,
+      L.tileLayer(
+        "https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}",
+        { maxZoom: 21, maxNativeZoom: 19, pane: "overlayPane" },
+      ),
+      L.tileLayer(
+        "https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
+        { maxZoom: 21, maxNativeZoom: 19, pane: "overlayPane" },
+      ),
+    ]);
+
+    osmStreets.addTo(map);
+
+    const baseLayers: Record<string, L.Layer> = {
+      "Street": osmStreets,
+      "Satellite": esriSatellite,
+      "Hybrid": esriHybrid,
+    };
+
+    L.control.layers(baseLayers, {}, {
+      position: "bottomright",
+      collapsed: false,
     }).addTo(map);
 
     // Save position on every move/zoom
