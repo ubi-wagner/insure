@@ -259,18 +259,45 @@ def list_leads(
         query = query.filter(or_(dist_col.is_(None), dist_col <= max_distance_miles))
 
     # Construction class filter (SQL)
+    # Null-tolerant: entities without a DOR construction class (very common
+    # for condo master parcels in Miami-Dade et al.) are NOT excluded.
+    # Frame/wood is explicitly excluded from fire_resistive/non_combustible
+    # filters so we don't pass obviously-wrong matches through.
     if construction:
         cc_col = Entity.characteristics["dor_construction_class"].astext
+        is_null = cc_col.is_(None)
+
         if construction == "fire_resistive":
-            query = query.filter(cc_col.ilike("%fire resistive%"))
+            query = query.filter(
+                cc_col.ilike("%fire resistive%")
+                | cc_col.ilike("%non-combustible%")
+                | cc_col.ilike("%non combustible%")
+                | is_null
+            )
+            # Explicitly exclude known frame/wood construction
+            query = query.filter(
+                is_null
+                | (
+                    ~cc_col.ilike("%frame%")
+                    & ~cc_col.ilike("%wood%")
+                )
+            )
         elif construction == "non_combustible":
             query = query.filter(
-                cc_col.ilike("%fire resistive%") | cc_col.ilike("%non-combustible%") | cc_col.ilike("%non combustible%")
+                cc_col.ilike("%fire resistive%")
+                | cc_col.ilike("%non-combustible%")
+                | cc_col.ilike("%non combustible%")
+                | is_null
+            )
+            query = query.filter(
+                is_null | (~cc_col.ilike("%frame%") & ~cc_col.ilike("%wood%"))
             )
         elif construction == "masonry":
             query = query.filter(cc_col.ilike("%masonry%"))
         elif construction == "frame":
-            query = query.filter(cc_col.ilike("%frame%"))
+            query = query.filter(
+                cc_col.ilike("%frame%") | cc_col.ilike("%wood%")
+            )
 
     # Carrier filter
     if carrier:
