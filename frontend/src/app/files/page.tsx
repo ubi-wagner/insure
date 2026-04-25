@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { useAuth } from "@/hooks/useAuth";
 
 interface FileItem {
   name: string;
@@ -20,6 +21,7 @@ interface UploadState {
 }
 
 export default function FilesPage() {
+  const { canEdit } = useAuth();
   const [currentPath, setCurrentPath] = useState("");
   const [items, setItems] = useState<FileItem[]>([]);
   const [loading, setLoading] = useState(false);
@@ -236,15 +238,19 @@ export default function FilesPage() {
               &larr; Up
             </button>
           )}
-          <button onClick={() => setShowNewFolder(!showNewFolder)}
-            className="bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs px-3 py-2 rounded">
-            + New Folder
-          </button>
-          <button onClick={() => fileInputRef.current?.click()}
-            disabled={activeUploads.length > 0}
-            className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs px-3 py-2 rounded font-medium">
-            {activeUploads.length > 0 ? `Uploading (${activeUploads.length})...` : "Upload Files"}
-          </button>
+          {canEdit && (
+            <button onClick={() => setShowNewFolder(!showNewFolder)}
+              className="bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs px-3 py-2 rounded">
+              + New Folder
+            </button>
+          )}
+          {canEdit && (
+            <button onClick={() => fileInputRef.current?.click()}
+              disabled={activeUploads.length > 0}
+              className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs px-3 py-2 rounded font-medium">
+              {activeUploads.length > 0 ? `Uploading (${activeUploads.length})...` : "Upload Files"}
+            </button>
+          )}
           <input ref={fileInputRef} type="file" multiple className="hidden"
             onChange={(e) => { handleUpload(e.target.files); e.target.value = ""; }} />
           <button onClick={fetchFiles}
@@ -302,14 +308,14 @@ export default function FilesPage() {
           </div>
         )}
 
-        {/* Drop zone + file list */}
+        {/* Drop zone + file list — drag/drop disabled for viewers */}
         <div
           className={`bg-gray-900 border rounded-lg overflow-hidden transition-colors relative ${
             dragOver ? "border-blue-500 bg-blue-950/20" : "border-gray-800"
           }`}
-          onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
-          onDragLeave={() => setDragOver(false)}
-          onDrop={handleDrop}
+          onDragOver={canEdit ? (e) => { e.preventDefault(); setDragOver(true); } : undefined}
+          onDragLeave={canEdit ? () => setDragOver(false) : undefined}
+          onDrop={canEdit ? handleDrop : undefined}
         >
           {loading ? (
             <div className="text-gray-600 text-sm text-center py-12">Loading...</div>
@@ -361,10 +367,12 @@ export default function FilesPage() {
                             className="text-blue-400 hover:text-blue-300 text-xs px-2 py-1 rounded bg-gray-800"
                             download>DL</a>
                         )}
-                        <button onClick={() => handleDelete(item)}
-                          className="text-red-400 hover:text-red-300 text-xs px-2 py-1 rounded bg-gray-800">
-                          Del
-                        </button>
+                        {canEdit && (
+                          <button onClick={() => handleDelete(item)}
+                            className="text-red-400 hover:text-red-300 text-xs px-2 py-1 rounded bg-gray-800">
+                            Del
+                          </button>
+                        )}
                       </div>
                     </td>
                   </tr>

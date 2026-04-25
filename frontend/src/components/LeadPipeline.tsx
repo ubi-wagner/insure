@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback, useRef } from "react";
+import { useAuth } from "@/hooks/useAuth";
 
 interface Lead {
   id: number;
@@ -96,6 +97,7 @@ interface PipelineProps {
 }
 
 export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, selectedLeadId, switchToStage, onFlyTo, onOpenDetails, initialCounty }: PipelineProps) {
+  const { canEdit } = useAuth();
   const [leads, setLeads] = useState<Lead[]>([]);
   const [total, setTotal] = useState(0);
   const [fetchError, setFetchError] = useState<string | null>(null);
@@ -630,11 +632,13 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
 
       {/* Bulk actions bar */}
       <div className="flex items-center gap-1.5 mb-2">
-        <button onClick={() => { setSelectMode(!selectMode); setSelected(new Set()); }}
-          className={`text-[10px] px-2 py-1 rounded border ${selectMode ? "border-blue-600 bg-blue-950 text-blue-300" : "border-gray-800 bg-gray-900 text-gray-500"}`}>
-          {selectMode ? `${selected.size} selected` : "Select"}
-        </button>
-        {selectMode && (
+        {canEdit && (
+          <button onClick={() => { setSelectMode(!selectMode); setSelected(new Set()); }}
+            className={`text-[10px] px-2 py-1 rounded border ${selectMode ? "border-blue-600 bg-blue-950 text-blue-300" : "border-gray-800 bg-gray-900 text-gray-500"}`}>
+            {selectMode ? `${selected.size} selected` : "Select"}
+          </button>
+        )}
+        {canEdit && selectMode && (
           <>
             <button onClick={selectAll} className="text-[10px] px-2 py-1 rounded border border-gray-800 bg-gray-900 text-gray-400">
               All
@@ -659,7 +663,7 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
             )}
           </>
         )}
-        {!selectMode && (minValue || maxValue || minUnits) && activeStage === "TARGET" && (
+        {canEdit && !selectMode && (minValue || maxValue || minUnits) && activeStage === "TARGET" && (
           <>
             <button onClick={() => handleBulkFilterAction("LEAD")}
               className="text-[10px] px-2 py-1 rounded bg-cyan-700 text-white font-medium">
@@ -711,7 +715,7 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
               <div className="px-3 py-2">
                 {/* Header row */}
                 <div className="flex items-center gap-2 mb-0.5">
-                  {selectMode && (
+                  {canEdit && selectMode && (
                     <input type="checkbox" checked={isChecked}
                       onChange={() => toggleSelect(lead.id)}
                       className="w-3.5 h-3.5 rounded border-gray-600 bg-gray-800 shrink-0" />
@@ -784,22 +788,22 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
                     Open
                   </button>
 
-                  {/* Stage-specific promote */}
-                  {activeStage === "TARGET" && (
+                  {/* Stage-specific promote — write actions hidden for viewers */}
+                  {canEdit && activeStage === "TARGET" && (
                     <button onClick={() => handleAction(lead.id, "LEAD")}
                       disabled={actionId === lead.id}
                       className="flex-1 disabled:opacity-50 text-white text-xs py-1.5 rounded font-medium bg-cyan-700 hover:bg-cyan-600">
                       {actionId === lead.id ? "..." : "→ Lead"}
                     </button>
                   )}
-                  {activeStage === "LEAD" && (
+                  {canEdit && activeStage === "LEAD" && (
                     <button onClick={() => handleAction(lead.id, "OPPORTUNITY")}
                       disabled={actionId === lead.id}
                       className="flex-1 disabled:opacity-50 text-white text-xs py-1.5 rounded font-medium bg-amber-700 hover:bg-amber-600">
                       {actionId === lead.id ? "..." : "→ Opportunity"}
                     </button>
                   )}
-                  {activeStage === "OPPORTUNITY" && (
+                  {canEdit && activeStage === "OPPORTUNITY" && (
                     <button onClick={() => handleAction(lead.id, "CUSTOMER")}
                       disabled={actionId === lead.id}
                       className="flex-1 disabled:opacity-50 text-white text-xs py-1.5 rounded font-medium bg-green-700 hover:bg-green-600">
@@ -816,7 +820,7 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
                   )}
 
                   {/* Archive */}
-                  {activeStage !== "CUSTOMER" && activeStage !== "ARCHIVED" && (
+                  {canEdit && activeStage !== "CUSTOMER" && activeStage !== "ARCHIVED" && (
                     <button onClick={() => handleAction(lead.id, "ARCHIVED")}
                       disabled={actionId === lead.id}
                       className="bg-gray-800 hover:bg-gray-700 disabled:opacity-50 text-gray-600 text-xs py-1.5 px-2 rounded"
@@ -824,7 +828,7 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
                   )}
 
                   {/* Restore from archive */}
-                  {activeStage === "ARCHIVED" && (
+                  {canEdit && activeStage === "ARCHIVED" && (
                     <button onClick={() => handleAction(lead.id, "TARGET")}
                       disabled={actionId === lead.id}
                       className="flex-1 disabled:opacity-50 text-white text-xs py-1.5 rounded font-medium bg-gray-700 hover:bg-gray-600">

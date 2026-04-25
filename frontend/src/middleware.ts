@@ -6,13 +6,16 @@ export function middleware(request: NextRequest) {
   // Public routes — no auth required
   if (
     request.nextUrl.pathname.startsWith("/login") ||
+    request.nextUrl.pathname.startsWith("/welcome") ||
+    request.nextUrl.pathname.startsWith("/screenshots") ||
     request.nextUrl.pathname.startsWith("/api/auth")
   ) {
-    // If already logged in with a valid cookie, redirect to dashboard
+    // If already logged in with a valid cookie, send away from public-only
+    // entry points (login + welcome) into the dashboard.
     if (
       authCookie?.value &&
       authCookie.value.includes(":") &&
-      request.nextUrl.pathname === "/login"
+      (request.nextUrl.pathname === "/login" || request.nextUrl.pathname === "/welcome")
     ) {
       return NextResponse.redirect(new URL("/", request.url));
     }
@@ -21,14 +24,14 @@ export function middleware(request: NextRequest) {
 
   // Everything else requires auth
   if (!authCookie?.value) {
-    return NextResponse.redirect(new URL("/login", request.url));
+    return NextResponse.redirect(new URL("/welcome", request.url));
   }
 
   // Detect stale cookie format from before role-based auth was rolled out
   // (old cookies just had value "authenticated" with no role prefix).
   // Clear them and force re-login so the new format is set on next login.
   if (!authCookie.value.includes(":")) {
-    const response = NextResponse.redirect(new URL("/login", request.url));
+    const response = NextResponse.redirect(new URL("/welcome", request.url));
     response.cookies.delete("insure_auth");
     return response;
   }

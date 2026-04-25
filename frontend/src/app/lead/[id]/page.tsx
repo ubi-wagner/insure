@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
+import { useAuth } from "@/hooks/useAuth";
 
 interface PolicyItem {
   id: number;
@@ -91,6 +92,7 @@ type TabName = "overview" | "engage" | "policies" | "documents" | "emails" | "en
 export default function LeadDetailPage() {
   const params = useParams();
   const id = params.id as string;
+  const { canEdit } = useAuth();
   const [lead, setLead] = useState<LeadDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<TabName>("overview");
@@ -240,14 +242,18 @@ export default function LeadDetailPage() {
           </div>
           <div className="ml-auto flex items-center gap-2">
             <span className="text-gray-500 text-xs">Stage:</span>
-            <select
-              value={lead.pipeline_stage}
-              onChange={(e) => handleStageChange(e.target.value)}
-              disabled={stageChanging}
-              className="bg-gray-800 border border-gray-700 text-white text-xs rounded px-2 py-1"
-            >
-              {stages.map((s) => <option key={s} value={s}>{s}</option>)}
-            </select>
+            {canEdit ? (
+              <select
+                value={lead.pipeline_stage}
+                onChange={(e) => handleStageChange(e.target.value)}
+                disabled={stageChanging}
+                className="bg-gray-800 border border-gray-700 text-white text-xs rounded px-2 py-1"
+              >
+                {stages.map((s) => <option key={s} value={s}>{s}</option>)}
+              </select>
+            ) : (
+              <span className="text-white text-xs">{lead.pipeline_stage}</span>
+            )}
           </div>
         </div>
         {(lead.children?.length ?? 0) > 0 && (
@@ -265,15 +271,17 @@ export default function LeadDetailPage() {
         {stageError && (
           <div className="mt-2 bg-amber-900/30 border border-amber-800 rounded px-3 py-2 flex items-center justify-between">
             <p className="text-amber-300 text-xs">{stageError}</p>
-            <button onClick={() => {
-              const nextStage = lead.pipeline_stage === "TARGET" ? "LEAD" :
-                lead.pipeline_stage === "LEAD" ? "OPPORTUNITY" :
-                lead.pipeline_stage === "OPPORTUNITY" ? "CUSTOMER" : "";
-              if (nextStage) handleStageChange(nextStage, true);
-            }}
-              className="bg-amber-800 hover:bg-amber-700 text-amber-200 text-xs px-2 py-1 rounded ml-3 shrink-0">
-              Force Advance
-            </button>
+            {canEdit && (
+              <button onClick={() => {
+                const nextStage = lead.pipeline_stage === "TARGET" ? "LEAD" :
+                  lead.pipeline_stage === "LEAD" ? "OPPORTUNITY" :
+                  lead.pipeline_stage === "OPPORTUNITY" ? "CUSTOMER" : "";
+                if (nextStage) handleStageChange(nextStage, true);
+              }}
+                className="bg-amber-800 hover:bg-amber-700 text-amber-200 text-xs px-2 py-1 rounded ml-3 shrink-0">
+                Force Advance
+              </button>
+            )}
           </div>
         )}
         {/* Next stage readiness checklist */}
@@ -803,6 +811,7 @@ export default function LeadDetailPage() {
           <div className="space-y-4">
             <div className="flex items-center justify-between mb-3">
               <h2 className="text-sm font-semibold text-gray-300">Documents</h2>
+              {canEdit && (
               <label className="bg-blue-600 hover:bg-blue-700 text-white text-xs px-3 py-1 rounded font-medium cursor-pointer">
                 + Upload Document
                 <input type="file" className="hidden" onChange={async (e) => {
@@ -828,6 +837,7 @@ export default function LeadDetailPage() {
                   e.target.value = "";
                 }} />
               </label>
+              )}
             </div>
             {lead.assets.length === 0 ? (
               <p className="text-gray-600 text-sm">No documents attached. Upload brochures, dec pages, loss runs, or other intel.</p>
@@ -864,7 +874,7 @@ export default function LeadDetailPage() {
                 <div key={style} className="bg-gray-900 border border-gray-800 rounded-lg p-4">
                   <div className="flex items-center justify-between mb-2">
                     <span className="bg-purple-900 text-purple-300 text-xs px-2 py-0.5 rounded font-medium uppercase">{style}</span>
-                    {emailObj && (
+                    {emailObj && canEdit && (
                       <button
                         onClick={() => handleSendOutreach(style, emailObj.subject || "", emailObj.body || "")}
                         disabled={sendingStyle === style}
@@ -929,13 +939,15 @@ export default function LeadDetailPage() {
                       <div key={style} className="bg-gray-900 border border-gray-800 rounded-lg p-4">
                         <div className="flex items-center justify-between mb-2">
                           <span className="bg-purple-900 text-purple-300 text-xs px-2 py-0.5 rounded font-medium uppercase">{style}</span>
-                          <button
-                            onClick={() => handleSendOutreach(style, emailObj.subject || "", emailObj.body || "")}
-                            disabled={sendingStyle === style || lead.contacts.length === 0}
-                            className="bg-green-700 hover:bg-green-600 disabled:opacity-50 text-white text-xs px-4 py-2 rounded font-medium"
-                          >
-                            {sendingStyle === style ? "Sending..." : "Queue Outreach"}
-                          </button>
+                          {canEdit && (
+                            <button
+                              onClick={() => handleSendOutreach(style, emailObj.subject || "", emailObj.body || "")}
+                              disabled={sendingStyle === style || lead.contacts.length === 0}
+                              className="bg-green-700 hover:bg-green-600 disabled:opacity-50 text-white text-xs px-4 py-2 rounded font-medium"
+                            >
+                              {sendingStyle === style ? "Sending..." : "Queue Outreach"}
+                            </button>
+                          )}
                         </div>
                         <p className="text-white text-sm font-medium mb-1">{emailObj.subject}</p>
                         <div className="bg-gray-800 rounded p-3 text-xs text-gray-300 whitespace-pre-wrap max-h-40 overflow-y-auto">
@@ -949,7 +961,7 @@ export default function LeadDetailPage() {
             </div>
 
             {/* Step 3: Convert to customer */}
-            {lead.pipeline_stage === "OPPORTUNITY" && (
+            {lead.pipeline_stage === "OPPORTUNITY" && canEdit && (
               <div>
                 <h2 className="text-sm font-semibold text-gray-300 mb-3">3. Convert to Customer</h2>
                 <p className="text-gray-500 text-xs mb-3">When the deal closes, mark this as a customer to move it out of the pipeline.</p>
@@ -1016,14 +1028,16 @@ export default function LeadDetailPage() {
           <div className="space-y-4">
             <div className="flex items-center justify-between mb-3">
               <h2 className="text-sm font-semibold text-gray-300">Contacts & Decision Makers</h2>
-              <button
-                onClick={() => setShowAddContact(!showAddContact)}
-                className="bg-blue-600 hover:bg-blue-700 text-white text-xs px-3 py-1 rounded font-medium"
-              >
-                {showAddContact ? "Cancel" : "+ Add Contact"}
-              </button>
+              {canEdit && (
+                <button
+                  onClick={() => setShowAddContact(!showAddContact)}
+                  className="bg-blue-600 hover:bg-blue-700 text-white text-xs px-3 py-1 rounded font-medium"
+                >
+                  {showAddContact ? "Cancel" : "+ Add Contact"}
+                </button>
+              )}
             </div>
-            {showAddContact && (
+            {canEdit && showAddContact && (
               <div className="bg-gray-900 border border-gray-800 rounded-lg p-4 space-y-3">
                 <div className="grid grid-cols-2 gap-3">
                   <input type="text" placeholder="Name *" value={contactForm.name}
