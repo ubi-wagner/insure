@@ -3,13 +3,18 @@ import { NextRequest, NextResponse } from "next/server";
 /**
  * Users and roles.
  *
- * admin: full access — seed, refresh, recalibrate, upload, download, query, reset DB
- * user:  read-only pipeline + card review — can add contacts, move stages, record
- *        engagements, but CANNOT seed, reset, upload system files, or run admin actions
+ * admin:  full access — seed, refresh, recalibrate, upload, download, query, reset DB
+ * user:   pipeline + card review — can add contacts, move stages, record
+ *         engagements, upload lead documents, but CANNOT run admin actions
+ * viewer: strictly read-only — can view dashboard, ops, files, lead details, but
+ *         CANNOT change stages, add contacts, upload, send outreach, or run admin actions
  */
-const USERS: Record<string, { password: string; role: "admin" | "user"; displayName: string }> = {
+export type UserRole = "admin" | "user" | "viewer";
+
+const USERS: Record<string, { password: string; role: UserRole; displayName: string }> = {
   eric: { password: "eric123", role: "admin", displayName: "Eric" },
   jason: { password: "jason123", role: "user", displayName: "Jason" },
+  demo: { password: "demo123", role: "viewer", displayName: "Demo" },
 };
 
 export async function POST(request: NextRequest) {
@@ -51,7 +56,7 @@ export async function GET(request: NextRequest) {
   const [role, displayName] = authCookie.value.split(":");
   return NextResponse.json({
     authenticated: true,
-    role: role || "user",
+    role: (role as UserRole) || "user",
     displayName: displayName || "Unknown",
   });
 }

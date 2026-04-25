@@ -378,7 +378,7 @@ export default function EntityDetailModal({
   onActivate,
   onFlyTo,
 }: EntityDetailModalProps) {
-  const { displayName, role } = useAuth();
+  const { displayName, role, canEdit } = useAuth();
   const [lead, setLead] = useState<LeadDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<TabName>("overview");
@@ -539,16 +539,20 @@ export default function EntityDetailModal({
                 </span>
               )}
               <div className="ml-auto">
-                <select
-                  value={lead.pipeline_stage}
-                  onChange={(e) => changeStage(e.target.value)}
-                  disabled={stageChanging}
-                  className="bg-gray-800 border border-gray-700 text-white text-[11px] rounded px-1.5 py-0.5"
-                >
-                  {STAGES.map((s) => (
-                    <option key={s} value={s}>{s}</option>
-                  ))}
-                </select>
+                {canEdit ? (
+                  <select
+                    value={lead.pipeline_stage}
+                    onChange={(e) => changeStage(e.target.value)}
+                    disabled={stageChanging}
+                    className="bg-gray-800 border border-gray-700 text-white text-[11px] rounded px-1.5 py-0.5"
+                  >
+                    {STAGES.map((s) => (
+                      <option key={s} value={s}>{s}</option>
+                    ))}
+                  </select>
+                ) : (
+                  <span className="text-[11px] text-gray-500">Stage: <span className="text-gray-300">{lead.pipeline_stage}</span></span>
+                )}
               </div>
             </div>
           </>
@@ -890,8 +894,8 @@ export default function EntityDetailModal({
               </div>
             ))}
 
-            {/* Add contact form */}
-            {showAddContact ? (
+            {/* Add contact form — hidden for viewers */}
+            {!canEdit ? null : showAddContact ? (
               <div className="bg-gray-900 border border-gray-800 rounded-lg p-3 space-y-2">
                 <p className="text-xs font-semibold text-gray-300 mb-1">Add Contact</p>
                 <input

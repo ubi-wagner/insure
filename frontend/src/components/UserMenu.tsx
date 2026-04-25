@@ -10,7 +10,7 @@ import { useAuth } from "@/hooks/useAuth";
  * action.
  */
 export default function UserMenu() {
-  const { displayName, role, isAdmin, loading, authenticated } = useAuth();
+  const { displayName, role, isAdmin, isViewer, loading, authenticated } = useAuth();
   const [open, setOpen] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
@@ -45,7 +45,11 @@ export default function UserMenu() {
   const initial = (displayName?.[0] ?? "?").toUpperCase();
   const chipColor = isAdmin
     ? "bg-purple-700 hover:bg-purple-600"
-    : "bg-blue-700 hover:bg-blue-600";
+    : isViewer
+      ? "bg-gray-600 hover:bg-gray-500"
+      : "bg-blue-700 hover:bg-blue-600";
+  const chipSolid = isAdmin ? "bg-purple-700" : isViewer ? "bg-gray-600" : "bg-blue-700";
+  const roleLabel = isAdmin ? "Admin" : isViewer ? "Viewer" : "User";
 
   return (
     <div ref={menuRef} className="relative">
@@ -67,13 +71,13 @@ export default function UserMenu() {
         <div className="absolute right-0 top-full mt-1 w-52 bg-gray-900 border border-gray-700 rounded-lg shadow-xl z-50 overflow-hidden">
           <div className="px-3 py-2.5 border-b border-gray-800 bg-gray-900">
             <div className="flex items-center gap-2">
-              <span className={`w-8 h-8 rounded-full ${isAdmin ? "bg-purple-700" : "bg-blue-700"} text-white text-sm font-bold flex items-center justify-center`}>
+              <span className={`w-8 h-8 rounded-full ${chipSolid} text-white text-sm font-bold flex items-center justify-center`}>
                 {initial}
               </span>
               <div>
                 <p className="text-xs text-white font-semibold">{displayName}</p>
                 <p className="text-[10px] text-gray-500 uppercase tracking-wider">
-                  {isAdmin ? "Admin" : "User"}
+                  {roleLabel}
                 </p>
               </div>
             </div>

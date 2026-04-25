@@ -2,11 +2,20 @@
 
 import { useEffect, useState } from "react";
 
+export type UserRole = "admin" | "user" | "viewer";
+
 interface AuthState {
   authenticated: boolean;
-  role: "admin" | "user";
+  role: UserRole;
   displayName: string;
   isAdmin: boolean;
+  isViewer: boolean;
+  /**
+   * True for admin and user roles. False for viewer (strictly read-only).
+   * Use this to gate write actions on individual leads (stage changes,
+   * adding contacts, uploading lead documents, sending outreach, etc).
+   */
+  canEdit: boolean;
   loading: boolean;
 }
 
@@ -21,16 +30,28 @@ export function useAuth(): AuthState {
     role: "user",
     displayName: "",
     isAdmin: false,
+    isViewer: false,
+    canEdit: false,
     loading: true,
   });
 
   useEffect(() => {
+    const apply = (role: UserRole, displayName: string, authenticated: boolean) => ({
+      authenticated,
+      role,
+      displayName,
+      isAdmin: role === "admin",
+      isViewer: role === "viewer",
+      canEdit: role === "admin" || role === "user",
+      loading: false,
+    });
+
     // Check sessionStorage cache first
     const cached = sessionStorage.getItem("insure_auth");
     if (cached) {
       try {
-        const parsed = JSON.parse(cached);
-        setState({ ...parsed, loading: false, isAdmin: parsed.role === "admin" });
+        const parsed = JSON.parse(cached) as { role?: UserRole; displayName?: string; authenticated?: boolean };
+        setState(apply(parsed.role ?? "user", parsed.displayName ?? "", parsed.authenticated ?? false));
         return;
       } catch {
         // stale cache, re-fetch
@@ -40,15 +61,12 @@ export function useAuth(): AuthState {
     fetch("/api/auth")
       .then((r) => r.json())
       .then((d) => {
-        const auth = {
-          authenticated: d.authenticated ?? false,
-          role: (d.role ?? "user") as "admin" | "user",
-          displayName: d.displayName ?? "",
-          isAdmin: d.role === "admin",
-          loading: false,
-        };
+        const auth = apply((d.role ?? "user") as UserRole, d.displayName ?? "", d.authenticated ?? false);
         setState(auth);
-        sessionStorage.setItem("insure_auth", JSON.stringify(auth));
+        sessionStorage.setItem(
+          "insure_auth",
+          JSON.stringify({ role: auth.role, displayName: auth.displayName, authenticated: auth.authenticated }),
+        );
       })
       .catch(() => {
         setState((s) => ({ ...s, loading: false }));
