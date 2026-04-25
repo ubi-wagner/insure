@@ -16,14 +16,21 @@ const SCREENSHOTS = [
     alt: "Dashboard with map and pipeline cards",
     title: "Map + Pipeline",
     caption:
-      "Every $10M+ commercial property in your target counties, plotted on the map and ranked in the pipeline.",
+      "Every lead plotted at its parcel — pipeline cards on the right ranked by cream score.",
+  },
+  {
+    src: "/screenshots/filters.png",
+    alt: "Saved filters and refinement controls",
+    title: "Saved Filters",
+    caption:
+      "Cream tier, Citizens-only, min stories, value bands. Save hunting profiles for one-click recall.",
   },
   {
     src: "/screenshots/lead.png",
     alt: "Lead detail panel with tax roll, DBPR, Citizens, and OIR data",
     title: "Lead Detail",
     caption:
-      "Tax roll, flood zone, condo registry, Citizens swap likelihood, and OIR market intel — all on one screen.",
+      "Tax roll, flood zone, condo registry, Citizens swap likelihood, and OIR market intel on one screen.",
   },
   {
     src: "/screenshots/ops.png",
@@ -128,13 +135,13 @@ export default function WelcomePage() {
 
       {/* ---------------- Screenshots ---------------- */}
       <section className="max-w-6xl mx-auto px-4 sm:px-6 pb-12 sm:pb-20">
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 sm:gap-6">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-5">
           {SCREENSHOTS.map((s) => (
             <figure
               key={s.src}
-              className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden shadow-xl shadow-black/50"
+              className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden shadow-xl shadow-black/50 flex flex-col"
             >
-              <div className="aspect-[16/10] bg-gradient-to-br from-gray-800 via-gray-900 to-blue-950/40 flex items-center justify-center relative overflow-hidden">
+              <div className="aspect-[4/3] bg-gradient-to-br from-gray-800 via-gray-900 to-blue-950/40 relative overflow-hidden">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
                   src={s.src}
@@ -143,7 +150,7 @@ export default function WelcomePage() {
                   className="w-full h-full object-cover object-top"
                 />
               </div>
-              <figcaption className="px-4 py-3 border-t border-gray-800">
+              <figcaption className="px-4 py-3 border-t border-gray-800 flex-1">
                 <p className="text-sm font-semibold text-white">{s.title}</p>
                 <p className="text-xs text-gray-500 mt-0.5 leading-snug">{s.caption}</p>
               </figcaption>
