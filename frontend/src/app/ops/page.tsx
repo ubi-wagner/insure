@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useEffect, useState, useRef, useCallback } from "react";
+import { Fragment, useEffect, useState, useCallback } from "react";
 import Link from "next/link";
 import { useAuth } from "@/hooks/useAuth";
 import UserMenu from "@/components/UserMenu";
@@ -51,16 +51,6 @@ interface DashboardData {
   queue?: QueueStats;
 }
 
-interface EventItem {
-  event_type: string;
-  action: string;
-  status: string;
-  detail: string;
-  timestamp: number;
-  duration_ms?: number;
-  metadata?: Record<string, unknown>;
-}
-
 /* ================================================================
    Constants
    ================================================================ */
@@ -107,12 +97,6 @@ export default function OpsCenter() {
   const [confirmReset, setConfirmReset] = useState(false);
   const [resetting, setResetting] = useState(false);
 
-  // Events
-  const [events, setEvents] = useState<EventItem[]>([]);
-  const [eventFilter, setEventFilter] = useState<string | null>(null);
-  const [eventsLive, setEventsLive] = useState(false);
-  const eventSourceRef = useRef<EventSource | null>(null);
-
   // Query (moved to /admin/query page)
 
   // Queue per-enricher expansion
@@ -142,46 +126,11 @@ export default function OpsCenter() {
     setLoading(false);
   }, []);
 
-  const fetchEvents = useCallback(async () => {
-    try {
-      const res = await fetch("/api/proxy/events?limit=100");
-      if (res.ok) {
-        const d = await res.json();
-        setEvents(d.events ?? []);
-      }
-    } catch {}
-  }, []);
-
   useEffect(() => {
     fetchDashboard();
-    fetchEvents();
     const interval = setInterval(fetchDashboard, 30000);
     return () => clearInterval(interval);
-  }, [fetchDashboard, fetchEvents]);
-
-  /* ── Live events ── */
-  function toggleLive() {
-    if (eventsLive) {
-      eventSourceRef.current?.close();
-      eventSourceRef.current = null;
-      setEventsLive(false);
-    } else {
-      const es = new EventSource("/api/proxy/events/stream");
-      es.onmessage = (e) => {
-        try {
-          const evt = JSON.parse(e.data);
-          setEvents((prev) => [evt, ...prev].slice(0, 200));
-        } catch {}
-      };
-      es.onerror = () => { es.close(); setEventsLive(false); };
-      eventSourceRef.current = es;
-      setEventsLive(true);
-    }
-  }
-
-  useEffect(() => {
-    return () => { eventSourceRef.current?.close(); };
-  }, []);
+  }, [fetchDashboard]);
 
   /* ── Actions ── */
   async function seedCounty(countyNo: string) {
@@ -307,11 +256,6 @@ export default function OpsCenter() {
   }
 
   /* ── Helpers ── */
-  function fmtTime(ts: number | string) {
-    const d = typeof ts === "number" ? new Date(ts * 1000) : new Date(ts);
-    return d.toLocaleTimeString();
-  }
-
   function fmtNum(n: number | null | undefined): string {
     if (n == null) return "—";
     return n.toLocaleString();
@@ -323,10 +267,6 @@ export default function OpsCenter() {
     if (stage) params.set("stage", stage);
     return `/?${params}`;
   }
-
-  const filteredEvents = eventFilter
-    ? events.filter((e) => e.event_type === eventFilter || e.action.includes(eventFilter))
-    : events;
 
   /* ================================================================
      Render
@@ -471,13 +411,8 @@ export default function OpsCenter() {
                 <h2 className="text-sm font-semibold text-gray-300 mb-2">Services</h2>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                   {data.services.map((svc) => (
-                    <button key={svc.name}
-                      onClick={() => setEventFilter(eventFilter === svc.name ? null : svc.name)}
-                      className={`text-left bg-gray-900 border rounded-lg p-2 transition-colors ${
-                        eventFilter === svc.name
-                          ? "border-blue-600 ring-1 ring-blue-500/30"
-                          : "border-gray-800 hover:border-gray-700"
-                      }`}
+                    <div key={svc.name}
+                      className="bg-gray-900 border border-gray-800 rounded-lg p-2"
                     >
                       <div className="flex items-center justify-between mb-0.5">
                         <div className="flex items-center gap-1.5">
@@ -487,7 +422,7 @@ export default function OpsCenter() {
                         <span className="text-gray-600 text-[9px]">{svc.status}</span>
                       </div>
                       <p className="text-gray-500 text-[10px] truncate">{svc.detail}</p>
-                    </button>
+                    </div>
                   ))}
                   {data.services.length === 0 && (
                     <p className="text-gray-600 text-xs col-span-2">No services registered.</p>
@@ -676,90 +611,15 @@ export default function OpsCenter() {
           </div>
         )}
 
-        {/* ════════════════════════════════════════════════════════
-            EVENT STREAM
-           ════════════════════════════════════════════════════════ */}
-        <div>
-          <div className="flex items-center justify-between mb-2">
-            <div className="flex items-center gap-2">
-              <h2 className="text-sm font-semibold text-gray-300">
-                Events
-                {eventsLive && <span className="ml-2 text-green-400 text-[10px] animate-pulse">LIVE</span>}
-              </h2>
-              {eventFilter && (
-                <button onClick={() => setEventFilter(null)}
-                  className="text-[10px] px-2 py-0.5 rounded bg-blue-900/50 text-blue-300 border border-blue-700">
-                  {eventFilter} &times;
-                </button>
-              )}
-            </div>
-            <div className="flex gap-2">
-              <button onClick={toggleLive}
-                className={`text-xs px-3 py-1.5 rounded font-medium ${
-                  eventsLive ? "bg-red-900 hover:bg-red-800 text-red-300 border border-red-700" : "bg-green-600 hover:bg-green-700 text-white"
-                }`}>
-                {eventsLive ? "Stop" : "Go Live"}
-              </button>
-              <button onClick={fetchEvents} className="bg-gray-800 hover:bg-gray-700 text-gray-400 text-xs px-3 py-1.5 rounded">
-                Refresh
-              </button>
-            </div>
-          </div>
-
-          {filteredEvents.length === 0 ? (
-            <p className="text-gray-600 text-xs">No events{eventFilter ? ` matching "${eventFilter}"` : ""}.</p>
-          ) : (
-            <div className="bg-gray-900 border border-gray-800 rounded-lg overflow-auto max-h-[40vh]">
-              <table className="w-full text-xs">
-                <thead className="sticky top-0 bg-gray-900 z-10">
-                  <tr className="border-b border-gray-800">
-                    <th className="text-left px-3 py-2 text-gray-500 w-20">Time</th>
-                    <th className="text-left px-3 py-2 text-gray-500 w-14">Status</th>
-                    <th className="text-left px-3 py-2 text-gray-500 w-24">Source</th>
-                    <th className="text-left px-3 py-2 text-gray-500 w-32">Action</th>
-                    <th className="text-left px-3 py-2 text-gray-500">Detail</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredEvents.map((evt, i) => {
-                    const entityId = evt.metadata?.entity_id as number | undefined;
-                    return (
-                    <tr key={i} className="border-b border-gray-800/50 hover:bg-gray-800/20">
-                      <td className="px-3 py-1.5 text-gray-600 font-mono whitespace-nowrap">{fmtTime(evt.timestamp)}</td>
-                      <td className="px-3 py-1.5">
-                        <span className={`text-[10px] px-1 py-0.5 rounded ${
-                          evt.status === "success" ? "bg-green-900/60 text-green-300" :
-                          evt.status === "error" ? "bg-red-900/60 text-red-300" :
-                          "bg-blue-900/60 text-blue-300"
-                        }`}>{evt.status}</span>
-                      </td>
-                      <td className="px-3 py-1.5 text-gray-500">
-                        <button onClick={() => setEventFilter(evt.event_type)} className="hover:text-blue-400">
-                          {evt.event_type}
-                        </button>
-                      </td>
-                      <td className="px-3 py-1.5 text-gray-500 text-[11px] truncate max-w-[200px]">
-                        {evt.action}
-                      </td>
-                      <td className="px-3 py-1.5 text-gray-400 text-[11px]">
-                        <span className="truncate max-w-[300px] inline-block align-middle">{evt.detail}</span>
-                        {entityId && (
-                          <Link
-                            href={`/lead/${entityId}`}
-                            className="ml-2 text-blue-400 hover:underline text-[10px] shrink-0"
-                            target="_blank"
-                          >
-                            #{String(entityId)}
-                          </Link>
-                        )}
-                      </td>
-                    </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
+        {/* Event stream lives on the Validation page now. */}
+        <div className="flex items-center gap-2">
+          <Link href="/validation"
+            className="text-sm font-semibold text-blue-400 hover:text-blue-300 flex items-center gap-1">
+            &#9654; Event Stream &amp; Validation
+          </Link>
+          <span className="text-xs text-gray-600">
+            Live events + bulk property compare
+          </span>
         </div>
 
         {/* Query tool link (admin only — full page at /admin/query) */}
