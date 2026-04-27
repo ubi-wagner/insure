@@ -20,6 +20,43 @@ interface ParsedItem {
   raw: string | null;
 }
 
+type FieldStatus = "match" | "conflict" | "no_input" | "no_data";
+
+interface FieldDiff {
+  input: number | string | null;
+  db: number | string | null;
+  db_raw?: string | null;
+  status: FieldStatus;
+}
+
+interface MatchEntity {
+  id: number;
+  name: string;
+  address: string | null;
+  county: string | null;
+  pipeline_stage: string;
+  latitude: number | null;
+  longitude: number | null;
+  heat_score: string | null;
+  cream_score: number | null;
+  cream_tier: string | null;
+}
+
+type OverallStatus = "match" | "conflict" | "missing" | "no_data";
+
+interface CompareResult {
+  input: ParsedItem;
+  match: MatchEntity | null;
+  fields: Record<string, FieldDiff>;
+  status: OverallStatus;
+}
+
+interface CompareResponse {
+  results: CompareResult[];
+  counts: Record<string, number>;
+  total: number;
+}
+
 interface EventItem {
   event_type: string;
   action: string;
@@ -47,10 +84,37 @@ export default function ValidationPage() {
   const [parsed, setParsed] = useState<ParsedItem[] | null>(null);
   const [parseError, setParseError] = useState<string | null>(null);
   const [parsing, setParsing] = useState(false);
+  const [compareResults, setCompareResults] = useState<CompareResponse | null>(null);
+  const [comparing, setComparing] = useState(false);
+  const [compareError, setCompareError] = useState<string | null>(null);
+
+  async function handleCompare(items: ParsedItem[]) {
+    setComparing(true);
+    setCompareError(null);
+    try {
+      const res = await fetch("/api/proxy/validation/compare", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ items }),
+      });
+      const d = await res.json().catch(() => ({ error: res.statusText }));
+      if (!res.ok || d.error) {
+        setCompareError(d.error ?? `Compare failed (${res.status})`);
+        setCompareResults(null);
+      } else {
+        setCompareResults(d);
+      }
+    } catch (err) {
+      setCompareError(`Network error: ${err}`);
+      setCompareResults(null);
+    }
+    setComparing(false);
+  }
 
   async function handleParse() {
     setParsing(true);
     setParseError(null);
+    setCompareResults(null);
     try {
       const res = await fetch("/api/proxy/validation/parse", {
         method: "POST",
@@ -222,9 +286,15 @@ export default function ValidationPage() {
                     </tbody>
                   </table>
                 </div>
-                <p className="text-[10px] text-gray-600 mt-2">
-                  Comparison cards (green / yellow / red) ship in the next build.
-                </p>
+                <div className="flex items-center gap-2 mt-2">
+                  <button onClick={() => handleCompare(parsed)} disabled={comparing}
+                    className="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white text-xs px-4 py-1.5 rounded font-medium">
+                    {comparing ? "Comparing..." : `Compare ${parsed.length} against our DB`}
+                  </button>
+                  {compareError && (
+                    <span className="text-red-400 text-xs">{compareError}</span>
+                  )}
+                </div>
               </div>
             )}
 
@@ -232,6 +302,10 @@ export default function ValidationPage() {
               <p className="text-amber-400 text-xs">
                 No properties parsed from input.
               </p>
+            )}
+
+            {compareResults && (
+              <CompareResultsView results={compareResults} />
             )}
           </div>
         )}
@@ -352,5 +426,184 @@ function TabButton({
     >
       {children}
     </button>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Compare results                                                    */
+/* ------------------------------------------------------------------ */
+
+const FIELD_LABELS: Record<string, string> = {
+  year_built: "Year built",
+  stories: "Stories",
+  units: "Units",
+  tiv: "TIV",
+  iso_class: "ISO class",
+};
+
+const STATUS_BORDER: Record<OverallStatus, string> = {
+  match: "border-green-700 bg-green-950/30",
+  // "No data" still means we found the entity — treat as a softer green
+  no_data: "border-green-800/60 bg-green-950/10",
+  conflict: "border-yellow-600 bg-yellow-950/30",
+  missing: "border-red-700 bg-red-950/30",
+};
+
+const STATUS_LABEL: Record<OverallStatus, string> = {
+  match: "All match",
+  no_data: "Found, no comparable fields",
+  conflict: "Conflicts found",
+  missing: "Not in our DB",
+};
+
+const STATUS_PILL: Record<OverallStatus, string> = {
+  match: "bg-green-700 text-green-100",
+  no_data: "bg-green-900 text-green-300",
+  conflict: "bg-yellow-700 text-yellow-100",
+  missing: "bg-red-700 text-red-100",
+};
+
+function fmtField(v: number | string | null | undefined, key: string): string {
+  if (v == null || v === "") return "—";
+  if (key === "tiv" && typeof v === "number") {
+    return v >= 1_000_000 ? `$${(v / 1_000_000).toFixed(1)}M` : `$${v.toLocaleString()}`;
+  }
+  return String(v);
+}
+
+function CompareResultsView({ results }: { results: CompareResponse }) {
+  const counts = results.counts ?? {};
+  return (
+    <div>
+      <div className="flex items-center gap-3 mb-3 flex-wrap">
+        <h3 className="text-xs font-semibold text-gray-400">
+          Comparison — {results.total} {results.total === 1 ? "result" : "results"}
+        </h3>
+        <CountPill label="match" count={counts.match ?? 0} status="match" />
+        <CountPill label="conflict" count={counts.conflict ?? 0} status="conflict" />
+        <CountPill label="missing" count={counts.missing ?? 0} status="missing" />
+        {(counts.no_data ?? 0) > 0 && (
+          <CountPill label="no data" count={counts.no_data ?? 0} status="no_data" />
+        )}
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+        {results.results.map((r, i) => (
+          <ResultCard key={i} r={r} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function CountPill({ label, count, status }: { label: string; count: number; status: OverallStatus }) {
+  return (
+    <span className={`text-[10px] px-2 py-0.5 rounded font-mono ${STATUS_PILL[status]}`}>
+      {label}: {count}
+    </span>
+  );
+}
+
+function ResultCard({ r }: { r: CompareResult }) {
+  const border = STATUS_BORDER[r.status];
+  const pill = STATUS_PILL[r.status];
+  const label = STATUS_LABEL[r.status];
+  const inputName = r.input.name ?? r.input.address ?? "(unnamed)";
+  const inputAddr = [r.input.address, r.input.city, r.input.state, r.input.zip]
+    .filter(Boolean)
+    .join(", ");
+
+  return (
+    <div className={`border rounded-lg p-3 ${border}`}>
+      <div className="flex items-start justify-between gap-2 mb-2">
+        <div className="min-w-0">
+          <div className="text-sm font-semibold text-white truncate">{inputName}</div>
+          <div className="text-[11px] text-gray-400 truncate">{inputAddr || "—"}</div>
+        </div>
+        <span className={`text-[10px] px-2 py-0.5 rounded shrink-0 font-medium ${pill}`}>
+          {label}
+        </span>
+      </div>
+
+      {r.match ? (
+        <div className="mb-2 pb-2 border-b border-gray-800">
+          <div className="flex items-center justify-between gap-2">
+            <Link href={`/lead/${r.match.id}`} target="_blank"
+              className="text-[12px] font-medium text-blue-400 hover:text-blue-300 truncate">
+              {r.match.name}
+            </Link>
+            <span className="text-[10px] text-gray-500 shrink-0">#{r.match.id}</span>
+          </div>
+          <div className="flex items-center gap-2 mt-1 flex-wrap">
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-800 text-gray-400">
+              {r.match.pipeline_stage}
+            </span>
+            {r.match.county && (
+              <span className="text-[10px] text-gray-500">{r.match.county}</span>
+            )}
+            {r.match.cream_tier && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-900/60 text-purple-200">
+                {r.match.cream_tier}
+                {r.match.cream_score != null ? ` ${r.match.cream_score}` : ""}
+              </span>
+            )}
+          </div>
+          {r.match.address && (
+            <div className="text-[10px] text-gray-500 mt-1 truncate">{r.match.address}</div>
+          )}
+        </div>
+      ) : (
+        <div className="mb-2 pb-2 border-b border-gray-800 text-[11px] text-red-300">
+          No matching entity in our database.
+        </div>
+      )}
+
+      <div className="space-y-0.5">
+        {Object.entries(r.fields).map(([key, diff]) => (
+          <FieldRow key={key} field={key} diff={diff} />
+        ))}
+        {Object.keys(r.fields).length === 0 && (
+          <div className="text-[11px] text-gray-500 italic">
+            No fields to compare.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function FieldRow({ field, diff }: { field: string; diff: FieldDiff }) {
+  const label = FIELD_LABELS[field] ?? field;
+  const inputStr = fmtField(diff.input, field);
+  const dbStr = fmtField(diff.db, field);
+
+  let dot = "bg-gray-700";
+  let valueColor = "text-gray-400";
+  if (diff.status === "match") {
+    dot = "bg-green-500";
+    valueColor = "text-gray-300";
+  } else if (diff.status === "conflict") {
+    dot = "bg-yellow-500";
+    valueColor = "text-yellow-300";
+  } else if (diff.status === "no_data") {
+    dot = "bg-gray-600";
+    valueColor = "text-gray-500";
+  } else if (diff.status === "no_input") {
+    dot = "bg-gray-700";
+    valueColor = "text-gray-600";
+  }
+
+  return (
+    <div className="flex items-center justify-between text-[11px] gap-2">
+      <div className="flex items-center gap-2 min-w-0">
+        <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dot}`} />
+        <span className="text-gray-500 w-20 shrink-0">{label}</span>
+      </div>
+      <div className={`font-mono truncate ${valueColor}`} title={diff.db_raw ?? ""}>
+        <span>{inputStr}</span>
+        <span className="text-gray-600 mx-1">vs</span>
+        <span>{dbStr}</span>
+      </div>
+    </div>
   );
 }
