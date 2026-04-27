@@ -6,6 +6,20 @@ import UserMenu from "@/components/UserMenu";
 
 type TabName = "compare" | "events";
 
+interface ParsedItem {
+  name: string | null;
+  address: string | null;
+  city: string | null;
+  state: string | null;
+  zip: string | null;
+  year_built: number | null;
+  stories: number | null;
+  units: number | null;
+  tiv: number | null;
+  iso_class: number | null;
+  raw: string | null;
+}
+
 interface EventItem {
   event_type: string;
   action: string;
@@ -21,8 +35,47 @@ function fmtTime(ts: number | string) {
   return d.toLocaleTimeString();
 }
 
+const SAMPLE_TEXT = `Harborview Grande 530 Gulfview Blvd, Clearwater, FL 33767, ISO 5, 2006 built, TIV $23,600,000, 55 units, 8 stories
+Echo Brickell 1451 Brickell Ave, Miami FL 33131, ISO 6, 2017 built, TIV $101,700,000, 56 stories, 171 units
+Saltaire 301 1st Street S, St. Petersburg FL 33701, ISO 6, TIV $180,000,000, built 2023, 34 stories, 192 units`;
+
 export default function ValidationPage() {
   const [tab, setTab] = useState<TabName>("compare");
+
+  // Bulk compare state
+  const [pasteText, setPasteText] = useState<string>("");
+  const [parsed, setParsed] = useState<ParsedItem[] | null>(null);
+  const [parseError, setParseError] = useState<string | null>(null);
+  const [parsing, setParsing] = useState(false);
+
+  async function handleParse() {
+    setParsing(true);
+    setParseError(null);
+    try {
+      const res = await fetch("/api/proxy/validation/parse", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: pasteText }),
+      });
+      const d = await res.json().catch(() => ({ error: res.statusText }));
+      if (!res.ok || d.error) {
+        setParseError(d.error ?? `Parse failed (${res.status})`);
+        setParsed(null);
+      } else {
+        setParsed(d.items ?? []);
+      }
+    } catch (err) {
+      setParseError(`Network error: ${err}`);
+      setParsed(null);
+    }
+    setParsing(false);
+  }
+
+  function fmtMoney(n: number | null): string {
+    if (n == null) return "—";
+    if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(1)}M`;
+    return `$${n.toLocaleString()}`;
+  }
 
   const [events, setEvents] = useState<EventItem[]>([]);
   const [eventFilter, setEventFilter] = useState<string | null>(null);
@@ -96,8 +149,90 @@ export default function ValidationPage() {
         </div>
 
         {tab === "compare" && (
-          <div className="text-gray-500 text-sm py-12 text-center border border-dashed border-gray-800 rounded-lg">
-            Bulk Compare — coming next build
+          <div className="space-y-4">
+            <div>
+              <h2 className="text-sm font-semibold text-gray-300 mb-1">Paste a property list</h2>
+              <p className="text-[11px] text-gray-500 mb-2">
+                One property per line. Free-form is fine — the parser pulls
+                name, address, ZIP, year built, ISO class, stories, units,
+                and TIV. The next build wires these to the matcher.
+              </p>
+              <textarea
+                value={pasteText}
+                onChange={(e) => setPasteText(e.target.value)}
+                placeholder={SAMPLE_TEXT}
+                rows={10}
+                className="w-full bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 text-xs font-mono text-gray-200 focus:outline-none focus:border-blue-700 placeholder:text-gray-700"
+              />
+              <div className="flex items-center gap-2 mt-2">
+                <button onClick={handleParse} disabled={parsing || !pasteText.trim()}
+                  className="bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white text-xs px-4 py-1.5 rounded font-medium">
+                  {parsing ? "Parsing..." : "Parse"}
+                </button>
+                <button onClick={() => setPasteText(SAMPLE_TEXT)}
+                  className="text-xs text-gray-500 hover:text-gray-300 px-2 py-1.5">
+                  Load sample
+                </button>
+                {pasteText && (
+                  <button onClick={() => { setPasteText(""); setParsed(null); setParseError(null); }}
+                    className="text-xs text-gray-600 hover:text-gray-400 px-2 py-1.5">
+                    Clear
+                  </button>
+                )}
+              </div>
+              {parseError && (
+                <p className="text-red-400 text-xs mt-2">{parseError}</p>
+              )}
+            </div>
+
+            {parsed && parsed.length > 0 && (
+              <div>
+                <h3 className="text-xs font-semibold text-gray-400 mb-2">
+                  Parsed {parsed.length} {parsed.length === 1 ? "property" : "properties"}
+                </h3>
+                <div className="bg-gray-900 border border-gray-800 rounded-lg overflow-x-auto">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="border-b border-gray-800 text-gray-500">
+                        <th className="text-left px-2 py-2">Name</th>
+                        <th className="text-left px-2 py-2">Address</th>
+                        <th className="text-left px-2 py-2">City</th>
+                        <th className="text-left px-2 py-2">ZIP</th>
+                        <th className="text-right px-2 py-2">Year</th>
+                        <th className="text-right px-2 py-2">ISO</th>
+                        <th className="text-right px-2 py-2">Stories</th>
+                        <th className="text-right px-2 py-2">Units</th>
+                        <th className="text-right px-2 py-2">TIV</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {parsed.map((p, i) => (
+                        <tr key={i} className="border-b border-gray-800/50">
+                          <td className="px-2 py-1 text-white">{p.name ?? "—"}</td>
+                          <td className="px-2 py-1 text-gray-300">{p.address ?? "—"}</td>
+                          <td className="px-2 py-1 text-gray-400">{p.city ?? "—"}</td>
+                          <td className="px-2 py-1 text-gray-500 font-mono">{p.zip ?? "—"}</td>
+                          <td className="px-2 py-1 text-right font-mono text-gray-300">{p.year_built ?? "—"}</td>
+                          <td className="px-2 py-1 text-right font-mono text-gray-300">{p.iso_class ?? "—"}</td>
+                          <td className="px-2 py-1 text-right font-mono text-gray-300">{p.stories ?? "—"}</td>
+                          <td className="px-2 py-1 text-right font-mono text-gray-300">{p.units ?? "—"}</td>
+                          <td className="px-2 py-1 text-right font-mono text-gray-300">{fmtMoney(p.tiv)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <p className="text-[10px] text-gray-600 mt-2">
+                  Comparison cards (green / yellow / red) ship in the next build.
+                </p>
+              </div>
+            )}
+
+            {parsed && parsed.length === 0 && (
+              <p className="text-amber-400 text-xs">
+                No properties parsed from input.
+              </p>
+            )}
           </div>
         )}
 
