@@ -207,6 +207,7 @@ export default function FilesPage() {
         </div>
         <div className="flex gap-2">
           <Link href="/ops" className="text-gray-500 hover:text-white text-xs">Ops</Link>
+          <Link href="/validation" className="text-gray-500 hover:text-white text-xs">Validation</Link>
         </div>
       </header>
 
