@@ -384,11 +384,37 @@ def seed_county(county_no: str, db: Session, min_value: int | None = None) -> di
                     ))
                 )
 
+                # Skip individual condo unit parcels — DOR NAL contains both
+                # the master common-elements parcel AND one parcel per unit
+                # (each unit row carries NO_RES_UNTS=1 and a personal owner
+                # name). We only want one Entity per building, so reject the
+                # unit-level rows. A row is a "unit parcel" when it's
+                # DOR_UC=004 and is NOT a master AND has unit count <= 1.
+                # This drops thousands of duplicate Entity rows in Miami-Dade
+                # / Broward / Palm Beach where condo unit counts dominate NAL.
+                if dor_uc == "004" and not is_condo_master and (num_units or 0) <= 1:
+                    continue
+
+                # Sanity-cap absurd unit counts. Real condo buildings top out
+                # around ~700 units (the largest in FL is ~640). NAL master
+                # parcels occasionally aggregate multiple buildings, producing
+                # 1000+ unit counts that poison TIV downstream. We don't drop
+                # the row — we just clamp the value used for TIV math and tag
+                # it for follow-up. The DBPR Building enricher (when scraping
+                # works) will overwrite with the truth.
+                MAX_REASONABLE_UNITS = 800
+                num_units_overcap = bool(num_units and num_units > MAX_REASONABLE_UNITS)
+                num_units_for_tiv = (
+                    min(num_units, MAX_REASONABLE_UNITS) if num_units else None
+                )
+
                 # Compute replacement cost TIV — more reliable than DOR JV for
                 # condo master parcels where the building value is split across
-                # individual unit parcels.
+                # individual unit parcels. Use the capped unit count so a
+                # single bad NAL row doesn't push TIV into the hundreds of
+                # millions for an average building.
                 tiv_estimate = _compute_replacement_tiv(
-                    num_units=num_units,
+                    num_units=num_units_for_tiv,
                     living_sqft=living_sqft,
                     construction_class=const_class,
                     county=county_name,
@@ -412,8 +438,15 @@ def seed_county(county_no: str, db: Session, min_value: int | None = None) -> di
 
                 filtered += 1
 
-                # Get physical address
-                phy_addr = _get_col(row, col_map, "PHY_ADDR1").strip()
+                # Get physical address. NAL splits the street line across
+                # PHY_ADDR1 (number + name) and PHY_ADDR2 (directional or
+                # secondary unit). We must concatenate so addresses like
+                # "5955 30TH AVE" + "S" survive as "5955 30TH AVE S" instead
+                # of losing the directional and colliding with unrelated
+                # parcels at the same number.
+                phy_addr1 = _get_col(row, col_map, "PHY_ADDR1").strip()
+                phy_addr2 = _get_col(row, col_map, "PHY_ADDR2").strip()
+                phy_addr = f"{phy_addr1} {phy_addr2}".strip() if phy_addr2 else phy_addr1
                 phy_city = _get_col(row, col_map, "PHY_CITY").strip()
                 phy_zip = _get_col(row, col_map, "PHY_ZIPCD").strip()
                 parcel_id = _get_col(row, col_map, "PARCEL_ID").strip()
@@ -460,21 +493,23 @@ def seed_county(county_no: str, db: Session, min_value: int | None = None) -> di
                     "dor_effective_year_built": _safe_int(_get_col(row, col_map, "EFF_YR_BLT")),
                     "dor_living_sqft": _safe_int(_get_col(row, col_map, "TOT_LVG_AREA")),
                     "dor_num_buildings": _safe_int(_get_col(row, col_map, "NO_BULDNG")),
-                    "dor_num_units": num_units,
-                    "units_estimate": num_units,
+                    "dor_num_units": num_units_for_tiv,
+                    "units_estimate": num_units_for_tiv,
                     "dor_land_sqft": _safe_int(_get_col(row, col_map, "LND_SQFOOT")),
                     "dor_special_features_value": _safe_int(_get_col(row, col_map, "SPEC_FEAT_VAL")),
                     "tiv_estimate": tiv_estimate,
                     "tiv": f"${tiv_estimate:,.0f}" if tiv_estimate else None,
                     "tiv_method": (
-                        "unit_replacement" if (num_units and num_units > 0 and tiv_estimate and
-                            tiv_estimate == (num_units * (500_000 if county_name in HIGH_COST_COUNTIES
+                        "unit_replacement" if (num_units_for_tiv and num_units_for_tiv > 0 and tiv_estimate and
+                            tiv_estimate == (num_units_for_tiv * (500_000 if county_name in HIGH_COST_COUNTIES
                                 else 400_000 if county_name in MID_COST_COUNTIES else 300_000)))
                         else "sqft_replacement" if (living_sqft and living_sqft > 0 and tiv_estimate and
-                            tiv_estimate > (jv * 1.3 if jv else 0))
+                            tiv_estimate > (jv_raw * 1.3 if jv_raw else 0))
                         else "jv_markup"
                     ) if tiv_estimate else None,
                     "is_condo_master": is_condo_master,
+                    "dor_num_units_raw": num_units if num_units_overcap else None,
+                    "dor_num_units_overcap": True if num_units_overcap else None,
                     "construction_class": const_class,
                     "imp_qual": _get_col(row, col_map, "IMP_QUAL").strip() or None,
                     "phy_city": phy_city or None,
