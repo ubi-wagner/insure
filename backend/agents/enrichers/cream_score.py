@@ -124,7 +124,14 @@ def compute_cream_score(entity: Entity, db: Session) -> bool:
     # WIND EXPOSURE (max 20 points)
     # ═══════════════════════════════════════════
 
-    stories = _safe_int(chars.get("stories") or chars.get("dbpr_max_stories"))
+    # Prefer the unified `stories` key (written by dbpr_building when scrape
+    # succeeds, name_parse otherwise). Fall back through legacy keys for
+    # entities last enriched before name_parse landed.
+    stories = _safe_int(
+        chars.get("stories")
+        or chars.get("dbpr_max_stories")
+        or chars.get("dor_max_stories")
+    )
     year_built = _safe_int(chars.get("year_built") or chars.get("dor_year_built"))
 
     if stories >= 10:

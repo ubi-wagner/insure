@@ -301,6 +301,11 @@ def enrich_dbpr_building(entity: Entity, db: Session) -> bool:
             # Determine max stories — relevant for SIRS applicability
             max_stories = max(report_data["dbpr_building_stories"].keys())
             updates["dbpr_max_stories"] = max_stories
+            # Unified `stories` key consumed by cream_score and the
+            # validation matcher. DBPR is authoritative — promote it
+            # over any name_parse fallback that ran earlier.
+            updates["stories"] = max_stories
+            updates["stories_source"] = "dbpr_building"
             if max_stories >= 3:
                 updates["dbpr_sirs_applicable"] = True
 
@@ -355,7 +360,15 @@ def enrich_dbpr_building(entity: Entity, db: Session) -> bool:
             "manual verification."
         )
 
-    update_characteristics(entity, updates, "dbpr_building")
+    # DBPR Building Report is the authoritative source for stories and
+    # unit-by-building counts; overwrite any name_parse fallback that ran
+    # earlier in the pipeline.
+    update_characteristics(
+        entity,
+        updates,
+        "dbpr_building",
+        overwrite={"stories", "stories_source", "dbpr_max_stories"},
+    )
 
     fields = [
         k
