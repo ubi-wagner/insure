@@ -187,99 +187,194 @@ def _street_number(addr: Optional[str]) -> Optional[str]:
     return m.group(1) if m else None
 
 
+# Street-suffix and directional canonicalisation. We keep these tokens
+# (they're the most discriminating part of an address — "Brickell Ave"
+# and "Brickell Bay Dr" share the same number range) but normalise spelling
+# so "Avenue" and "Ave" compare equal.
+_SUFFIX_NORMALISE = {
+    "avenue": "ave", "ave": "ave",
+    "boulevard": "blvd", "blvd": "blvd",
+    "street": "st", "st": "st",
+    "road": "rd", "rd": "rd",
+    "drive": "dr", "dr": "dr",
+    "lane": "ln", "ln": "ln",
+    "place": "pl", "pl": "pl",
+    "court": "ct", "ct": "ct",
+    "terrace": "ter", "ter": "ter",
+    "parkway": "pkwy", "pkwy": "pkwy",
+    "highway": "hwy", "hwy": "hwy",
+    "circle": "cir", "cir": "cir",
+    "way": "way",
+    "mile": "mile",
+    "north": "n", "n": "n",
+    "south": "s", "s": "s",
+    "east": "e", "e": "e",
+    "west": "w", "w": "w",
+    "northeast": "ne", "ne": "ne",
+    "northwest": "nw", "nw": "nw",
+    "southeast": "se", "se": "se",
+    "southwest": "sw", "sw": "sw",
+}
+
+# Words we drop entirely — pure noise that makes false matches.
+_NOISE_TOKENS = {"the", "of", "at"}
+
+
 def _street_tokens(addr: Optional[str]) -> list[str]:
-    """Lowercase street-name tokens minus the leading number and common
-    directional/suffix noise. Used for fuzzy ranking of candidates."""
+    """Lowercase street tokens minus the leading number, with directional
+    and street-suffix abbreviations normalised so "Avenue" matches "Ave".
+
+    Restricts to the first comma-delimited segment of the address — the
+    street line — so that the city/state/ZIP tail doesn't leak into the
+    "name tokens" set and create false matches (e.g. "1451 Brickell Ave,
+    Miami FL 33131" sharing "miami" with "1451 S Miami Ave, Miami FL").
+    """
     if not addr:
         return []
-    cleaned = re.sub(r"^\s*\d{1,6}[A-Z]?\s*", "", addr).lower()
+    # Use only the first segment (street line). Both seeded addresses and
+    # validation-page input follow the "<street>, <city>, FL <zip>" shape.
+    street_part = addr.split(",", 1)[0]
+    cleaned = re.sub(r"^\s*\d{1,6}[A-Z]?\s*", "", street_part).lower()
     cleaned = re.sub(r"[.,#]", " ", cleaned)
-    stop = {
-        "n", "s", "e", "w", "ne", "nw", "se", "sw",
-        "north", "south", "east", "west",
-        "ave", "avenue", "blvd", "boulevard", "st", "street", "rd", "road",
-        "dr", "drive", "way", "ln", "lane", "pl", "place", "ct", "court",
-        "ter", "terrace", "pkwy", "parkway", "hwy", "highway", "mile",
-        "cir", "circle", "the",
-    }
-    return [t for t in cleaned.split() if t and t not in stop]
+    out: list[str] = []
+    for t in cleaned.split():
+        if not t or t in _NOISE_TOKENS:
+            continue
+        out.append(_SUFFIX_NORMALISE.get(t, t))
+    return out
 
 
-def find_match(db: Session, item: ValidationInput) -> Optional[Entity]:
-    """Find the best entity matching the input. Returns None if nothing
-    plausible exists.
+def _classify_tokens(tokens: list[str]) -> tuple[set[str], set[str], set[str]]:
+    """Return (name_tokens, directional_tokens, suffix_tokens) so the
+    matcher can require *each* class to overlap when both sides have one.
+    """
+    suffixes = {"ave", "blvd", "st", "rd", "dr", "ln", "pl", "ct", "ter",
+                "pkwy", "hwy", "cir", "way", "mile"}
+    directionals = {"n", "s", "e", "w", "ne", "nw", "se", "sw"}
+    name = {t for t in tokens if t not in suffixes and t not in directionals}
+    return name, set(tokens) & directionals, set(tokens) & suffixes
+
+
+# Match threshold — below this we don't consider a candidate a real match.
+# Calibrated so that street-number alone scores below threshold (3 pts max
+# for the number itself) but a number + 1 name token + matching suffix or
+# city clears it (3 + 5 + 4 = 12).
+MIN_MATCH_SCORE = 10
+
+
+def find_match(
+    db: Session,
+    item: ValidationInput,
+) -> tuple[Optional[Entity], int]:
+    """Find the best entity matching the input. Returns ``(entity, score)``
+    where ``entity`` is ``None`` when no candidate clears MIN_MATCH_SCORE.
 
     Algorithm:
-      1. Filter entities by street-number prefix on Entity.address (when
-         available). Indexed scan via ilike '<num> %' is fast enough at
-         our scale (~5-15K rows) and rules out 99%+ of noise.
-      2. Among candidates, score by token overlap on street name + city.
-      3. Require at least one matching street token OR matching name to
-         avoid promoting random parcels at the same street number.
+      1. Filter Entity rows by street-number prefix (cheap discriminator).
+      2. Score each candidate by:
+         - overlap on street-name tokens (5 pts each, up to 4 tokens)
+         - matching street suffix (4 pts)
+         - matching directional (4 pts)
+         - matching ZIP (4 pts) or city contained in either direction (3)
+         - overlap on association-name tokens (2 pts each, up to 4)
+      3. Require BOTH (a) at least one street-name token overlap AND
+         (b) suffix-or-zip-or-name agreement, to rule out wrong-street
+         collisions like "1451 Brickell Ave" vs "1451 S Miami Ave".
+      4. Skip ARCHIVED entities — those are dismissals, not active leads.
     """
     num = _street_number(item.address)
     candidates: list[Entity] = []
 
     if num:
-        # Anchor on street number — the cheapest discriminator.
         candidates = (
             db.query(Entity)
             .filter(Entity.address.ilike(f"{num} %"))
+            .filter(Entity.pipeline_stage != "ARCHIVED")
             .limit(200)
             .all()
         )
 
-    if not candidates and item.address:
-        # Fall back: try name match (some condo associations are named after
-        # the building and Entity.name has the same string).
-        if item.name:
-            candidates = (
-                db.query(Entity)
-                .filter(Entity.name.ilike(f"%{item.name}%"))
-                .limit(50)
-                .all()
-            )
+    if not candidates and item.address and item.name:
+        candidates = (
+            db.query(Entity)
+            .filter(Entity.name.ilike(f"%{item.name}%"))
+            .filter(Entity.pipeline_stage != "ARCHIVED")
+            .limit(50)
+            .all()
+        )
 
     if not candidates:
-        return None
+        return None, 0
 
-    target_tokens = set(_street_tokens(item.address))
-    target_name_tokens = set(re.findall(r"\w+", (item.name or "").lower()))
+    target_tokens = _street_tokens(item.address)
+    target_name_set, target_dirs, target_sufs = _classify_tokens(target_tokens)
+    target_full_name = set(re.findall(r"\w+", (item.name or "").lower()))
     target_city = (item.city or "").lower().strip()
-    target_zip = (item.zip or "").strip()
+    target_zip = (item.zip or "").strip()[:5]
 
-    best: tuple[int, Optional[Entity]] = (0, None)
+    best_entity: Optional[Entity] = None
+    best_score = 0
+
     for c in candidates:
-        score = 0
-        cand_tokens = set(_street_tokens(c.address))
-        cand_name_tokens = set(re.findall(r"\w+", (c.name or "").lower()))
+        cand_tokens = _street_tokens(c.address)
+        cand_name_set, cand_dirs, cand_sufs = _classify_tokens(cand_tokens)
+        cand_full_name = set(re.findall(r"\w+", (c.name or "").lower()))
 
-        overlap = target_tokens & cand_tokens
-        score += len(overlap) * 5
-
-        name_overlap = target_name_tokens & cand_name_tokens
-        if name_overlap:
-            score += min(len(name_overlap), 4) * 2
-
-        # City / ZIP bonus — lives in characteristics.dor_city or address tail
         chars: dict[str, Any] = c.characteristics or {}
-        cand_city = (chars.get("dor_city") or chars.get("city") or "").lower()
-        cand_zip = str(chars.get("dor_zip_code") or chars.get("zip") or "").strip()
-        if target_city and cand_city and target_city in cand_city:
-            score += 4
-        if target_zip and cand_zip and target_zip[:5] == cand_zip[:5]:
-            score += 4
+        cand_city = (
+            chars.get("phy_city")
+            or chars.get("dor_city")
+            or chars.get("city")
+            or ""
+        ).lower().strip()
+        cand_zip = str(
+            chars.get("phy_zip")
+            or chars.get("dor_zip_code")
+            or chars.get("zip")
+            or ""
+        ).strip()[:5]
 
-        # Street-number exact match always already true (we filtered on it),
-        # so don't double-count, but require *some* additional signal beyond
-        # the number to avoid wrong-street collisions.
-        if num and not (overlap or name_overlap or cand_city == target_city):
+        # Street-name overlap — the strongest signal. No overlap = wrong street.
+        name_overlap = target_name_set & cand_name_set
+        if not name_overlap:
             continue
 
-        if score > best[0]:
-            best = (score, c)
+        score = 3  # baseline for street-number match
+        score += min(len(name_overlap), 4) * 5
 
-    return best[1]
+        # Directional and suffix only contribute when BOTH sides have one
+        # (otherwise we can't tell agreement from "didn't know").
+        if target_dirs and cand_dirs:
+            if target_dirs & cand_dirs:
+                score += 4
+            else:
+                # Real disagreement (e.g. our row is "30TH AVE S" but the
+                # input said "30th Avenue N") — penalise hard.
+                score -= 6
+
+        if target_sufs and cand_sufs:
+            if target_sufs & cand_sufs:
+                score += 4
+            else:
+                score -= 6
+
+        if target_zip and cand_zip and target_zip == cand_zip:
+            score += 4
+        if target_city and cand_city and (
+            target_city in cand_city or cand_city in target_city
+        ):
+            score += 3
+
+        # Association-name overlap — useful but secondary.
+        full_overlap = target_full_name & cand_full_name
+        if full_overlap:
+            score += min(len(full_overlap), 4) * 2
+
+        if score >= MIN_MATCH_SCORE and score > best_score:
+            best_entity = c
+            best_score = score
+
+    return best_entity, best_score
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -349,8 +444,13 @@ def compare_fields(item: ValidationInput, ent: Optional[Entity]) -> dict[str, An
     db_year = _first_nonnull(
         chars, "dor_year_built", "dor_effective_year_built", "pa_year_built"
     )
-    db_stories = _first_nonnull(chars, "stories", "dor_max_stories")
-    db_units = _first_nonnull(chars, "dor_num_units", "units")
+    # Stories: prefer the unified `stories` key (set by dbpr_building when
+    # the scrape works, name_parse otherwise), fall back through the legacy
+    # DBPR/DOR keys for entities seeded before name_parse landed.
+    db_stories = _first_nonnull(
+        chars, "stories", "dbpr_max_stories", "dor_max_stories"
+    )
+    db_units = _first_nonnull(chars, "dor_num_units", "units_estimate", "units")
     db_tiv = _first_nonnull(chars, "tiv_estimate", "dor_market_value")
     db_iso = _dor_class_to_iso(chars.get("dor_construction_class"))
 
@@ -424,7 +524,7 @@ def compare_validation(req: CompareRequest, db: Session = Depends(get_db)):
     counts = {"match": 0, "conflict": 0, "missing": 0, "no_data": 0}
 
     for item in req.items:
-        ent = find_match(db, item)
+        ent, match_score = find_match(db, item)
         comparison = compare_fields(item, ent)
         status = comparison["status"]
         counts[status] = counts.get(status, 0) + 1
@@ -450,6 +550,7 @@ def compare_validation(req: CompareRequest, db: Session = Depends(get_db)):
                 ),
                 "fields": comparison["fields"],
                 "status": status,
+                "match_score": match_score,
             }
         )
 
