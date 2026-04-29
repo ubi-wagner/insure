@@ -40,15 +40,39 @@ from database.models import Entity
 logger = logging.getLogger(__name__)
 
 # DOR county number to name mapping (alphabetical, starting at 11)
-# NOT the same as FIPS codes!
+# NOT the same as FIPS codes! Mirrors seeder.DOR_COUNTIES — all 35
+# coastal counties, not just the original 11.
 COUNTY_NUMBERS = {
     "16": "Broward", "18": "Charlotte", "21": "Collier",
     "23": "Miami-Dade", "39": "Hillsborough", "46": "Lee",
     "51": "Manatee", "60": "Palm Beach", "61": "Pasco",
     "62": "Pinellas", "68": "Sarasota",
+    "13": "Bay", "27": "Escambia", "29": "Franklin",
+    "33": "Gulf", "56": "Okaloosa", "67": "Santa Rosa", "76": "Walton",
+    "19": "Citrus", "25": "Dixie", "37": "Hernando", "43": "Jefferson",
+    "48": "Levy", "72": "Taylor", "75": "Wakulla",
+    "26": "Duval", "28": "Flagler", "55": "Nassau", "65": "St. Johns",
+    "15": "Brevard", "41": "Indian River", "53": "Martin",
+    "66": "St. Lucie", "74": "Volusia",
+    "54": "Monroe",
 }
 
 COUNTY_NAME_TO_NUMBER = {v: k for k, v in COUNTY_NUMBERS.items()}
+
+# DOR construction class numeric codes → readable labels.
+# Mirror of seeder.DOR_CONSTRUCTION_CLASSES; kept inline so this enricher
+# stays import-light. Used to map the raw NAL CONST_CLASS column (which
+# arrives as "1".."6") into the same human-readable string the seeder
+# wrote, so update_characteristics() doesn't silently keep the older
+# value while disagreeing about format.
+DOR_CONSTRUCTION_CLASSES = {
+    "1": "Frame",
+    "2": "Masonry",
+    "3": "Non-Combustible",
+    "4": "Fire Resistive",
+    "5": "Fire Resistive (Premium)",
+    "6": "Fire Resistive (Premium)",
+}
 
 # DOR use codes relevant to insurance leads
 DOR_USE_CODES = {
@@ -137,7 +161,12 @@ def _load_county_nal(county_no: str) -> dict[str, dict]:
         with open(filepath, "r", encoding="utf-8", errors="replace") as f:
             reader = csv.DictReader(f, delimiter="\t")
             for row in reader:
-                phy_addr = row.get("PHY_ADDR1", "").strip()
+                # Concat ADDR1 + ADDR2 — same reasoning as seeder.py:
+                # PHY_ADDR2 carries the directional/secondary unit (e.g. "S"
+                # in "5955 30TH AVE S") and dropping it loses uniqueness.
+                phy_addr1 = row.get("PHY_ADDR1", "").strip()
+                phy_addr2 = row.get("PHY_ADDR2", "").strip()
+                phy_addr = f"{phy_addr1} {phy_addr2}".strip() if phy_addr2 else phy_addr1
                 if not phy_addr:
                     continue
 
@@ -263,10 +292,16 @@ def enrich_dor_nal(entity: Entity, db: Session) -> bool:
     if lnd_val and lnd_val > 0:
         updates["dor_land_value"] = lnd_val
 
-    # Construction
-    const_class = match.get("CONST_CLASS", "").strip()
-    if const_class:
-        updates["dor_construction_class"] = const_class
+    # Construction class — NAL stores this as a numeric "1".."6". Map it
+    # to the readable label so downstream consumers (validation page ISO
+    # derivation, cream_score string match on "frame", filter UI) all see
+    # the same shape. We always store the mapped label; if the code is
+    # unknown we store the raw value so debugging is still possible.
+    const_class_raw = match.get("CONST_CLASS", "").strip()
+    if const_class_raw:
+        const_class_label = DOR_CONSTRUCTION_CLASSES.get(const_class_raw, const_class_raw)
+        updates["dor_construction_class"] = const_class_label
+        updates["dor_construction_class_raw"] = const_class_raw
 
     # DOR use code
     dor_uc = match.get("DOR_UC", "").strip()
