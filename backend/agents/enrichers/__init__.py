@@ -73,8 +73,26 @@ def record_enrichment(
          entity_id=entity.id)
 
 
-def update_characteristics(entity: Entity, updates: dict, source_id: str):
-    """Merge new data into entity characteristics, tagging each field with its source."""
+def update_characteristics(
+    entity: Entity,
+    updates: dict,
+    source_id: str,
+    overwrite: set[str] | None = None,
+):
+    """Merge new data into entity characteristics, tagging each field with its source.
+
+    By default a non-null value already on the entity is NOT overwritten — the
+    first source to write a field wins. This protects authoritative DOR/DBPR
+    data from being clobbered by lower-confidence fallbacks.
+
+    Pass ``overwrite={"stories", ...}`` to force specific keys to be replaced
+    when the new source has stronger data than what's already there. Use
+    sparingly — only when this enricher is genuinely authoritative for that
+    key (e.g. DBPR Building Report is the truth on stories, even if
+    name_parse already wrote a guess).
+    """
+    overwrite = overwrite or set()
+
     # MUST shallow-copy — SQLAlchemy won't detect in-place JSONB mutations
     chars = dict(entity.characteristics or {})
 
@@ -85,9 +103,11 @@ def update_characteristics(entity: Entity, updates: dict, source_id: str):
             field_sources[key] = source_id
     chars["_field_sources"] = field_sources
 
-    # Merge updates (don't overwrite existing non-null values from higher-priority sources)
     for key, value in updates.items():
-        if value is not None and (key not in chars or chars[key] is None):
+        if value is None:
+            continue
+        is_empty = key not in chars or chars[key] is None
+        if is_empty or key in overwrite:
             chars[key] = value
 
     entity.characteristics = chars

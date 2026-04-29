@@ -224,6 +224,7 @@ def check_target_to_lead(entity: Entity, db: Session) -> bool:
 # Import enrichers to trigger their @register_enricher decorators
 def _load_enrichers():
     modules = [
+        "name_parse",           # Pull stories/units/year from entity name (fallback)
         "fema_flood",           # FEMA flood zone (real API)
         "property_appraiser",   # County PA GIS lookup + direct parcel links
         "dbpr_bulk",            # DBPR condo CSV (managing entity, project number)

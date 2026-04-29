@@ -4,25 +4,15 @@ import { useEffect, useRef, useState } from "react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 
-// Dark-theme overrides for the Leaflet layer control
-const LAYER_CONTROL_STYLE = `
-  .leaflet-control-layers {
-    background: rgba(17, 24, 39, 0.92) !important;
-    border: 1px solid #374151 !important;
-    border-radius: 6px !important;
-    color: #d1d5db !important;
-    font-size: 12px !important;
-    padding: 6px 10px !important;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.5) !important;
-  }
-  .leaflet-control-layers label {
-    color: #d1d5db !important;
-    margin-bottom: 2px;
-  }
-  .leaflet-control-layers-separator {
-    border-top-color: #374151 !important;
-  }
-`;
+type BaseLayerKey = "street" | "satellite" | "hybrid";
+
+const BASE_LAYER_LABELS: Record<BaseLayerKey, string> = {
+  street: "Street",
+  satellite: "Satellite",
+  hybrid: "Hybrid",
+};
+
+const STORAGE_KEY_LAYER = "insure_map_layer";
 
 // Fallback center — Pinellas Park, FL
 const FALLBACK_CENTER: [number, number] = [27.8428, -82.6993];
@@ -107,20 +97,19 @@ export default function MapViewInner({
   const mapRef = useRef<HTMLDivElement>(null);
   const mapInstance = useRef<L.Map | null>(null);
   const markersRef = useRef<Map<number, L.Marker>>(new Map());
+  const baseLayersRef = useRef<Record<BaseLayerKey, L.Layer> | null>(null);
+  const activeBaseLayerRef = useRef<L.Layer | null>(null);
 
   const [searchQuery, setSearchQuery] = useState("");
+  const [activeLayer, setActiveLayer] = useState<BaseLayerKey>(() => {
+    if (typeof window === "undefined") return "street";
+    const saved = localStorage.getItem(STORAGE_KEY_LAYER) as BaseLayerKey | null;
+    return saved && saved in BASE_LAYER_LABELS ? saved : "street";
+  });
 
   // ─── Init map with saved position ───
   useEffect(() => {
     if (!mapRef.current || mapInstance.current) return;
-
-    // Inject dark-theme layer control styles once
-    if (!document.getElementById("leaflet-dark-layers")) {
-      const style = document.createElement("style");
-      style.id = "leaflet-dark-layers";
-      style.textContent = LAYER_CONTROL_STYLE;
-      document.head.appendChild(style);
-    }
 
     const { center, zoom } = getSavedView();
 
@@ -167,18 +156,17 @@ export default function MapViewInner({
       ),
     ]);
 
-    osmStreets.addTo(map);
-
-    const baseLayers: Record<string, L.Layer> = {
-      "Street": osmStreets,
-      "Satellite": esriSatellite,
-      "Hybrid": esriHybrid,
+    const layers: Record<BaseLayerKey, L.Layer> = {
+      street: osmStreets,
+      satellite: esriSatellite,
+      hybrid: esriHybrid,
     };
+    baseLayersRef.current = layers;
 
-    L.control.layers(baseLayers, {}, {
-      position: "bottomright",
-      collapsed: false,
-    }).addTo(map);
+    // Add the user's previously-chosen base layer (or street by default).
+    const initial = layers[activeLayer] ?? layers.street;
+    initial.addTo(map);
+    activeBaseLayerRef.current = initial;
 
     // Save position on every move/zoom
     map.on("moveend", () => {
@@ -193,6 +181,30 @@ export default function MapViewInner({
       mapInstance.current = null;
     };
   }, []);
+
+  // ─── Swap base layer when the user clicks Street/Satellite/Hybrid ───
+  useEffect(() => {
+    const map = mapInstance.current;
+    const layers = baseLayersRef.current;
+    if (!map || !layers) return;
+
+    const next = layers[activeLayer];
+    if (!next || next === activeBaseLayerRef.current) return;
+
+    if (activeBaseLayerRef.current) {
+      map.removeLayer(activeBaseLayerRef.current);
+    }
+    next.addTo(map);
+    // Send tile layer to the back so markers / popups stay above it.
+    if ("bringToBack" in next && typeof (next as L.TileLayer).bringToBack === "function") {
+      (next as L.TileLayer).bringToBack();
+    }
+    activeBaseLayerRef.current = next;
+
+    try {
+      localStorage.setItem(STORAGE_KEY_LAYER, activeLayer);
+    } catch {}
+  }, [activeLayer]);
 
   // ─── Lead markers (numbered, typed, colored) ───
   useEffect(() => {
@@ -273,11 +285,31 @@ export default function MapViewInner({
       </form>
 
       {/* Map tools */}
-      <div className="absolute top-3 right-3 z-[1000] flex flex-col gap-1.5">
+      <div className="absolute top-3 right-3 z-[1000] flex flex-col gap-1.5 items-end">
         <button onClick={() => mapInstance.current?.zoomIn()}
           className="bg-gray-900/90 border border-gray-700 text-gray-300 hover:bg-gray-800 px-3 py-1.5 rounded text-sm shadow-lg">+</button>
         <button onClick={() => mapInstance.current?.zoomOut()}
           className="bg-gray-900/90 border border-gray-700 text-gray-300 hover:bg-gray-800 px-3 py-1.5 rounded text-sm shadow-lg">&minus;</button>
+
+        {/* Base-layer toggle — Street / Satellite / Hybrid. We use a custom
+            React control rather than Leaflet's built-in L.control.layers
+            because the latter rendered invisible against this dark theme
+            in some viewport setups. */}
+        <div className="bg-gray-900/90 border border-gray-700 rounded shadow-lg flex flex-col overflow-hidden">
+          {(Object.keys(BASE_LAYER_LABELS) as BaseLayerKey[]).map((key) => (
+            <button
+              key={key}
+              onClick={() => setActiveLayer(key)}
+              className={`px-3 py-1.5 text-[11px] font-medium text-left whitespace-nowrap border-b border-gray-800 last:border-b-0 ${
+                activeLayer === key
+                  ? "bg-blue-700 text-white"
+                  : "text-gray-300 hover:bg-gray-800"
+              }`}
+            >
+              {BASE_LAYER_LABELS[key]}
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* Legend */}

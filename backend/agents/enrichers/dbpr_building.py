@@ -23,6 +23,7 @@ Requires: dbpr_bulk (needs dbpr_project_number or dbpr_condo_name for lookup).
 
 import logging
 import re
+from datetime import datetime, timezone
 from urllib.parse import quote_plus
 
 import httpx
@@ -291,71 +292,102 @@ def enrich_dbpr_building(entity: Entity, db: Session) -> bool:
     report_data = _try_scrape_building_report(project_number, association_name)
     contact_created = False
 
-    if report_data:
-        # Building structure data
-        if report_data.get("dbpr_building_count"):
-            updates["dbpr_building_count"] = report_data["dbpr_building_count"]
-
-        if report_data.get("dbpr_building_stories"):
-            updates["dbpr_building_stories"] = report_data["dbpr_building_stories"]
-            # Determine max stories — relevant for SIRS applicability
-            max_stories = max(report_data["dbpr_building_stories"].keys())
-            updates["dbpr_max_stories"] = max_stories
-            if max_stories >= 3:
-                updates["dbpr_sirs_applicable"] = True
-
-        if report_data.get("dbpr_building_units"):
-            updates["dbpr_building_units"] = report_data["dbpr_building_units"]
-            # Cross-reference with existing unit count
-            existing_units = chars.get("dbpr_official_units") or chars.get(
-                "units_estimate"
-            )
-            if not existing_units:
-                updates["units_estimate"] = report_data["dbpr_building_units"]
-
-        # Financial data
-        if report_data.get("dbpr_current_assessment"):
-            updates["dbpr_current_assessment"] = report_data[
-                "dbpr_current_assessment"
-            ]
-        if report_data.get("dbpr_assessment_frequency"):
-            updates["dbpr_assessment_frequency"] = report_data[
-                "dbpr_assessment_frequency"
-            ]
-
-        # Contact information
-        if report_data.get("dbpr_contact_name"):
-            updates["dbpr_contact_name"] = report_data["dbpr_contact_name"]
-        if report_data.get("dbpr_contact_email"):
-            updates["dbpr_contact_email"] = report_data["dbpr_contact_email"]
-        if report_data.get("dbpr_contact_phone"):
-            updates["dbpr_contact_phone"] = report_data["dbpr_contact_phone"]
-
-        # Create a Contact record if we have a name
-        contact_name = report_data.get("dbpr_contact_name")
-        if contact_name:
-            contact_created = _create_contact_if_new(
-                entity,
-                db,
-                name=contact_name,
-                email=report_data.get("dbpr_contact_email"),
-                phone=report_data.get("dbpr_contact_phone"),
-                source_url=lookup_url,
-            )
-
-        updates["dbpr_building_report_source"] = "dbpr_portal"
-    else:
-        # Scrape failed — still record the lookup URL for manual use
-        updates["dbpr_building_report_source"] = "lookup_url_only"
-        updates["dbpr_building_report_needs_verification"] = True
-
+    if not report_data:
+        # Scrape failed (403, JS-only SPA, or no match in HTML). Save the
+        # lookup URL plus a retry flag — but DO NOT call record_enrichment.
+        # Without a recorded source, a later /admin/queue/backfill run will
+        # re-create this job, giving us a real retry path. If we recorded
+        # the source here we'd permanently lock out this entity from ever
+        # getting building-report data even if the portal recovers.
+        chars = dict(entity.characteristics or {})
+        chars["dbpr_building_report_url"] = lookup_url
+        chars["dbpr_building_scrape_failed"] = True
+        chars["dbpr_building_scrape_failed_at"] = datetime.now(timezone.utc).isoformat()
+        chars["dbpr_building_report_needs_verification"] = True
+        entity.characteristics = chars
+        db.flush()
         logger.info(
-            f"Building report not found for '{association_name}' "
-            f"(project={project_number}). Lookup URL saved for "
-            "manual verification."
+            f"DBPR building scrape failed for '{association_name}' "
+            f"(project={project_number}); will retry on next backfill"
+        )
+        return False  # Job marked SUCCESS by queue, no source recorded
+
+    # Scrape succeeded — extract data
+    if report_data.get("dbpr_building_count"):
+        updates["dbpr_building_count"] = report_data["dbpr_building_count"]
+
+    if report_data.get("dbpr_building_stories"):
+        updates["dbpr_building_stories"] = report_data["dbpr_building_stories"]
+        # Determine max stories — relevant for SIRS applicability
+        max_stories = max(report_data["dbpr_building_stories"].keys())
+        updates["dbpr_max_stories"] = max_stories
+        # Unified `stories` key consumed by cream_score and the
+        # validation matcher. DBPR is authoritative — promote it
+        # over any name_parse fallback that ran earlier.
+        updates["stories"] = max_stories
+        updates["stories_source"] = "dbpr_building"
+        if max_stories >= 3:
+            updates["dbpr_sirs_applicable"] = True
+
+    if report_data.get("dbpr_building_units"):
+        updates["dbpr_building_units"] = report_data["dbpr_building_units"]
+        # Cross-reference with existing unit count
+        existing_units = chars.get("dbpr_official_units") or chars.get(
+            "units_estimate"
+        )
+        if not existing_units:
+            updates["units_estimate"] = report_data["dbpr_building_units"]
+
+    # Financial data
+    if report_data.get("dbpr_current_assessment"):
+        updates["dbpr_current_assessment"] = report_data[
+            "dbpr_current_assessment"
+        ]
+    if report_data.get("dbpr_assessment_frequency"):
+        updates["dbpr_assessment_frequency"] = report_data[
+            "dbpr_assessment_frequency"
+        ]
+
+    # Contact information
+    if report_data.get("dbpr_contact_name"):
+        updates["dbpr_contact_name"] = report_data["dbpr_contact_name"]
+    if report_data.get("dbpr_contact_email"):
+        updates["dbpr_contact_email"] = report_data["dbpr_contact_email"]
+    if report_data.get("dbpr_contact_phone"):
+        updates["dbpr_contact_phone"] = report_data["dbpr_contact_phone"]
+
+    # Create a Contact record if we have a name
+    contact_name = report_data.get("dbpr_contact_name")
+    if contact_name:
+        contact_created = _create_contact_if_new(
+            entity,
+            db,
+            name=contact_name,
+            email=report_data.get("dbpr_contact_email"),
+            phone=report_data.get("dbpr_contact_phone"),
+            source_url=lookup_url,
         )
 
-    update_characteristics(entity, updates, "dbpr_building")
+    updates["dbpr_building_report_source"] = "dbpr_portal"
+    # Scrape just succeeded — clear any stale failure flag from a prior
+    # 403 so the dashboard reflects current truth.
+    updates["dbpr_building_scrape_failed"] = False
+    updates["dbpr_building_report_needs_verification"] = False
+
+    # DBPR Building Report is the authoritative source for stories and
+    # unit-by-building counts; overwrite any name_parse fallback that ran
+    # earlier in the pipeline. Also clear stale scrape-failure flags now
+    # that we've successfully retrieved the data.
+    update_characteristics(
+        entity,
+        updates,
+        "dbpr_building",
+        overwrite={
+            "stories", "stories_source", "dbpr_max_stories",
+            "dbpr_building_scrape_failed",
+            "dbpr_building_report_needs_verification",
+        },
+    )
 
     fields = [
         k
