@@ -195,17 +195,41 @@ def _rollup_master(master: Entity, group: list[Entity]) -> dict:
 
     stories_master = max(stories_seen) if stories_seen else None
 
-    chars.update({
-        "tiv_estimate_master": tiv_sum if have_any_tiv else None,
+    # Both _master and canonical keys get the rolled-up values, so
+    # downstream readers (cream_score, validation, the UI) see master
+    # truth without having to know about the _master suffix. The
+    # _master copies stick around for forensics.
+    rolled_units = units_master if units_master > 0 else None
+    rolled_tiv = tiv_sum if have_any_tiv else None
+    rolled_jv = jv_sum if have_any_jv else None
+
+    patch: dict = {
+        "tiv_estimate_master": rolled_tiv,
         "tiv_master_is_estimate": True,  # honest; Zillow phase replaces
-        "dor_market_value_master": jv_sum if have_any_jv else None,
-        "num_units_master": units_master if units_master > 0 else None,
+        "dor_market_value_master": rolled_jv,
+        "num_units_master": rolled_units,
         "stories_master": stories_master,
         "sibling_count": len(sibling_ids),
         "sibling_ids": sibling_ids[:500],  # cap stored list to keep JSON small
         "is_aggregation_master": True,
         "aggregated_at": datetime.now(timezone.utc).isoformat(),
-    })
+    }
+
+    # Promote to canonical keys when the rolled-up value is meaningful.
+    if rolled_tiv is not None and rolled_tiv > 0:
+        patch["tiv_estimate"] = rolled_tiv
+        patch["tiv"] = f"${rolled_tiv:,.0f}"
+        patch["tiv_is_estimate"] = True
+    if rolled_jv is not None and rolled_jv > 0:
+        patch["dor_market_value"] = rolled_jv
+    if rolled_units is not None and rolled_units > 0:
+        patch["dor_num_units"] = rolled_units
+        patch["units_estimate"] = rolled_units
+    if stories_master is not None and stories_master > 0:
+        patch["stories"] = stories_master
+        patch["stories_source"] = "aggregator"
+
+    chars.update(patch)
     return chars
 
 
@@ -281,6 +305,15 @@ def run_aggregator(db: Session, county: str | None = None) -> dict:
             source="aggregator",
         )
         db.add(ledger)
+
+        # Queue enrichment jobs for the new master — children skip.
+        try:
+            from services.job_queue import produce_jobs_for_entity
+            produce_jobs_for_entity(master.id, db)
+        except Exception as e:
+            logger.warning(
+                f"Failed to queue enrichment for master {master.id}: {e}"
+            )
 
         if masters_promoted % 500 == 0:
             db.commit()

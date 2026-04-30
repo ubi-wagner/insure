@@ -42,11 +42,21 @@ def register_enricher(source_id: str, requires: list[str] | None = None):
 
 
 def run_lead_enrichment(entity: Entity, db: Session) -> list[str]:
-    """Run all applicable enrichers on a LEAD.
+    """Run all applicable enrichers on a VETTED master.
 
-    Skips enrichers that have already run. Returns list of source_ids that ran.
+    Enrichment runs at the master level only — sibling parcels (those
+    with parent_id set) inherit nothing. The master's rolled-up TIV /
+    unit / story numbers are the source of truth for cream scoring.
+
+    Returns list of source_ids that ran.
     """
-    if entity.pipeline_stage not in ("LEAD", "OPPORTUNITY", "CUSTOMER"):
+    # Children skip enrichment entirely — only masters get analyzed.
+    if entity.parent_id is not None:
+        return []
+    if entity.pipeline_stage not in (
+        "VETTED", "ANALYZED", "VALIDATED",
+        "OPPORTUNITY", "CUSTOMER",
+    ):
         return []
 
     completed = []

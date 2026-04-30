@@ -124,12 +124,15 @@ def produce_jobs_for_entity(entity_id: int, db: Session) -> int:
 
 
 def produce_jobs_for_all_leads(db: Session) -> int:
-    """Backfill: create jobs for all LEADs missing enrichment.
+    """Backfill: create enrichment jobs for every VETTED master.
 
-    Called on startup or after a DB reset to catch up.
+    Enrichment runs at the VETTED-master level — siblings (parent_id
+    IS NOT NULL) are skipped because anything we'd want to learn about
+    them lives on the building, not the individual unit parcel.
     """
     leads = db.query(Entity).filter(
-        Entity.pipeline_stage == "LEAD",
+        Entity.pipeline_stage == "VETTED",
+        Entity.parent_id.is_(None),
         Entity.enrichment_status.in_(["idle", "error"]),
     ).all()
 
