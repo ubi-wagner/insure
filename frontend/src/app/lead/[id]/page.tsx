@@ -74,6 +74,7 @@ const HEAT_STYLES: Record<string, string> = {
 
 const STAGE_COLORS: Record<string, string> = {
   TARGET: "bg-gray-700", LEAD: "bg-cyan-900",
+  VETTED: "bg-teal-900", ANALYZED: "bg-indigo-900", VALIDATED: "bg-purple-900",
   OPPORTUNITY: "bg-blue-900", CUSTOMER: "bg-green-800", ARCHIVED: "bg-red-900",
 };
 
@@ -195,7 +196,10 @@ export default function LeadDetailPage() {
   }
 
   const chars = lead.characteristics || {};
-  const stages = ["TARGET", "LEAD", "OPPORTUNITY", "CUSTOMER", "ARCHIVED"];
+  const stages = [
+    "TARGET", "LEAD", "VETTED", "ANALYZED", "VALIDATED",
+    "OPPORTUNITY", "CUSTOMER", "ARCHIVED",
+  ];
   const isEngageReady = ["OPPORTUNITY", "CUSTOMER"].includes(lead.pipeline_stage);
   const tabs: { key: TabName; label: string; count?: number }[] = [
     { key: "overview", label: "Overview" },
@@ -273,9 +277,13 @@ export default function LeadDetailPage() {
             <p className="text-amber-300 text-xs">{stageError}</p>
             {canEdit && (
               <button onClick={() => {
-                const nextStage = lead.pipeline_stage === "TARGET" ? "LEAD" :
-                  lead.pipeline_stage === "LEAD" ? "OPPORTUNITY" :
-                  lead.pipeline_stage === "OPPORTUNITY" ? "CUSTOMER" : "";
+                const nextStage =
+                  lead.pipeline_stage === "TARGET"      ? "LEAD"        :
+                  lead.pipeline_stage === "LEAD"        ? "VETTED"      :
+                  lead.pipeline_stage === "VETTED"      ? "ANALYZED"    :
+                  lead.pipeline_stage === "ANALYZED"    ? "VALIDATED"   :
+                  lead.pipeline_stage === "VALIDATED"   ? "OPPORTUNITY" :
+                  lead.pipeline_stage === "OPPORTUNITY" ? "CUSTOMER"    : "";
                 if (nextStage) handleStageChange(nextStage, true);
               }}
                 className="bg-amber-800 hover:bg-amber-700 text-amber-200 text-xs px-2 py-1 rounded ml-3 shrink-0">

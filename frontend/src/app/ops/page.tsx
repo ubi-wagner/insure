@@ -370,7 +370,10 @@ export default function OpsCenter() {
               <div className="lg:col-span-1">
                 <h2 className="text-sm font-semibold text-gray-300 mb-2">Pipeline Totals</h2>
                 <div className="bg-gray-900 border border-gray-800 rounded-lg p-3 space-y-1.5">
-                  {(["TARGET", "LEAD", "OPPORTUNITY", "CUSTOMER", "ARCHIVED"] as const).map((stage) => (
+                  {([
+                    "TARGET", "LEAD", "VETTED", "ANALYZED", "VALIDATED",
+                    "OPPORTUNITY", "CUSTOMER", "ARCHIVED",
+                  ] as const).map((stage) => (
                     <div key={stage} className="flex items-center justify-between text-xs">
                       <span className={`${
                         stage === "LEAD" ? "text-cyan-400" :

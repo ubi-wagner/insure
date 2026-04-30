@@ -54,14 +54,20 @@ const HEAT_STYLES: Record<string, string> = {
 };
 
 const STAGE_COLORS: Record<string, string> = {
-  TARGET: "bg-gray-700 text-gray-200",
-  LEAD: "bg-cyan-900 text-cyan-200",
+  TARGET:      "bg-gray-700 text-gray-200",
+  LEAD:        "bg-cyan-900 text-cyan-200",
+  VETTED:      "bg-teal-900 text-teal-200",
+  ANALYZED:    "bg-indigo-900 text-indigo-200",
+  VALIDATED:   "bg-purple-900 text-purple-200",
   OPPORTUNITY: "bg-amber-900 text-amber-200",
-  CUSTOMER: "bg-green-900 text-green-200",
-  ARCHIVED: "bg-red-900 text-red-200",
+  CUSTOMER:    "bg-green-900 text-green-200",
+  ARCHIVED:    "bg-red-900 text-red-200",
 };
 
-const STAGES = ["TARGET", "LEAD", "OPPORTUNITY", "CUSTOMER", "ARCHIVED"];
+const STAGES = [
+  "TARGET", "LEAD", "VETTED", "ANALYZED", "VALIDATED",
+  "OPPORTUNITY", "CUSTOMER", "ARCHIVED",
+];
 
 type TabName = "overview" | "contacts" | "sources";
 

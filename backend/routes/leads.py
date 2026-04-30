@@ -403,7 +403,7 @@ def bulk_stage_change(req: BulkStageRequest, db: Session = Depends(get_db)):
 
     Can specify explicit entity_ids OR use filters to match entities.
     """
-    valid_stages = ["TARGET", "LEAD", "OPPORTUNITY", "CUSTOMER", "ARCHIVED"]
+    valid_stages = ["TARGET", "LEAD", "VETTED", "ANALYZED", "VALIDATED", "OPPORTUNITY", "CUSTOMER", "ARCHIVED"]
     if req.stage not in valid_stages:
         raise HTTPException(status_code=400, detail=f"Invalid stage. Must be one of: {valid_stages}")
 
@@ -650,7 +650,7 @@ class StageChangeRequest(BaseModel):
 
 @router.post("/api/leads/{entity_id}/stage")
 def change_stage(entity_id: int, req: StageChangeRequest, db: Session = Depends(get_db)):
-    valid_stages = ["TARGET", "LEAD", "OPPORTUNITY", "CUSTOMER", "ARCHIVED"]
+    valid_stages = ["TARGET", "LEAD", "VETTED", "ANALYZED", "VALIDATED", "OPPORTUNITY", "CUSTOMER", "ARCHIVED"]
     if req.stage not in valid_stages:
         raise HTTPException(status_code=400, detail=f"Invalid stage. Must be one of: {valid_stages}")
 
