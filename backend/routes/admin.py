@@ -170,6 +170,28 @@ def run_qualifier_endpoint(
     return run_qualifier(db, county=county)
 
 
+# ─── Aggregator (LEAD → VETTED) ─────────────────────────────────────────────
+
+
+@router.get("/api/admin/aggregator/last-run")
+def get_aggregator_last_run():
+    from agents.aggregator import get_last_run
+
+    return {"last_run": get_last_run()}
+
+
+@router.post("/api/admin/aggregator/run")
+def run_aggregator_endpoint(
+    county: str | None = Query(None, description="Optional county filter"),
+    db: Session = Depends(get_db),
+):
+    """Group LEAD parcels by (county, zip, street) and promote each
+    group to VETTED with one master + linked siblings."""
+    from agents.aggregator import run_aggregator
+
+    return run_aggregator(db, county=county)
+
+
 @router.post("/api/admin/download-cadastral")
 def download_cadastral():
     """Download commercial parcels from FL ArcGIS Cadastral FeatureServer.
