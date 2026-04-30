@@ -154,6 +154,13 @@ def list_leads(
     start = time.time()
     query = db.query(Entity)
 
+    # Hide aggregation siblings by default. Once the aggregator promotes
+    # a building to VETTED, its unit-parcel siblings carry parent_id ≠
+    # null and would otherwise blow up the pipeline list with 100s of
+    # rows per condo. The dedicated lead detail endpoint exposes the
+    # sibling list when the user wants to drill into a master.
+    query = query.filter(Entity.parent_id.is_(None))
+
     # Stage filter (SQL)
     if status_filter:
         query = query.filter(Entity.pipeline_stage == status_filter)
