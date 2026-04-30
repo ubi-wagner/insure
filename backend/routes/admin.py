@@ -5,6 +5,7 @@ import threading
 import sqlalchemy as sa
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from database import get_db, SessionLocal
@@ -129,6 +130,44 @@ def seed_all_counties(min_value: int = Query(None, description="Min market value
         "counties_seeded": len(results),
         "results": results,
     }
+
+
+# ─── Qualifier (TARGET → LEAD) ──────────────────────────────────────────────
+
+
+@router.get("/api/admin/qualifier/config")
+def get_qualifier_config_endpoint():
+    """Read the admin-configurable use-code allowlist + last-run stats."""
+    from agents.qualifier import get_last_run, get_qualifier_config
+
+    return {
+        "config": get_qualifier_config(),
+        "last_run": get_last_run(),
+    }
+
+
+class QualifierConfigRequest(BaseModel):
+    use_codes: list[str]
+
+
+@router.post("/api/admin/qualifier/config")
+def save_qualifier_config_endpoint(req: QualifierConfigRequest):
+    """Persist a new use-code allowlist for the qualifier."""
+    from agents.qualifier import save_qualifier_config
+
+    cfg = save_qualifier_config(req.use_codes, updated_by="admin")
+    return {"success": True, "config": cfg}
+
+
+@router.post("/api/admin/qualifier/run")
+def run_qualifier_endpoint(
+    county: str | None = Query(None, description="Optional county filter"),
+    db: Session = Depends(get_db),
+):
+    """Promote every matching TARGET to LEAD using the current allowlist."""
+    from agents.qualifier import run_qualifier
+
+    return run_qualifier(db, county=county)
 
 
 @router.post("/api/admin/download-cadastral")
