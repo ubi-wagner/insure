@@ -93,9 +93,10 @@ export default function OpsCenter() {
   // Actions
   const [seeding, setSeeding] = useState<string | null>(null);
   const [actionMsg, setActionMsg] = useState<string | null>(null);
-  const [seedMinValue, setSeedMinValue] = useState("2000000");
   const [confirmReset, setConfirmReset] = useState(false);
   const [resetting, setResetting] = useState(false);
+  const [qualifierRunning, setQualifierRunning] = useState(false);
+  const [aggregatorRunning, setAggregatorRunning] = useState(false);
 
   // Query (moved to /admin/query page)
 
@@ -137,11 +138,10 @@ export default function OpsCenter() {
     setSeeding(countyNo);
     setActionMsg(null);
     try {
-      const params = seedMinValue ? `?min_value=${seedMinValue}` : "";
-      const res = await fetch(`/api/proxy/admin/seed-county/${countyNo}${params}`, { method: "POST" });
+      const res = await fetch(`/api/proxy/admin/seed-county/${countyNo}`, { method: "POST" });
       const d = await res.json().catch(() => ({ error: res.statusText }));
       if (d.error) setActionMsg(`Error: ${d.error}`);
-      else setActionMsg(`${d.county}: ${d.created?.toLocaleString()} created from ${d.filtered?.toLocaleString()} filtered (${d.type_passed?.toLocaleString()} type-matched / ${d.total_parcels?.toLocaleString()} parcels)`);
+      else setActionMsg(`${d.county}: ${d.created?.toLocaleString() ?? 0} TARGETs created from ${d.total_parcels?.toLocaleString() ?? 0} NAL rows`);
       fetchDashboard();
     } catch (err) { setActionMsg(`Error: ${err}`); }
     setSeeding(null);
@@ -151,13 +151,12 @@ export default function OpsCenter() {
     setSeeding("all");
     setActionMsg(null);
     try {
-      const params = seedMinValue ? `?min_value=${seedMinValue}` : "";
-      const res = await fetch(`/api/proxy/admin/seed-all${params}`, { method: "POST" });
+      const res = await fetch(`/api/proxy/admin/seed-all`, { method: "POST" });
       const d = await res.json().catch(() => ({ error: res.statusText }));
       if (d.error) setActionMsg(`Error: ${JSON.stringify(d.error)}`);
       else {
         const total = d.results?.reduce((s: number, r: { created?: number }) => s + (r.created ?? 0), 0) ?? 0;
-        setActionMsg(`Seeded ${total.toLocaleString()} entities across ${d.results?.length ?? 0} counties`);
+        setActionMsg(`Seeded ${total.toLocaleString()} TARGETs across ${d.results?.length ?? 0} counties`);
       }
       fetchDashboard();
     } catch (err) { setActionMsg(`Error: ${err}`); }
@@ -177,82 +176,43 @@ export default function OpsCenter() {
     setConfirmReset(false);
   }
 
-  async function refreshData() {
+  async function runQualifier() {
+    setQualifierRunning(true);
     setActionMsg(null);
     try {
-      const res = await fetch("/api/proxy/admin/refresh-data", { method: "POST" });
-      const d = await res.json().catch(() => ({ error: res.statusText }));
-      setActionMsg(d.message ?? "Data refresh started");
-    } catch (err) { setActionMsg(`Error: ${err}`); }
-  }
-
-  async function downloadSunbiz() {
-    setActionMsg(null);
-    try {
-      const res = await fetch("/api/proxy/admin/download-sunbiz", { method: "POST" });
-      const d = await res.json().catch(() => ({ error: res.statusText }));
-      setActionMsg(d.message ?? d.error ?? "Sunbiz download started");
-    } catch (err) { setActionMsg(`Error: ${err}`); }
-  }
-
-  const [recalibrating, setRecalibrating] = useState(false);
-  const [confirmRecalibrate, setConfirmRecalibrate] = useState(false);
-  async function recalibrateAll() {
-    setRecalibrating(true);
-    setActionMsg(null);
-    try {
-      const res = await fetch("/api/proxy/admin/recalibrate-all", { method: "POST" });
+      const res = await fetch("/api/proxy/admin/qualifier/run", { method: "POST" });
       const d = await res.json().catch(() => ({ error: res.statusText }));
       if (d.error) {
         setActionMsg(`Error: ${d.error}`);
       } else {
-        // New shape: d.totals = { fields_patched, sources_cleared, jobs_requeued }
-        const t = d.totals ?? {};
-        const p2 = d.phase_2_requeue ?? {};
-        const fields = t.fields_patched ?? 0;
-        const totalRequeued = t.jobs_requeued ?? 0;
-        const totalCleared = t.sources_cleared ?? 0;
-        const enricherCount = Object.keys(p2).length;
         setActionMsg(
-          `Recalibrated: patched ${fields.toLocaleString()} fields, ` +
-          `cleared ${totalCleared.toLocaleString()} enrichment entries, ` +
-          `requeued ${totalRequeued.toLocaleString()} jobs across ${enricherCount} enrichers`
+          `Qualifier: ${d.promoted?.toLocaleString() ?? 0} TARGETs → LEAD ` +
+          `(${d.scanned?.toLocaleString() ?? 0} scanned, ${d.duration_sec ?? 0}s)`
         );
       }
       fetchDashboard();
     } catch (err) { setActionMsg(`Error: ${err}`); }
-    setRecalibrating(false);
-    setConfirmRecalibrate(false);
+    setQualifierRunning(false);
   }
 
-  async function queueBackfill() {
+  async function runAggregator() {
+    setAggregatorRunning(true);
     setActionMsg(null);
     try {
-      const res = await fetch("/api/proxy/admin/queue/backfill", { method: "POST" });
+      const res = await fetch("/api/proxy/admin/aggregator/run", { method: "POST" });
       const d = await res.json().catch(() => ({ error: res.statusText }));
-      setActionMsg(d.error ? `Error: ${d.error}` : `Backfilled ${d.jobs_created} jobs`);
+      if (d.error) {
+        setActionMsg(`Error: ${d.error}`);
+      } else {
+        setActionMsg(
+          `Aggregator: ${d.masters_promoted?.toLocaleString() ?? 0} masters, ` +
+          `${d.siblings_linked?.toLocaleString() ?? 0} siblings linked, ` +
+          `${d.singletons?.toLocaleString() ?? 0} singletons (${d.duration_sec ?? 0}s)`
+        );
+      }
       fetchDashboard();
     } catch (err) { setActionMsg(`Error: ${err}`); }
-  }
-
-  async function queueRetryAll() {
-    setActionMsg(null);
-    try {
-      const res = await fetch("/api/proxy/admin/queue/retry-all", { method: "POST" });
-      const d = await res.json().catch(() => ({ error: res.statusText }));
-      setActionMsg(d.error ? `Error: ${d.error}` : `Retried ${d.retried} failed jobs`);
-      fetchDashboard();
-    } catch (err) { setActionMsg(`Error: ${err}`); }
-  }
-
-  async function queuePurgeRejected() {
-    setActionMsg(null);
-    try {
-      const res = await fetch("/api/proxy/admin/queue/purge-rejected", { method: "POST" });
-      const d = await res.json().catch(() => ({ error: res.statusText }));
-      setActionMsg(d.error ? `Error: ${d.error}` : `Purged ${d.purged} rejected jobs`);
-      fetchDashboard();
-    } catch (err) { setActionMsg(`Error: ${err}`); }
+    setAggregatorRunning(false);
   }
 
   /* ── Helpers ── */
@@ -290,47 +250,23 @@ export default function OpsCenter() {
 
       <div className="px-4 md:px-6 py-4 space-y-6">
 
-        {/* ── Action bar (admin only) ── */}
+        {/* ── Pipeline action bar (admin only) ──
+            Three deterministic gated transitions — Seed (NAL → TARGET),
+            Qualify (TARGET → LEAD), Aggregate (LEAD → VETTED) — plus
+            Reset DB. Each transition is idempotent and re-runnable. */}
         {isAdmin && <div className="flex flex-wrap items-center gap-2">
-          <div className="flex items-center gap-1.5 bg-gray-900 border border-gray-700 rounded px-2 py-1">
-            <label className="text-[10px] text-gray-500 shrink-0">Min $</label>
-            <select value={seedMinValue} onChange={(e) => setSeedMinValue(e.target.value)}
-              className="bg-transparent text-white text-xs focus:outline-none">
-              <option value="0">No min</option>
-              <option value="1000000">$1M</option>
-              <option value="2000000">$2M</option>
-              <option value="3000000">$3M</option>
-              <option value="5000000">$5M</option>
-              <option value="10000000">$10M</option>
-            </select>
-          </div>
           <button onClick={seedAll} disabled={seeding !== null}
             className="bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white text-xs px-4 py-2 rounded font-medium">
-            {seeding === "all" ? "Seeding..." : "Seed All Counties"}
+            {seeding === "all" ? "Seeding..." : "1. Seed All Counties"}
           </button>
-          <button onClick={refreshData}
-            className="bg-emerald-700 hover:bg-emerald-600 text-white text-xs px-3 py-2 rounded font-medium">
-            Refresh Data Sources
+          <button onClick={runQualifier} disabled={qualifierRunning}
+            className="bg-cyan-700 hover:bg-cyan-600 disabled:opacity-50 text-white text-xs px-4 py-2 rounded font-medium">
+            {qualifierRunning ? "Qualifying..." : "2. Qualify (TARGET → LEAD)"}
           </button>
-          <button onClick={downloadSunbiz}
-            className="bg-indigo-700 hover:bg-indigo-600 text-white text-xs px-3 py-2 rounded font-medium">
-            Pull Sunbiz
+          <button onClick={runAggregator} disabled={aggregatorRunning}
+            className="bg-teal-700 hover:bg-teal-600 disabled:opacity-50 text-white text-xs px-4 py-2 rounded font-medium">
+            {aggregatorRunning ? "Aggregating..." : "3. Aggregate (LEAD → VETTED)"}
           </button>
-          {!confirmRecalibrate ? (
-            <button onClick={() => setConfirmRecalibrate(true)} disabled={recalibrating}
-              className="bg-purple-700 hover:bg-purple-600 disabled:opacity-50 text-white text-xs px-3 py-2 rounded font-medium">
-              Recalibrate All
-            </button>
-          ) : (
-            <div className="flex items-center gap-1.5 bg-purple-950 border border-purple-700 rounded px-3 py-1.5">
-              <span className="text-purple-300 text-xs">Re-run all enrichers?</span>
-              <button onClick={recalibrateAll} disabled={recalibrating}
-                className="bg-purple-600 hover:bg-purple-500 text-white text-[11px] px-2.5 py-1 rounded font-medium">
-                {recalibrating ? "..." : "Yes"}
-              </button>
-              <button onClick={() => setConfirmRecalibrate(false)} className="text-gray-400 text-[11px] px-2 py-1">No</button>
-            </div>
-          )}
           {!confirmReset ? (
             <button onClick={() => setConfirmReset(true)}
               className="bg-red-900/50 hover:bg-red-900 border border-red-800 text-red-300 text-xs px-3 py-2 rounded ml-auto">
@@ -346,9 +282,7 @@ export default function OpsCenter() {
               <button onClick={() => setConfirmReset(false)} className="text-gray-400 text-[11px] px-2 py-1">No</button>
             </div>
           )}
-        </div>
-
-        }
+        </div>}
 
         {actionMsg && (
           <div className={`text-xs px-4 py-2 rounded ${
@@ -448,20 +382,6 @@ export default function OpsCenter() {
                   ({fmtNum(data.queue.total_jobs)} total)
                 </span>
               </h2>
-              {isAdmin && <div className="flex gap-2">
-                <button onClick={queueBackfill}
-                  className="bg-gray-800 hover:bg-gray-700 text-gray-400 text-[10px] px-2.5 py-1.5 rounded">
-                  Backfill
-                </button>
-                <button onClick={queueRetryAll}
-                  className="bg-amber-900/50 hover:bg-amber-900 text-amber-300 text-[10px] px-2.5 py-1.5 rounded border border-amber-800">
-                  Retry Failed
-                </button>
-                <button onClick={queuePurgeRejected}
-                  className="bg-red-900/50 hover:bg-red-900 text-red-300 text-[10px] px-2.5 py-1.5 rounded border border-red-800">
-                  Purge Rejected
-                </button>
-              </div>}
             </div>
 
             {/* Status summary bar */}
