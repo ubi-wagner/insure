@@ -405,7 +405,10 @@ def trigger_bulk_enrich():
 def get_enrich_status(db: Session = Depends(get_db)):
     """Get enrichment coverage stats."""
     total_leads = db.query(Entity).filter(
-        Entity.pipeline_stage.in_(["TARGET", "LEAD", "OPPORTUNITY", "CUSTOMER"])
+        Entity.pipeline_stage.in_([
+            "TARGET", "LEAD", "VETTED", "ANALYZED", "VALIDATED",
+            "OPPORTUNITY", "CUSTOMER",
+        ])
     ).count()
 
     # Count leads with each enrichment source
@@ -438,7 +441,7 @@ def get_enrich_status(db: Session = Depends(get_db)):
 
     # Pipeline stage counts
     stage_counts = {}
-    for stage in ["TARGET", "LEAD", "OPPORTUNITY", "CUSTOMER", "ARCHIVED"]:
+    for stage in ["TARGET", "LEAD", "VETTED", "ANALYZED", "VALIDATED", "OPPORTUNITY", "CUSTOMER", "ARCHIVED"]:
         stage_counts[stage] = db.query(Entity).filter(Entity.pipeline_stage == stage).count()
 
     return {
@@ -483,7 +486,7 @@ def ops_dashboard(db: Session = Depends(get_db)):
 
     # Global stage counts (for the headline number)
     stage_counts = {}
-    for stage in ["TARGET", "LEAD", "OPPORTUNITY", "CUSTOMER", "ARCHIVED"]:
+    for stage in ["TARGET", "LEAD", "VETTED", "ANALYZED", "VALIDATED", "OPPORTUNITY", "CUSTOMER", "ARCHIVED"]:
         stage_counts[stage] = db.query(Entity).filter(Entity.pipeline_stage == stage).count()
     total_active = sum(v for k, v in stage_counts.items() if k != "ARCHIVED")
 

@@ -261,14 +261,47 @@ export default function LeadDetailPage() {
           </div>
         </div>
         {(lead.children?.length ?? 0) > 0 && (
-          <div className="mt-2 flex gap-2 items-center">
-            <span className="text-gray-500 text-xs">Sub-entities:</span>
-            {(lead.children || []).map((ch) => (
-              <Link key={ch.id} href={`/lead/${ch.id}`}
-                className="bg-gray-800 text-gray-300 hover:text-white text-xs px-2 py-1 rounded">
-                {ch.name}
-              </Link>
-            ))}
+          <details className="mt-2 bg-gray-900/40 border border-gray-800 rounded">
+            <summary className="cursor-pointer px-3 py-2 text-xs text-gray-300 hover:bg-gray-900/70 list-none flex items-center justify-between">
+              <span>
+                <span className="text-teal-400 font-semibold">VETTED master</span>
+                <span className="text-gray-500"> — {lead.children?.length ?? 0} linked unit parcel{(lead.children?.length ?? 0) === 1 ? "" : "s"}</span>
+              </span>
+              <span className="text-gray-600 text-[10px]">click to expand</span>
+            </summary>
+            <div className="border-t border-gray-800 max-h-[40vh] overflow-y-auto">
+              <table className="w-full text-[11px]">
+                <thead className="sticky top-0 bg-gray-900">
+                  <tr className="border-b border-gray-800 text-gray-500">
+                    <th className="text-left px-3 py-1.5">Parcel</th>
+                    <th className="text-left px-2 py-1.5">Address</th>
+                    <th className="text-left px-2 py-1.5">Stage</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(lead.children || []).map((ch) => (
+                    <tr key={ch.id} className="border-b border-gray-800/50 hover:bg-gray-800/30">
+                      <td className="px-3 py-1">
+                        <Link href={`/lead/${ch.id}`}
+                          className="text-blue-400 hover:text-blue-300 font-mono">
+                          #{ch.id}
+                        </Link>
+                      </td>
+                      <td className="px-2 py-1 text-gray-400 truncate max-w-[420px]">{ch.name || ch.address}</td>
+                      <td className="px-2 py-1 text-gray-600">{ch.pipeline_stage}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </details>
+        )}
+        {lead.parent_id != null && (
+          <div className="mt-2 bg-gray-900/40 border border-gray-800 rounded px-3 py-2 text-xs text-gray-400">
+            Linked unit parcel under{" "}
+            <Link href={`/lead/${lead.parent_id}`} className="text-blue-400 hover:text-blue-300 font-medium">
+              master #{lead.parent_id}
+            </Link>
           </div>
         )}
         {/* Stage error / readiness warning */}

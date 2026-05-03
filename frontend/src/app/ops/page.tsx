@@ -310,10 +310,14 @@ export default function OpsCenter() {
                   ] as const).map((stage) => (
                     <div key={stage} className="flex items-center justify-between text-xs">
                       <span className={`${
-                        stage === "LEAD" ? "text-cyan-400" :
-                        stage === "OPPORTUNITY" ? "text-amber-400" :
-                        stage === "CUSTOMER" ? "text-green-400" :
-                        stage === "ARCHIVED" ? "text-red-400" : "text-gray-400"
+                        stage === "LEAD"        ? "text-cyan-400"   :
+                        stage === "VETTED"      ? "text-teal-400"   :
+                        stage === "ANALYZED"    ? "text-indigo-400" :
+                        stage === "VALIDATED"   ? "text-purple-400" :
+                        stage === "OPPORTUNITY" ? "text-amber-400"  :
+                        stage === "CUSTOMER"    ? "text-green-400"  :
+                        stage === "ARCHIVED"    ? "text-red-400"    :
+                        "text-gray-400"
                       }`}>{stage}</span>
                       <Link href={pipelineLink("", stage === "ARCHIVED" ? "" : stage)}
                         className="font-mono text-white hover:text-blue-300">

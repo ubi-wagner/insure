@@ -607,6 +607,40 @@ export default function EntityDetailModal({
               <span className="text-gray-600">confirmed</span>
             </div>
 
+            {/* Aggregation — only meaningful when this is a VETTED master
+                or a sibling under one. Shows a simple count + drill-down. */}
+            {(lead.children.length > 0 || lead.parent_id != null) && (
+              <div className="bg-teal-950/30 border border-teal-900 rounded p-3 mb-3">
+                {lead.children.length > 0 && (
+                  <details>
+                    <summary className="cursor-pointer flex items-center gap-2 text-xs">
+                      <span className="text-teal-300 font-semibold">VETTED master</span>
+                      <span className="text-gray-400">{lead.children.length} linked unit parcel{lead.children.length === 1 ? "" : "s"}</span>
+                      <span className="text-gray-600 text-[10px] ml-auto">click to expand</span>
+                    </summary>
+                    <div className="mt-2 max-h-56 overflow-y-auto border-t border-teal-900/60 pt-2">
+                      <ul className="space-y-0.5 text-[11px]">
+                        {lead.children.slice(0, 200).map((ch) => (
+                          <li key={ch.id} className="flex items-center justify-between gap-2">
+                            <span className="text-gray-400 truncate">{ch.name || ch.address}</span>
+                            <span className="text-gray-600 font-mono shrink-0">#{ch.id}</span>
+                          </li>
+                        ))}
+                        {lead.children.length > 200 && (
+                          <li className="text-gray-600 italic">… and {lead.children.length - 200} more</li>
+                        )}
+                      </ul>
+                    </div>
+                  </details>
+                )}
+                {lead.parent_id != null && (
+                  <p className="text-xs text-gray-400">
+                    Linked unit parcel under master <span className="text-blue-400 font-mono">#{lead.parent_id}</span>
+                  </p>
+                )}
+              </div>
+            )}
+
             {/* Building Profile */}
             <DataSection title="Building Profile">
               <DataRow field="construction_class" label="Construction" value={chars.construction_class ?? chars.dor_construction_class} />
