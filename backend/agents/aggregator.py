@@ -3,15 +3,16 @@ Aggregator — LEAD → VETTED transition.
 
 Groups LEAD-stage entities by (county, zip5, normalized street address)
 and consolidates each group into one master + N linked siblings via
-Entity.parent_id. The master record carries summed TIV, max(unit_count),
-and max(stories) across its siblings; siblings stay as references for
-audit / contact discovery / per-unit sale history but are hidden from
-the main pipeline list (filtered by parent_id IS NULL).
+Entity.parent_id. The master carries summed TIV, max(unit_count), and
+max(stories); siblings stay as references for audit / contact
+discovery / per-unit sale history but are hidden from the main
+pipeline list (filtered by parent_id IS NULL).
 
-This is pure deterministic Python over already-ingested data — no
-network, no AI, no enrichers. Safe to re-run; idempotent.
+Pure deterministic Python over already-ingested data — no network,
+no AI, no enrichers. Safe to re-run; idempotent.
 
-Aggregation key:
+Aggregation key (cross-county collisions impossible because county
+is the first key element):
     county, normalized_zip5, normalized_street_address
 
 Master selection rule (in priority order):
@@ -19,11 +20,18 @@ Master selection rule (in priority order):
     2. Otherwise the row with the lowest id (first ingested wins)
 
 Roll-up rules per master:
-    - tiv_estimate_master = sum(siblings.tiv_estimate or 0)
-    - dor_market_value_master = sum(siblings.dor_market_value or 0)
+    - tiv_estimate_master = sum(group.tiv_estimate or 0)
+    - dor_market_value_master = sum(group.dor_market_value or 0)
     - num_units_master = max(NAL master.num_units, count(siblings))
     - stories_master = max over siblings (biggest number wins)
     - sibling_count, sibling_ids stored on master.characteristics
+
+Implementation note: runs strictly county-by-county. Each county
+loads its own LEAD set (bounded by county size, typically tens of
+thousands of rows) so RAM stays flat. Per-group sibling updates use
+one bulk UPDATE statement instead of one ORM update per sibling.
+Per-master enrichment queueing is deferred to the end of the run
+and done in a single pass.
 """
 
 from __future__ import annotations
@@ -35,11 +43,10 @@ import re
 from collections import defaultdict
 from datetime import datetime, timezone
 
-from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from database import SessionLocal
-from database.models import Entity, LeadLedger
+from database.models import Entity
 from services.event_bus import EventStatus, EventType, emit
 
 logger = logging.getLogger(__name__)
@@ -238,106 +245,203 @@ def _rollup_master(master: Entity, group: list[Entity]) -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def run_aggregator(db: Session, county: str | None = None) -> dict:
-    """Group LEADs by (county, zip5, street) and promote to VETTED.
-
-    For every group:
-      - select a master (is_condo_master flag, else lowest id)
-      - set parent_id on siblings to master.id
-      - update master.characteristics with rolled-up totals
-      - advance master AND siblings to pipeline_stage = "VETTED"
-
-    Re-runnable. Existing VETTED rows are skipped. Records that have
-    already been linked under a parent are skipped.
-    """
-    from services import pipeline_state
-
-    pipeline_state.mark_started(
-        "aggregator",
-        summary=f"Aggregating LEADs"
-        + (f" in {county}" if county else " in all counties"),
+def _list_counties_with_leads(db: Session) -> list[str]:
+    """Distinct county names that currently hold un-linked LEADs."""
+    rows = (
+        db.query(Entity.county)
+        .filter(Entity.pipeline_stage == "LEAD")
+        .filter(Entity.parent_id.is_(None))
+        .filter(Entity.county.isnot(None))
+        .distinct()
+        .all()
     )
+    return sorted(r[0] for r in rows if r[0])
 
-    started = datetime.now(timezone.utc)
-    emit(EventType.HUNTER, "aggregator_start", EventStatus.PENDING,
-         detail=f"Aggregating LEAD → VETTED"
-                + (f" for {county}" if county else ""))
 
-    q = (
+def _aggregate_one_county(db: Session, county_name: str) -> dict:
+    """Run the LEAD → VETTED transition for a single county.
+
+    Loads only that county's LEAD set, groups by (zip5, normalized
+    street), and writes the result back via bulk SQL. Cross-county
+    collisions are impossible because the load is county-filtered.
+    """
+    candidates = (
         db.query(Entity)
         .filter(Entity.pipeline_stage == "LEAD")
         .filter(Entity.parent_id.is_(None))
+        .filter(Entity.county == county_name)
+        .all()
     )
-    if county:
-        q = q.filter(Entity.county == county)
 
-    candidates = q.all()
-    groups: dict[tuple[str, str, str], list[Entity]] = defaultdict(list)
+    groups: dict[tuple[str, str], list[Entity]] = defaultdict(list)
     skipped_no_address = 0
 
     for e in candidates:
-        key = _aggregation_key(e)
-        if not key[2]:  # no street → can't aggregate, leave as LEAD
+        zip5 = _entity_zip(e)
+        street = _entity_street(e)
+        if not street:
             skipped_no_address += 1
             continue
-        groups[key].append(e)
+        groups[(zip5, street)].append(e)
 
     masters_promoted = 0
     siblings_linked = 0
-    singletons = 0  # one-LEAD groups still get promoted to VETTED master
+    singletons = 0
+    new_master_ids: list[int] = []
 
-    for key, group in groups.items():
+    for (zip5, street), group in groups.items():
         master = _select_master(group)
-        # Roll up totals onto master.characteristics
         master.characteristics = _rollup_master(master, group)
         master.pipeline_stage = "VETTED"
+        new_master_ids.append(master.id)
         masters_promoted += 1
         if len(group) == 1:
             singletons += 1
+            continue
 
-        for sibling in group:
-            if sibling.id == master.id:
-                continue
-            sibling.parent_id = master.id
-            sibling.pipeline_stage = "VETTED"
-            siblings_linked += 1
-
-        ledger = LeadLedger(
-            entity_id=master.id,
-            action_type="STAGE_CHANGE",
-            detail=(
-                f"LEAD → VETTED via aggregator: {len(group)} parcel"
-                f"{'s' if len(group) != 1 else ''} at "
-                f"{key[2]} ({key[1]} {key[0]})"
-            ),
-            source="aggregator",
-        )
-        db.add(ledger)
-
-        # Queue enrichment jobs for the new master — children skip.
-        try:
-            from services.job_queue import produce_jobs_for_entity
-            produce_jobs_for_entity(master.id, db)
-        except Exception as e:
-            logger.warning(
-                f"Failed to queue enrichment for master {master.id}: {e}"
+        sibling_ids = [e.id for e in group if e.id != master.id]
+        # One bulk UPDATE per group instead of one ORM update per
+        # sibling. synchronize_session=False because we don't reuse
+        # these objects after the update — we only commit.
+        if sibling_ids:
+            db.query(Entity).filter(Entity.id.in_(sibling_ids)).update(
+                {
+                    "parent_id": master.id,
+                    "pipeline_stage": "VETTED",
+                },
+                synchronize_session=False,
             )
-
-        if masters_promoted % 500 == 0:
-            db.commit()
+            siblings_linked += len(sibling_ids)
 
     db.commit()
+    db.expunge_all()
 
-    finished = datetime.now(timezone.utc)
-    duration = (finished - started).total_seconds()
-
-    result = {
+    return {
+        "county": county_name,
         "scanned_leads": len(candidates),
         "groups_formed": len(groups),
         "masters_promoted": masters_promoted,
         "siblings_linked": siblings_linked,
         "singletons": singletons,
         "skipped_no_address": skipped_no_address,
+        "new_master_ids": new_master_ids,
+    }
+
+
+def run_aggregator(db: Session, county: str | None = None) -> dict:
+    """Group LEADs by (county, zip5, street) and promote to VETTED.
+
+    Strictly county-by-county. Each county is its own load + group +
+    bulk-update + commit cycle so RAM stays bounded and per-county
+    progress shows up live in the ops dashboard. Cross-county
+    collisions are impossible because each loop iteration only sees
+    one county's rows.
+
+    Master selection per group:
+      1. is_condo_master flag if any row carries it (the DOR
+         common-elements parcel)
+      2. Otherwise the lowest-id row wins (first ingested)
+
+    Master roll-up onto master.characteristics:
+      tiv_estimate_master       sum(group.tiv_estimate)
+      dor_market_value_master   sum(group.dor_market_value)
+      num_units_master          max(NAL master count, sibling count, group size)
+      stories_master            max across siblings (biggest number wins)
+      sibling_count, sibling_ids[] for the UI's "linked parcels" list
+
+    Idempotent: re-running skips already-VETTED rows and any LEAD
+    that already has parent_id set.
+    """
+    from services import pipeline_state
+
+    if county:
+        counties = [county]
+    else:
+        counties = _list_counties_with_leads(db)
+
+    pipeline_state.mark_started(
+        "aggregator",
+        summary=f"Aggregating LEADs in {len(counties)} "
+                f"{'counties' if len(counties) != 1 else 'county'}",
+    )
+
+    started = datetime.now(timezone.utc)
+    emit(EventType.HUNTER, "aggregator_start", EventStatus.PENDING,
+         detail=f"Aggregating LEAD → VETTED across {len(counties)} counties")
+
+    per_county: list[dict] = []
+    total_masters = 0
+    total_siblings = 0
+    total_singletons = 0
+    total_scanned = 0
+    total_skipped = 0
+    all_new_master_ids: list[int] = []
+
+    for idx, c in enumerate(counties, start=1):
+        pipeline_state.mark_progress(
+            "aggregator",
+            current=f"({idx}/{len(counties)}) {c}",
+            details={
+                "completed_counties": [r["county"] for r in per_county],
+                "total_masters_promoted": total_masters,
+                "total_siblings_linked": total_siblings,
+            },
+        )
+
+        try:
+            r = _aggregate_one_county(db, c)
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Aggregator failed for {c}: {e}")
+            r = {
+                "county": c, "error": str(e),
+                "scanned_leads": 0, "groups_formed": 0,
+                "masters_promoted": 0, "siblings_linked": 0,
+                "singletons": 0, "skipped_no_address": 0,
+                "new_master_ids": [],
+            }
+
+        per_county.append({k: v for k, v in r.items() if k != "new_master_ids"})
+        total_masters += r["masters_promoted"]
+        total_siblings += r["siblings_linked"]
+        total_singletons += r["singletons"]
+        total_scanned += r["scanned_leads"]
+        total_skipped += r["skipped_no_address"]
+        all_new_master_ids.extend(r["new_master_ids"])
+
+        emit(EventType.HUNTER, "aggregator_county", EventStatus.SUCCESS,
+             detail=(f"Aggregator {c}: {r['masters_promoted']:,} masters, "
+                     f"{r['siblings_linked']:,} siblings"))
+
+    # Defer enrichment queueing until after every county is done.
+    # Doing this once at the end (instead of per-master inside the
+    # group loop) means we run produce_jobs_for_entity in one pass
+    # rather than one call per master.
+    queued = 0
+    if all_new_master_ids:
+        try:
+            from services.job_queue import produce_jobs_for_entity
+            for mid in all_new_master_ids:
+                try:
+                    produce_jobs_for_entity(mid, db)
+                    queued += 1
+                except Exception as e:
+                    logger.warning(f"Failed to queue enrichment for master {mid}: {e}")
+        except Exception as e:
+            logger.warning(f"Failed to import job_queue: {e}")
+
+    finished = datetime.now(timezone.utc)
+    duration = (finished - started).total_seconds()
+
+    result = {
+        "scanned_leads": total_scanned,
+        "masters_promoted": total_masters,
+        "siblings_linked": total_siblings,
+        "singletons": total_singletons,
+        "skipped_no_address": total_skipped,
+        "counties_processed": len(counties),
+        "per_county": per_county,
+        "enrichment_jobs_queued": queued,
         "county_filter": county,
         "duration_sec": round(duration, 1),
         "started_at": started.isoformat(),
@@ -348,8 +452,8 @@ def run_aggregator(db: Session, county: str | None = None) -> dict:
     pipeline_state.mark_finished(
         "aggregator",
         summary=(
-            f"{masters_promoted:,} VETTED masters "
-            f"({siblings_linked:,} siblings, {singletons:,} singletons, "
+            f"{total_masters:,} VETTED masters across {len(counties)} counties "
+            f"({total_siblings:,} siblings, {total_singletons:,} singletons, "
             f"{duration:.1f}s)"
         ),
         details=result,
@@ -357,9 +461,8 @@ def run_aggregator(db: Session, county: str | None = None) -> dict:
 
     emit(EventType.HUNTER, "aggregator_done", EventStatus.SUCCESS,
          detail=(
-             f"Aggregator: {masters_promoted:,} masters "
-             f"({siblings_linked:,} siblings linked, "
-             f"{singletons:,} singletons) in {duration:.1f}s"
+             f"Aggregator: {total_masters:,} masters across {len(counties)} "
+             f"counties in {duration:.1f}s"
          ))
     logger.info(f"Aggregator: {result}")
     return result

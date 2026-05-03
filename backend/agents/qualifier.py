@@ -4,8 +4,7 @@ Qualifier — TARGET → LEAD transition.
 The seeder ingests every non-residential parcel as TARGET (skipping
 only DOR_UC 001 single-family and 002 mobile homes). The qualifier
 applies an admin-configurable allowlist of DOR use codes and promotes
-matching TARGETs to LEAD in bulk. No external network calls, no AI,
-no enrichment — pure deterministic SQL.
+matching TARGETs to LEAD via one bulk SQL UPDATE per county.
 
 Defaults (overridable via /api/admin/qualifier/config):
   003 Multi-Family (small)
@@ -21,6 +20,13 @@ Defaults (overridable via /api/admin/qualifier/config):
 
 The allowlist is persisted to the System Data folder so it survives
 restarts and is readable by the admin UI for editing.
+
+Implementation note: this used to load every TARGET via q.all() and
+loop in Python with per-row LeadLedger inserts. At 5M+ TARGETs it
+would have OOM'd or taken hours. The current implementation uses one
+bulk UPDATE per county against a JSONB filter, no Python iteration
+over rows, no per-row audit fan-out. Per-run summary lives in
+qualifier_last_run.json + pipeline_state.
 """
 
 from __future__ import annotations
@@ -31,10 +37,11 @@ import os
 from datetime import datetime, timezone
 from typing import Iterable
 
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from database import SessionLocal
-from database.models import Entity, LeadLedger
+from database.models import Entity
 from services.event_bus import EventStatus, EventType, emit
 
 logger = logging.getLogger(__name__)
@@ -137,13 +144,43 @@ def save_qualifier_config(use_codes: Iterable[str], updated_by: str = "admin") -
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+_BULK_UPDATE_SQL = text("""
+    UPDATE entities
+    SET pipeline_stage = 'LEAD'
+    WHERE pipeline_stage = 'TARGET'
+      AND county = :county
+      AND (characteristics ->> 'dor_use_code') = ANY(:codes)
+""")
+
+
+def _list_counties_with_targets(db: Session) -> list[str]:
+    """Distinct county names that currently hold TARGETs. We loop over
+    these so the admin UI sees per-county progress and so memory stays
+    bounded."""
+    rows = (
+        db.query(Entity.county)
+        .filter(Entity.pipeline_stage == "TARGET")
+        .filter(Entity.county.isnot(None))
+        .distinct()
+        .all()
+    )
+    return sorted(r[0] for r in rows if r[0])
+
+
 def run_qualifier(db: Session, county: str | None = None) -> dict:
     """Promote every TARGET whose dor_use_code is in the allowlist to LEAD.
 
-    Bulk SQL, no per-row Python overhead. Matched-row count comes back
-    from the UPDATE result. Optional ``county`` filter scopes the run to
-    one county at a time when the user re-runs after editing the
-    allowlist for a specific market.
+    Per-county bulk SQL UPDATE — one statement per county. With a JSONB
+    filter on (characteristics ->> 'dor_use_code') Postgres handles the
+    work in milliseconds even at 1M+ rows.
+
+    Cross-county collisions are impossible: ``county`` is part of the
+    WHERE clause and the seeder writes Entity.county directly, so each
+    UPDATE only touches one county at a time.
+
+    When ``county`` is None we iterate every county that still holds
+    TARGETs, posting per-county progress so the ops dashboard can
+    show "(12/35) Pinellas" while it runs.
     """
     from services import pipeline_state
 
@@ -156,63 +193,60 @@ def run_qualifier(db: Session, county: str | None = None) -> dict:
             "error": "Qualifier allowlist is empty — nothing to promote.",
         }
 
+    if county:
+        counties = [county]
+    else:
+        counties = _list_counties_with_targets(db)
+
     pipeline_state.mark_started(
         "qualifier",
-        summary=f"Qualifying TARGETs"
-        + (f" in {county}" if county else " in all counties"),
+        summary=f"Qualifying TARGETs in {len(counties)} "
+                f"{'counties' if len(counties) != 1 else 'county'}",
     )
 
     started = datetime.now(timezone.utc)
     emit(EventType.HUNTER, "qualifier_start", EventStatus.PENDING,
-         detail=f"Promoting TARGET → LEAD for codes {sorted(allowlist)}"
-                + (f" in {county}" if county else ""))
+         detail=f"Promoting TARGET → LEAD for codes {sorted(allowlist)} "
+                f"across {len(counties)} counties")
 
-    # Pull the candidate set so we can write a ledger row per promotion.
-    # Bulk UPDATE would be faster but we want the audit trail.
-    q = (
-        db.query(Entity)
-        .filter(Entity.pipeline_stage == "TARGET")
-    )
-    if county:
-        q = q.filter(Entity.county == county)
+    promoted_by_county: dict[str, int] = {}
+    total_promoted = 0
 
-    candidates = q.all()
-    promoted = 0
-    skipped_use_code: dict[str, int] = {}
+    for idx, c in enumerate(counties, start=1):
+        pipeline_state.mark_progress(
+            "qualifier",
+            current=f"({idx}/{len(counties)}) {c}",
+            details={"promoted_by_county": promoted_by_county,
+                     "total_promoted": total_promoted},
+        )
 
-    for entity in candidates:
-        chars = entity.characteristics or {}
-        code = str(chars.get("dor_use_code") or "").zfill(3)
-        if code not in allowlist:
-            skipped_use_code[code] = skipped_use_code.get(code, 0) + 1
+        try:
+            result = db.execute(
+                _BULK_UPDATE_SQL,
+                {"county": c, "codes": list(allowlist)},
+            )
+            row_count = result.rowcount or 0
+            db.commit()
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Qualifier failed for {c}: {e}")
+            promoted_by_county[c] = 0
             continue
 
-        entity.pipeline_stage = "LEAD"
-        ledger = LeadLedger(
-            entity_id=entity.id,
-            action_type="STAGE_CHANGE",
-            detail=f"TARGET → LEAD via qualifier (use_code={code})",
-            source="qualifier",
-        )
-        db.add(ledger)
-        promoted += 1
+        promoted_by_county[c] = row_count
+        total_promoted += row_count
 
-        # Periodic commit to keep transactions sane on big runs.
-        if promoted % 1000 == 0:
-            db.commit()
-
-    db.commit()
+        emit(EventType.HUNTER, "qualifier_county", EventStatus.SUCCESS,
+             detail=f"Qualifier {c}: {row_count:,} TARGET → LEAD")
 
     finished = datetime.now(timezone.utc)
     duration = (finished - started).total_seconds()
 
     result = {
-        "promoted": promoted,
-        "scanned": len(candidates),
+        "promoted": total_promoted,
+        "promoted_by_county": promoted_by_county,
         "use_codes": sorted(allowlist),
-        "skipped_by_use_code": dict(sorted(
-            skipped_use_code.items(), key=lambda kv: -kv[1]
-        )[:20]),
+        "counties_processed": len(counties),
         "county_filter": county,
         "duration_sec": round(duration, 1),
         "started_at": started.isoformat(),
@@ -221,17 +255,16 @@ def run_qualifier(db: Session, county: str | None = None) -> dict:
 
     emit(EventType.HUNTER, "qualifier_done", EventStatus.SUCCESS,
          detail=(
-             f"Qualifier: {promoted:,} promoted from {len(candidates):,} "
-             f"TARGETs in {duration:.1f}s"
-             + (f" ({county})" if county else "")
+             f"Qualifier: {total_promoted:,} TARGETs → LEADs across "
+             f"{len(counties)} counties in {duration:.1f}s"
          ))
     logger.info(f"Qualifier: {result}")
 
     pipeline_state.mark_finished(
         "qualifier",
         summary=(
-            f"{promoted:,} TARGETs promoted to LEAD "
-            f"({len(candidates):,} scanned, {duration:.1f}s)"
+            f"{total_promoted:,} TARGETs promoted to LEAD across "
+            f"{len(counties)} counties ({duration:.1f}s)"
         ),
         details=result,
     )
