@@ -37,7 +37,7 @@ from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 
 from database import SessionLocal
-from database.models import Entity, LeadLedger
+from database.models import Entity
 from services.event_bus import EventStatus, EventType, emit
 
 logger = logging.getLogger(__name__)
@@ -332,6 +332,44 @@ def seed_county(county_no: str, db: Session, min_value: int | None = None) -> di
     created = 0
     skipped_dupe = 0
 
+    # ── Dedupe pre-load ────────────────────────────────────────────
+    # Load every parcel_id we already have for THIS county into an
+    # in-memory set so the per-row dedupe is an O(1) Python lookup
+    # instead of a full sequential JSONB-extract scan of the entities
+    # table on every NAL row. The old per-row query was the cause of
+    # 14-hour county-seed runs: it's O(N²) over the table size.
+    seen_parcel_ids: set[str] = set()
+    try:
+        existing_pid_rows = (
+            db.query(Entity.characteristics["dor_parcel_id"].astext)
+            .filter(Entity.county == county_name)
+            .all()
+        )
+        seen_parcel_ids = {r[0] for r in existing_pid_rows if r[0]}
+        if seen_parcel_ids:
+            logger.info(
+                f"Seeder pre-load: {len(seen_parcel_ids):,} existing "
+                f"parcel_ids for {county_name}"
+            )
+    except Exception as e:
+        logger.warning(f"Failed to pre-load existing parcel_ids: {e}")
+
+    # Accumulator for bulk_insert_mappings — one big INSERT per batch
+    # is dramatically faster than per-row db.add() with autoflush.
+    BATCH_SIZE = 5000
+    pending_rows: list[dict] = []
+
+    def _flush_batch() -> int:
+        if not pending_rows:
+            return 0
+        n = len(pending_rows)
+        db.bulk_insert_mappings(Entity, pending_rows)
+        db.commit()
+        pending_rows.clear()
+        # Drop SQLAlchemy's identity-map references so memory stays flat.
+        db.expunge_all()
+        return n
+
     # Debug: sample first row to check column names
     sample_row = None
     columns = []
@@ -443,14 +481,13 @@ def seed_county(county_no: str, db: Session, min_value: int | None = None) -> di
                 if not phy_addr and not owner:
                     continue
 
-                # Dedupe by parcel ID
+                # Dedupe by parcel ID — O(1) Python set lookup, populated
+                # from the pre-load above and kept current as we go.
                 if parcel_id:
-                    existing = db.query(Entity).filter(
-                        Entity.characteristics.op("->>")(  "dor_parcel_id") == parcel_id
-                    ).first()
-                    if existing:
+                    if parcel_id in seen_parcel_ids:
                         skipped_dupe += 1
                         continue
+                    seen_parcel_ids.add(parcel_id)
 
                 # Build characteristics from NAL data
                 # (jv_raw, living_sqft, const_class_raw, const_class, tiv_estimate
@@ -553,39 +590,31 @@ def seed_county(county_no: str, db: Session, min_value: int | None = None) -> di
                     }
                 }
 
-                entity = Entity(
-                    name=name,
-                    address=full_addr if full_addr != phy_addr else phy_addr,
-                    county=county_name,
-                    characteristics=characteristics,
-                    enrichment_sources=enrichment_sources,
-                    pipeline_stage="TARGET",
-                )
-                db.add(entity)
-
-                ledger = LeadLedger(
-                    entity_id=0,  # Will be set after flush
-                    action_type="SEED_FROM_NAL",
-                    detail=f"Seeded from DOR NAL ({county_name}), parcel {parcel_id}",
-                    source="dor_nal",
-                )
-
-                # Batch commit every 100
-                if filtered % 100 == 0:
-                    db.flush()
-                    # Fix ledger entity_id
-                    if entity.id:
-                        ledger.entity_id = entity.id
-                        db.add(ledger)
-
-                    if filtered % 1000 == 0:
-                        db.commit()
-                        emit(EventType.HUNTER, "seed_county_progress", EventStatus.PENDING,
-                             detail=f"{county_name}: {created} created from {filtered} filtered ({total} scanned)")
-
+                # Queue for bulk insert. We don't instantiate ORM Entity
+                # objects per row — bulk_insert_mappings goes straight to
+                # the DBAPI, skipping SQLAlchemy's identity map and
+                # Python-level overhead.
+                pending_rows.append({
+                    "name": name,
+                    "address": full_addr if full_addr != phy_addr else phy_addr,
+                    "county": county_name,
+                    "characteristics": characteristics,
+                    "enrichment_sources": enrichment_sources,
+                    "pipeline_stage": "TARGET",
+                })
                 created += 1
 
-        db.commit()
+                if len(pending_rows) >= BATCH_SIZE:
+                    _flush_batch()
+                    emit(EventType.HUNTER, "seed_county_progress", EventStatus.PENDING,
+                         detail=f"{county_name}: {created:,} created from "
+                                f"{filtered:,} filtered ({total:,} scanned)")
+
+        # Final flush — anything left in the buffer goes in.
+        _flush_batch()
+        # Run summary lives in seed_stats.json + pipeline_state — the
+        # per-row LeadLedger fan-out we used to do here was both buggy
+        # (wrong entity_id) and pointless write traffic at this scale.
 
     except Exception as e:
         db.rollback()
