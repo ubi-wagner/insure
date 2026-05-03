@@ -98,6 +98,44 @@ export default function OpsCenter() {
   const [qualifierRunning, setQualifierRunning] = useState(false);
   const [aggregatorRunning, setAggregatorRunning] = useState(false);
 
+  // Pipeline run-state — polled while any stage is running so the user
+  // sees per-county progress instead of a frozen "Seeding..." button.
+  interface StageState {
+    running: boolean;
+    started_at: string | null;
+    finished_at: string | null;
+    duration_sec: number | null;
+    summary: string | null;
+    current: string | null;
+    last_finished_at?: string | null;
+    last_summary?: string | null;
+    details?: { total_targets_created?: number; completed_counties?: unknown[] } | null;
+  }
+  interface PipelineStatus {
+    stage_counts: Record<string, number>;
+    stages: { seed: StageState; qualifier: StageState; aggregator: StageState };
+    any_running: boolean;
+  }
+  const [pipeline, setPipeline] = useState<PipelineStatus | null>(null);
+
+  const fetchPipelineStatus = useCallback(async () => {
+    try {
+      const res = await fetch("/api/proxy/admin/pipeline/status");
+      if (res.ok) setPipeline(await res.json().catch(() => null));
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    fetchPipelineStatus();
+  }, [fetchPipelineStatus]);
+
+  useEffect(() => {
+    // Tight 2s poll while anything is running, slow 30s poll otherwise.
+    const interval = pipeline?.any_running ? 2000 : 30000;
+    const id = setInterval(fetchPipelineStatus, interval);
+    return () => clearInterval(id);
+  }, [pipeline?.any_running, fetchPipelineStatus]);
+
   // Query (moved to /admin/query page)
 
   // Queue per-enricher expansion
@@ -153,12 +191,14 @@ export default function OpsCenter() {
     try {
       const res = await fetch(`/api/proxy/admin/seed-all`, { method: "POST" });
       const d = await res.json().catch(() => ({ error: res.statusText }));
-      if (d.error) setActionMsg(`Error: ${JSON.stringify(d.error)}`);
-      else {
-        const total = d.results?.reduce((s: number, r: { created?: number }) => s + (r.created ?? 0), 0) ?? 0;
-        setActionMsg(`Seeded ${total.toLocaleString()} TARGETs across ${d.results?.length ?? 0} counties`);
+      if (d.error) {
+        setActionMsg(`Error: ${typeof d.error === "string" ? d.error : JSON.stringify(d.error)}`);
+      } else if (d.started) {
+        setActionMsg(`Seed running in background — ${d.counties_queued} counties queued. Watch the panel below for progress.`);
+      } else {
+        setActionMsg("Seed kicked off.");
       }
-      fetchDashboard();
+      fetchPipelineStatus();
     } catch (err) { setActionMsg(`Error: ${err}`); }
     setSeeding(null);
   }
@@ -191,6 +231,7 @@ export default function OpsCenter() {
         );
       }
       fetchDashboard();
+      fetchPipelineStatus();
     } catch (err) { setActionMsg(`Error: ${err}`); }
     setQualifierRunning(false);
   }
@@ -211,6 +252,7 @@ export default function OpsCenter() {
         );
       }
       fetchDashboard();
+      fetchPipelineStatus();
     } catch (err) { setActionMsg(`Error: ${err}`); }
     setAggregatorRunning(false);
   }
@@ -250,44 +292,92 @@ export default function OpsCenter() {
 
       <div className="px-4 md:px-6 py-4 space-y-6">
 
-        {/* ── Pipeline action bar (admin only) ──
-            Three deterministic gated transitions — Seed (NAL → TARGET),
-            Qualify (TARGET → LEAD), Aggregate (LEAD → VETTED) — plus
-            Reset DB. Each transition is idempotent and re-runnable. */}
-        {isAdmin && <div className="flex flex-wrap items-center gap-2">
-          <button onClick={seedAll} disabled={seeding !== null}
-            className="bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white text-xs px-4 py-2 rounded font-medium">
-            {seeding === "all" ? "Seeding..." : "1. Seed All Counties"}
-          </button>
-          <button onClick={runQualifier} disabled={qualifierRunning}
-            className="bg-cyan-700 hover:bg-cyan-600 disabled:opacity-50 text-white text-xs px-4 py-2 rounded font-medium">
-            {qualifierRunning ? "Qualifying..." : "2. Qualify (TARGET → LEAD)"}
-          </button>
-          <button onClick={runAggregator} disabled={aggregatorRunning}
-            className="bg-teal-700 hover:bg-teal-600 disabled:opacity-50 text-white text-xs px-4 py-2 rounded font-medium">
-            {aggregatorRunning ? "Aggregating..." : "3. Aggregate (LEAD → VETTED)"}
-          </button>
-          {!confirmReset ? (
-            <button onClick={() => setConfirmReset(true)}
-              className="bg-red-900/50 hover:bg-red-900 border border-red-800 text-red-300 text-xs px-3 py-2 rounded ml-auto">
-              Reset DB
-            </button>
-          ) : (
-            <div className="flex items-center gap-1.5 bg-red-950 border border-red-700 rounded px-3 py-1.5 ml-auto">
-              <span className="text-red-300 text-xs">Wipe all data?</span>
-              <button onClick={resetDatabase} disabled={resetting}
-                className="bg-red-600 hover:bg-red-500 text-white text-[11px] px-2.5 py-1 rounded font-medium">
-                {resetting ? "..." : "Yes"}
-              </button>
-              <button onClick={() => setConfirmReset(false)} className="text-gray-400 text-[11px] px-2 py-1">No</button>
+        {/* ── Pipeline run panel (admin only) ──
+            Three deterministic gated transitions stacked vertically.
+            Each row has live status + last-run summary. Downstream
+            buttons are disabled while upstream is running, and
+            soft-warn when there's nothing to consume. */}
+        {isAdmin && (
+          <div className="bg-gray-900 border border-gray-800 rounded-lg p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-semibold text-gray-300">Pipeline Run</h2>
+              {!confirmReset ? (
+                <button onClick={() => setConfirmReset(true)}
+                  className="bg-red-900/50 hover:bg-red-900 border border-red-800 text-red-300 text-[11px] px-3 py-1 rounded">
+                  Reset DB
+                </button>
+              ) : (
+                <div className="flex items-center gap-1.5 bg-red-950 border border-red-700 rounded px-3 py-1">
+                  <span className="text-red-300 text-[11px]">Wipe all data?</span>
+                  <button onClick={resetDatabase} disabled={resetting}
+                    className="bg-red-600 hover:bg-red-500 text-white text-[11px] px-2.5 py-0.5 rounded font-medium">
+                    {resetting ? "..." : "Yes"}
+                  </button>
+                  <button onClick={() => setConfirmReset(false)} className="text-gray-400 text-[11px] px-2">No</button>
+                </div>
+              )}
             </div>
-          )}
-        </div>}
 
-        {actionMsg && (
-          <div className={`text-xs px-4 py-2 rounded ${
-            actionMsg.startsWith("Error") ? "bg-red-900/50 text-red-300 border border-red-800" : "bg-green-900/50 text-green-300 border border-green-800"
-          }`}>{actionMsg}</div>
+            <PipelineStageRow
+              step={1}
+              label="Seed"
+              transition="NAL → TARGET"
+              accent="green"
+              state={pipeline?.stages?.seed}
+              busy={seeding !== null || pipeline?.stages?.seed?.running}
+              upstreamBusy={false}
+              onRun={seedAll}
+              produced={pipeline?.stage_counts?.TARGET ?? 0}
+              producedLabel="TARGETs"
+            />
+
+            <PipelineStageRow
+              step={2}
+              label="Qualify"
+              transition="TARGET → LEAD"
+              accent="cyan"
+              state={pipeline?.stages?.qualifier}
+              busy={qualifierRunning || pipeline?.stages?.qualifier?.running}
+              upstreamBusy={!!pipeline?.stages?.seed?.running}
+              upstreamWarning={
+                (pipeline?.stage_counts?.TARGET ?? 0) === 0
+                  ? "No TARGETs yet — seed first"
+                  : null
+              }
+              onRun={runQualifier}
+              produced={pipeline?.stage_counts?.LEAD ?? 0}
+              producedLabel="LEADs"
+            />
+
+            <PipelineStageRow
+              step={3}
+              label="Aggregate"
+              transition="LEAD → VETTED"
+              accent="teal"
+              state={pipeline?.stages?.aggregator}
+              busy={aggregatorRunning || pipeline?.stages?.aggregator?.running}
+              upstreamBusy={
+                !!pipeline?.stages?.seed?.running ||
+                !!pipeline?.stages?.qualifier?.running
+              }
+              upstreamWarning={
+                (pipeline?.stage_counts?.LEAD ?? 0) === 0
+                  ? "No LEADs yet — qualify first"
+                  : null
+              }
+              onRun={runAggregator}
+              produced={pipeline?.stage_counts?.VETTED ?? 0}
+              producedLabel="VETTED masters"
+            />
+
+            {actionMsg && (
+              <div className={`text-[11px] px-3 py-1.5 rounded ${
+                actionMsg.startsWith("Error")
+                  ? "bg-red-900/50 text-red-300 border border-red-800"
+                  : "bg-green-900/30 text-green-300 border border-green-900"
+              }`}>{actionMsg}</div>
+            )}
+          </div>
         )}
 
         {error && <div className="text-red-400 text-xs bg-red-900/20 rounded px-4 py-2">{error}</div>}
@@ -564,6 +654,158 @@ export default function OpsCenter() {
           </div>
         )}
 
+      </div>
+    </div>
+  );
+}
+
+
+/* ────────────────────────────────────────────────────────────────────
+ * PipelineStageRow
+ *
+ * One row of the admin Pipeline Run panel. Owns its own ticking
+ * "elapsed" counter when the stage is running so users see live
+ * proof that something is happening, plus shows the most recent
+ * progress message ("Seeding (12/35) Pinellas...") and the last-
+ * completed summary.
+ * ──────────────────────────────────────────────────────────────── */
+
+interface StageStateLite {
+  running: boolean;
+  started_at: string | null;
+  finished_at: string | null;
+  duration_sec: number | null;
+  summary: string | null;
+  current: string | null;
+  last_finished_at?: string | null;
+  last_summary?: string | null;
+  details?: { total_targets_created?: number; completed_counties?: unknown[] } | null;
+}
+
+const ACCENT_BTN: Record<string, string> = {
+  green: "bg-green-600 hover:bg-green-700",
+  cyan:  "bg-cyan-700  hover:bg-cyan-600",
+  teal:  "bg-teal-700  hover:bg-teal-600",
+};
+
+const ACCENT_DOT: Record<string, string> = {
+  green: "bg-green-500",
+  cyan:  "bg-cyan-500",
+  teal:  "bg-teal-500",
+};
+
+function fmtAge(iso: string | null | undefined): string {
+  if (!iso) return "never";
+  const t = new Date(iso).getTime();
+  if (isNaN(t)) return "never";
+  const sec = Math.max(0, Math.round((Date.now() - t) / 1000));
+  if (sec < 60) return `${sec}s ago`;
+  if (sec < 3600) return `${Math.round(sec / 60)}m ago`;
+  if (sec < 86400) return `${Math.round(sec / 3600)}h ago`;
+  return `${Math.round(sec / 86400)}d ago`;
+}
+
+function PipelineStageRow({
+  step, label, transition, accent, state, busy, upstreamBusy, upstreamWarning,
+  onRun, produced, producedLabel,
+}: {
+  step: number;
+  label: string;
+  transition: string;
+  accent: "green" | "cyan" | "teal";
+  state: StageStateLite | undefined;
+  busy: boolean | undefined;
+  upstreamBusy: boolean;
+  upstreamWarning?: string | null;
+  onRun: () => void;
+  produced: number;
+  producedLabel: string;
+}) {
+  const isRunning = state?.running || busy;
+  const blockedReason = upstreamBusy
+    ? "Waiting for upstream stage"
+    : upstreamWarning ?? null;
+  const disabled = !!busy || upstreamBusy;
+
+  // Tick a clock so the elapsed time updates without polling overhead.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!isRunning) return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [isRunning]);
+
+  const elapsedSec = state?.started_at && isRunning
+    ? Math.max(0, Math.round((now - new Date(state.started_at).getTime()) / 1000))
+    : null;
+
+  return (
+    <div className={`border rounded p-3 ${
+      isRunning ? "border-blue-700 bg-blue-950/20" : "border-gray-800 bg-gray-950/40"
+    }`}>
+      <div className="flex items-start gap-3">
+        <div className="shrink-0 w-6 h-6 rounded-full bg-gray-800 flex items-center justify-center text-[10px] text-gray-400 font-bold">
+          {step}
+        </div>
+
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-sm font-semibold text-white">{label}</span>
+            <span className="text-[10px] text-gray-500">{transition}</span>
+
+            {isRunning ? (
+              <span className="inline-flex items-center gap-1 text-[10px] text-blue-300 font-medium">
+                <span className={`w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse`} />
+                running {elapsedSec !== null ? `${elapsedSec}s` : ""}
+              </span>
+            ) : state?.last_finished_at || state?.finished_at ? (
+              <span className="inline-flex items-center gap-1 text-[10px] text-gray-500">
+                <span className={`w-1.5 h-1.5 rounded-full ${ACCENT_DOT[accent]}`} />
+                last run {fmtAge(state.finished_at ?? state.last_finished_at)}
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1 text-[10px] text-gray-600">
+                <span className="w-1.5 h-1.5 rounded-full bg-gray-700" />
+                never run
+              </span>
+            )}
+
+            <span className="ml-auto text-[10px] text-gray-500">
+              {produced.toLocaleString()} {producedLabel}
+            </span>
+          </div>
+
+          <div className="mt-1.5">
+            {isRunning && state?.current && (
+              <p className="text-[11px] text-blue-200 truncate">{state.current}</p>
+            )}
+            {!isRunning && (state?.summary || state?.last_summary) && (
+              <p className="text-[11px] text-gray-400 truncate">
+                {state.summary ?? state.last_summary}
+              </p>
+            )}
+            {!isRunning && blockedReason && (
+              <p className="text-[11px] text-amber-400 mt-0.5">{blockedReason}</p>
+            )}
+          </div>
+
+          {/* Live per-county tally — only the seed stage emits this */}
+          {isRunning && state?.details?.total_targets_created != null && (
+            <p className="text-[10px] text-blue-300 mt-1 font-mono">
+              {Number(state.details.total_targets_created).toLocaleString()} TARGETs created so far across{" "}
+              {(state.details.completed_counties as unknown[] | undefined)?.length ?? 0} counties
+            </p>
+          )}
+        </div>
+
+        <button
+          onClick={onRun}
+          disabled={disabled}
+          title={disabled ? (blockedReason ?? "Already running") : `Run ${label}`}
+          className={`shrink-0 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs px-4 py-2 rounded font-medium ${ACCENT_BTN[accent]}`}
+        >
+          {isRunning ? "Running..." : "Run"}
+        </button>
       </div>
     </div>
   );

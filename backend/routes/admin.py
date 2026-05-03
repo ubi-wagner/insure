@@ -88,47 +88,146 @@ def seed_county_endpoint(county_no: str, min_value: int = Query(None, descriptio
 
 
 @router.post("/api/admin/seed-all")
-def seed_all_counties(min_value: int = Query(None, description="Min market value threshold (0 to disable)"), db: Session = Depends(get_db)):
-    """Seed all counties that have NAL files."""
-    from agents.seeder import get_available_counties, seed_county, DOR_COUNTIES
+def seed_all_counties(min_value: int = Query(None, description="(Deprecated, no-op)")):
+    """Kick off a background seed of every county that has a NAL file.
+
+    Returns immediately with the list of counties that will be processed.
+    Progress + final result are tracked in the pipeline_state seed file
+    and surfaced via /api/admin/pipeline/status, which the ops dashboard
+    polls every couple of seconds.
+
+    Synchronous seeding doesn't work at this scale — a 35-county run
+    against unfiltered NAL files takes 10+ minutes and exceeds the
+    Railway request timeout. Backgrounding decouples request lifetime
+    from job lifetime.
+    """
+    from agents.seeder import get_available_counties
+    from services import pipeline_state
+
+    if pipeline_state.is_running("seed"):
+        raise HTTPException(
+            status_code=409,
+            detail="Seed is already running. Wait for it to finish "
+                   "before starting another."
+        )
 
     available = [c for c in get_available_counties() if c["ready"]]
     if not available:
-        # Debug: show what directories we searched
         import os
         base = os.path.dirname(os.path.dirname(__file__))
         dor_path = os.path.join(base, "filestore", "System Data", "DOR")
         data_path = os.path.join(base, "data")
-        dor_exists = os.path.exists(dor_path)
-        dor_files = os.listdir(dor_path) if dor_exists else []
-        data_files = os.listdir(data_path) if os.path.exists(data_path) else []
         raise HTTPException(status_code=404, detail={
             "error": "No NAL files found",
             "dor_path": dor_path,
-            "dor_exists": dor_exists,
-            "dor_files": dor_files[:20],
+            "dor_exists": os.path.exists(dor_path),
+            "dor_files": (os.listdir(dor_path) if os.path.exists(dor_path) else [])[:20],
             "data_path": data_path,
-            "data_files": [f for f in data_files if "NAL" in f.upper()][:20],
+            "data_files": [
+                f for f in (os.listdir(data_path) if os.path.exists(data_path) else [])
+                if "NAL" in f.upper()
+            ][:20],
         })
 
-    results = []
-    for c in available:
-        try:
-            emit(EventType.HUNTER, "seed_all", EventStatus.PENDING,
-                 detail=f"Seeding {c['county_name']}...")
-            result = seed_county(c["county_no"], db, min_value=min_value)
-            results.append(result)
-        except Exception as e:
-            logger.error(f"Seed failed for {c['county_name']}: {e}")
-            results.append({"county": c["county_name"], "error": str(e)})
+    pipeline_state.mark_started(
+        "seed",
+        summary=f"Queued {len(available)} counties",
+    )
 
-    emit(EventType.HUNTER, "seed_all", EventStatus.SUCCESS,
-         detail=f"Seeded {len(available)} counties")
+    def _run_in_background(counties: list[dict]) -> None:
+        from agents.seeder import seed_county
+        from database import SessionLocal
+
+        results: list[dict] = []
+        total_created = 0
+        try:
+            for idx, c in enumerate(counties, start=1):
+                pipeline_state.mark_progress(
+                    "seed",
+                    current=f"({idx}/{len(counties)}) {c['county_name']}",
+                    details={"completed_counties": results, "total_targets_created": total_created},
+                )
+                emit(EventType.HUNTER, "seed_all", EventStatus.PENDING,
+                     detail=f"Seeding {c['county_name']}...")
+                db = SessionLocal()
+                try:
+                    result = seed_county(c["county_no"], db)
+                    results.append(result)
+                    total_created += int(result.get("created", 0) or 0)
+                except Exception as e:
+                    logger.error(f"Seed failed for {c['county_name']}: {e}")
+                    results.append({"county": c["county_name"], "error": str(e)})
+                finally:
+                    db.close()
+
+            emit(EventType.HUNTER, "seed_all", EventStatus.SUCCESS,
+                 detail=f"Seeded {len(counties)} counties, {total_created:,} TARGETs")
+            pipeline_state.mark_finished(
+                "seed",
+                summary=(
+                    f"{total_created:,} TARGETs created across "
+                    f"{len(counties)} counties"
+                ),
+                details={
+                    "counties_seeded": len(counties),
+                    "total_targets_created": total_created,
+                    "results": results,
+                },
+            )
+        except Exception as e:
+            logger.exception("Background seed crashed")
+            pipeline_state.mark_failed("seed", str(e))
+
+    threading.Thread(
+        target=_run_in_background,
+        args=(available,),
+        daemon=True,
+        name="seed-all",
+    ).start()
 
     return {
         "success": True,
-        "counties_seeded": len(results),
-        "results": results,
+        "started": True,
+        "counties_queued": len(available),
+        "counties": [c["county_name"] for c in available],
+    }
+
+
+# ─── Pipeline status (combined view for the ops dashboard) ──────────────────
+
+
+@router.get("/api/admin/pipeline/status")
+def pipeline_status(db: Session = Depends(get_db)):
+    """Combined snapshot of the deterministic gated pipeline.
+
+    Returned shape:
+      {
+        "stage_counts": { TARGET: n, LEAD: n, ..., ARCHIVED: n },
+        "stages": {
+          "seed":       { running, started_at, finished_at, summary, current, details, last_summary },
+          "qualifier":  { ... },
+          "aggregator": { ... }
+        },
+        "any_running": bool
+      }
+    """
+    from services import pipeline_state
+
+    stage_counts: dict[str, int] = {}
+    for stage in ["TARGET", "LEAD", "VETTED", "ANALYZED", "VALIDATED",
+                  "OPPORTUNITY", "CUSTOMER", "ARCHIVED"]:
+        stage_counts[stage] = (
+            db.query(Entity)
+            .filter(Entity.pipeline_stage == stage)
+            .filter(Entity.parent_id.is_(None))
+            .count()
+        )
+
+    states = pipeline_state.get_all_states()
+    return {
+        "stage_counts": stage_counts,
+        "stages": states,
+        "any_running": any(s.get("running") for s in states.values()),
     }
 
 

@@ -250,6 +250,14 @@ def run_aggregator(db: Session, county: str | None = None) -> dict:
     Re-runnable. Existing VETTED rows are skipped. Records that have
     already been linked under a parent are skipped.
     """
+    from services import pipeline_state
+
+    pipeline_state.mark_started(
+        "aggregator",
+        summary=f"Aggregating LEADs"
+        + (f" in {county}" if county else " in all counties"),
+    )
+
     started = datetime.now(timezone.utc)
     emit(EventType.HUNTER, "aggregator_start", EventStatus.PENDING,
          detail=f"Aggregating LEAD → VETTED"
@@ -336,6 +344,16 @@ def run_aggregator(db: Session, county: str | None = None) -> dict:
         "finished_at": finished.isoformat(),
     }
     _save_run_stats(result)
+
+    pipeline_state.mark_finished(
+        "aggregator",
+        summary=(
+            f"{masters_promoted:,} VETTED masters "
+            f"({siblings_linked:,} siblings, {singletons:,} singletons, "
+            f"{duration:.1f}s)"
+        ),
+        details=result,
+    )
 
     emit(EventType.HUNTER, "aggregator_done", EventStatus.SUCCESS,
          detail=(

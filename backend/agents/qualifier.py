@@ -145,6 +145,8 @@ def run_qualifier(db: Session, county: str | None = None) -> dict:
     one county at a time when the user re-runs after editing the
     allowlist for a specific market.
     """
+    from services import pipeline_state
+
     cfg = get_qualifier_config()
     allowlist = cfg["use_codes"]
     if not allowlist:
@@ -153,6 +155,12 @@ def run_qualifier(db: Session, county: str | None = None) -> dict:
             "use_codes": [],
             "error": "Qualifier allowlist is empty — nothing to promote.",
         }
+
+    pipeline_state.mark_started(
+        "qualifier",
+        summary=f"Qualifying TARGETs"
+        + (f" in {county}" if county else " in all counties"),
+    )
 
     started = datetime.now(timezone.utc)
     emit(EventType.HUNTER, "qualifier_start", EventStatus.PENDING,
@@ -219,6 +227,14 @@ def run_qualifier(db: Session, county: str | None = None) -> dict:
          ))
     logger.info(f"Qualifier: {result}")
 
+    pipeline_state.mark_finished(
+        "qualifier",
+        summary=(
+            f"{promoted:,} TARGETs promoted to LEAD "
+            f"({len(candidates):,} scanned, {duration:.1f}s)"
+        ),
+        details=result,
+    )
     _save_run_stats(result)
     return result
 
