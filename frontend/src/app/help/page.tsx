@@ -238,7 +238,7 @@ function DashboardSection() {
       <H3>Right side: the pipeline list</H3>
       <UL>
         <li>Each card shows the lead&apos;s name, county, stage, and key stats</li>
-        <li>Cards are color-coded by pipeline stage (LEAD=cyan, OPPORTUNITY=amber, CUSTOMER=green)</li>
+        <li>Cards are color-coded by pipeline stage (LEAD=cyan, VETTED=teal, ANALYZED=indigo, VALIDATED=purple, OPPORTUNITY=amber, CUSTOMER=green)</li>
         <li>Click a card to open its detail panel on the right edge of the screen</li>
         <li>Use filters at the top to narrow the list</li>
         <li>Use the Sort dropdown to change the order</li>
@@ -515,20 +515,27 @@ function PipelineSection() {
   return (
     <section>
       <H id="pipeline">10. Moving Through the Pipeline</H>
-      <P>Every lead sits in exactly one of five stages:</P>
+      <P>Every lead sits in exactly one of eight stages. The first five are
+      deterministic gated transitions driven by background workers; the
+      last three are user-driven CRM:</P>
       <UL>
-        <li><strong className="text-gray-300">TARGET</strong> &mdash; Raw parcel from the tax roll, no coordinates yet. Usually auto-promotes within minutes.</li>
-        <li><strong className="text-cyan-400">LEAD</strong> &mdash; Geocoded, enriched, ready to review. This is where most action happens.</li>
+        <li><strong className="text-gray-300">TARGET</strong> &mdash; Raw NAL parcel ingestion. Every non-residential parcel from the FL tax roll. No filtering except single-family / mobile homes.</li>
+        <li><strong className="text-cyan-400">LEAD</strong> &mdash; Passed the qualifier&apos;s admin-configurable use-code allowlist (condos, multi-family, hotels, commercial, etc.).</li>
+        <li><strong className="text-teal-400">VETTED</strong> &mdash; Aggregated. The aggregator groups parcels by (county, ZIP, normalized street) and picks one master per building, with the unit-parcel rows linked as siblings via parent_id. TIV / unit count / stories roll up to the master.</li>
+        <li><strong className="text-indigo-400">ANALYZED</strong> &mdash; Cream score, Sunbiz governance, DBPR financial health, FEMA flood, OIR market intelligence have all run on the master.</li>
+        <li><strong className="text-purple-400">VALIDATED</strong> &mdash; Zillow / VRBO / county property appraiser cross-checks complete. Numbers are now Jason-grade truth.</li>
         <li><strong className="text-amber-400">OPPORTUNITY</strong> &mdash; You&apos;ve decided to actively pursue this one. Outreach has started.</li>
         <li><strong className="text-green-400">CUSTOMER</strong> &mdash; Deal closed. Policy written.</li>
-        <li><strong className="text-red-400">ARCHIVED</strong> &mdash; Passed on, mistake, or not interested. Data is preserved but the lead is hidden from normal views.</li>
+        <li><strong className="text-red-400">ARCHIVED</strong> &mdash; Passed on, mistake, or not interested. Data is preserved but hidden from normal views.</li>
       </UL>
-      <H3>How to change a stage</H3>
+      <H3>How transitions actually fire</H3>
       <OL>
-        <li>Open the lead card</li>
-        <li>Look at the top of the card &mdash; there&apos;s a dropdown next to TIV / Market value</li>
-        <li>Select the new stage</li>
-        <li>The change saves automatically</li>
+        <li>Admin clicks <strong>Seed All Counties</strong> &rarr; NAL files become TARGETs.</li>
+        <li>Admin clicks <strong>Qualify (TARGET → LEAD)</strong> &rarr; matching use codes get promoted.</li>
+        <li>Admin clicks <strong>Aggregate (LEAD → VETTED)</strong> &rarr; siblings link, master roll-ups computed, enrichers auto-queued.</li>
+        <li>Enrichment workers move masters VETTED &rarr; ANALYZED automatically as each enricher completes.</li>
+        <li>Validator (Zillow/VRBO &mdash; coming soon) moves masters ANALYZED &rarr; VALIDATED.</li>
+        <li>Jason picks <strong>OPPORTUNITY</strong> manually from the lead card or detail page.</li>
       </OL>
       <Callout kind="warn">
         Only move a lead to <strong>OPPORTUNITY</strong> when you&apos;ve actually
@@ -772,7 +779,7 @@ function GlossarySection() {
         <div><dt className="text-white font-semibold">Cream Score</dt><dd className="text-gray-400 ml-4">0-100 conversion opportunity rating combining property size, wind exposure, insurance pain, contact quality, compliance risk, and financial distress.</dd></div>
         <div><dt className="text-white font-semibold">Heat Score</dt><dd className="text-gray-400 ml-4">Cold/warm/hot indicator of data completeness. Different from cream score &mdash; a hot heat doesn&apos;t mean good lead, just that we have complete data on it.</dd></div>
         <div><dt className="text-white font-semibold">Enricher</dt><dd className="text-gray-400 ml-4">A background job that pulls data from a specific source (e.g. fema_flood, dbpr_bulk, sunbiz) and attaches it to a lead. 15 enrichers run per lead.</dd></div>
-        <div><dt className="text-white font-semibold">Pipeline stage</dt><dd className="text-gray-400 ml-4">One of TARGET, LEAD, OPPORTUNITY, CUSTOMER, ARCHIVED &mdash; the current workflow state of a lead.</dd></div>
+        <div><dt className="text-white font-semibold">Pipeline stage</dt><dd className="text-gray-400 ml-4">One of TARGET, LEAD, VETTED, ANALYZED, VALIDATED, OPPORTUNITY, CUSTOMER, ARCHIVED &mdash; the current workflow state of a lead.</dd></div>
       </dl>
     </section>
   );

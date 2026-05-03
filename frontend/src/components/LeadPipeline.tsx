@@ -29,12 +29,29 @@ interface ApiResponse {
 }
 
 const PIPELINE_STAGES = [
-  { key: "TARGET", label: "Targets", color: "border-gray-600", bg: "bg-gray-800", textColor: "text-gray-300" },
-  { key: "LEAD", label: "Leads", color: "border-cyan-600", bg: "bg-cyan-950/30", textColor: "text-cyan-300" },
-  { key: "OPPORTUNITY", label: "Opps", color: "border-amber-600", bg: "bg-amber-950/30", textColor: "text-amber-300" },
-  { key: "CUSTOMER", label: "Customers", color: "border-green-600", bg: "bg-green-950/30", textColor: "text-green-300" },
-  { key: "ARCHIVED", label: "Archived", color: "border-gray-700", bg: "bg-gray-900", textColor: "text-gray-500" },
+  { key: "TARGET",      label: "Targets",     color: "border-gray-600",   bg: "bg-gray-800",        textColor: "text-gray-300" },
+  { key: "LEAD",        label: "Leads",       color: "border-cyan-600",   bg: "bg-cyan-950/30",     textColor: "text-cyan-300" },
+  { key: "VETTED",      label: "Vetted",      color: "border-teal-600",   bg: "bg-teal-950/30",     textColor: "text-teal-300" },
+  { key: "ANALYZED",    label: "Analyzed",    color: "border-indigo-600", bg: "bg-indigo-950/30",   textColor: "text-indigo-300" },
+  { key: "VALIDATED",   label: "Validated",   color: "border-purple-600", bg: "bg-purple-950/30",   textColor: "text-purple-300" },
+  { key: "OPPORTUNITY", label: "Opps",        color: "border-amber-600",  bg: "bg-amber-950/30",    textColor: "text-amber-300" },
+  { key: "CUSTOMER",    label: "Customers",   color: "border-green-600",  bg: "bg-green-950/30",    textColor: "text-green-300" },
+  { key: "ARCHIVED",    label: "Archived",    color: "border-gray-700",   bg: "bg-gray-900",        textColor: "text-gray-500" },
 ] as const;
+
+// Forward-progression map: clicking the right-arrow advances by exactly one
+// stage. Anything beyond VALIDATED requires a manual user decision and the
+// progression button hides — the user picks Opportunity from the action menu.
+const NEXT_STAGE: Record<string, string | null> = {
+  TARGET:      "LEAD",
+  LEAD:        "VETTED",
+  VETTED:      "ANALYZED",
+  ANALYZED:    "VALIDATED",
+  VALIDATED:   "OPPORTUNITY",
+  OPPORTUNITY: "CUSTOMER",
+  CUSTOMER:    null,
+  ARCHIVED:    null,
+};
 
 const HEAT_COLORS: Record<string, string> = {
   hot: "bg-red-600 text-white",
@@ -643,16 +660,10 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
             <button onClick={selectAll} className="text-[10px] px-2 py-1 rounded border border-gray-800 bg-gray-900 text-gray-400">
               All
             </button>
-            {selected.size > 0 && activeStage === "TARGET" && (
-              <button onClick={() => handleBulkAction("LEAD")}
+            {selected.size > 0 && NEXT_STAGE[activeStage] && (
+              <button onClick={() => handleBulkAction(NEXT_STAGE[activeStage]!)}
                 className="text-[10px] px-2 py-1 rounded bg-cyan-700 text-white font-medium">
-                &rarr; Lead ({selected.size})
-              </button>
-            )}
-            {selected.size > 0 && activeStage === "LEAD" && (
-              <button onClick={() => handleBulkAction("OPPORTUNITY")}
-                className="text-[10px] px-2 py-1 rounded bg-amber-700 text-white font-medium">
-                &rarr; Opp ({selected.size})
+                &rarr; {NEXT_STAGE[activeStage]} ({selected.size})
               </button>
             )}
             {selected.size > 0 && activeStage !== "ARCHIVED" && (
@@ -663,11 +674,11 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
             )}
           </>
         )}
-        {canEdit && !selectMode && (minValue || maxValue || minUnits) && activeStage === "TARGET" && (
+        {canEdit && !selectMode && (minValue || maxValue || minUnits) && NEXT_STAGE[activeStage] && (
           <>
-            <button onClick={() => handleBulkFilterAction("LEAD")}
+            <button onClick={() => handleBulkFilterAction(NEXT_STAGE[activeStage]!)}
               className="text-[10px] px-2 py-1 rounded bg-cyan-700 text-white font-medium">
-              Promote All Filtered &rarr; Lead
+              Promote All Filtered &rarr; {NEXT_STAGE[activeStage]}
             </button>
             <button onClick={() => handleBulkFilterAction("ARCHIVED")}
               className="text-[10px] px-2 py-1 rounded bg-gray-700 text-gray-300 font-medium">
@@ -730,7 +741,13 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
                     {lead.name}
                   </h3>
                   {marketValue && marketValue > 0 && (
-                    <span className="text-xs text-gray-300 font-medium shrink-0">{fmt(marketValue)}</span>
+                    <span
+                      className="text-xs text-gray-300 font-medium shrink-0"
+                      title={chars.tiv_is_estimate ? "Aggregated estimate — Zillow / VRBO will refine in VALIDATED stage" : undefined}
+                    >
+                      {fmt(marketValue)}
+                      {chars.tiv_is_estimate ? "*" : ""}
+                    </span>
                   )}
                   {activeStage !== "TARGET" && (
                     <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium shrink-0 ${HEAT_COLORS[heat] || HEAT_COLORS.cold}`}>
@@ -744,6 +761,14 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
 
                 {/* Tags */}
                 <div className="flex items-center gap-1 mt-1.5 flex-wrap">
+                  {!!chars.is_aggregation_master && Number(chars.sibling_count) > 0 && (
+                    <span
+                      className="text-[10px] px-1.5 rounded bg-teal-900/60 text-teal-300 font-medium"
+                      title="VETTED master — N unit parcels rolled up under this record"
+                    >
+                      {Number(chars.sibling_count) + 1} parcels
+                    </span>
+                  )}
                   {!!chars.dor_use_description && (
                     <span className="text-[10px] px-1 rounded bg-gray-800 text-gray-400">{String(chars.dor_use_description)}</span>
                   )}
@@ -768,8 +793,12 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
                   <span className="text-gray-700 text-[10px] ml-auto">{lead.county}</span>
                 </div>
 
-                {/* Enrichment for LEADs */}
-                {activeStage === "LEAD" && lead.enrichment_status && (
+                {/* Enrichment status — visible on every stage that runs
+                    enrichers (VETTED through CUSTOMER). LEAD/TARGET don't
+                    enrich so we hide the dot there. */}
+                {(activeStage === "VETTED" || activeStage === "ANALYZED" ||
+                  activeStage === "VALIDATED" || activeStage === "OPPORTUNITY" ||
+                  activeStage === "CUSTOMER") && lead.enrichment_status && (
                   <div className="flex items-center gap-1 mt-1 text-[10px]">
                     <span className={`w-1.5 h-1.5 rounded-full ${
                       lead.enrichment_status === "complete" ? "bg-green-500" :
@@ -788,26 +817,22 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
                     Open
                   </button>
 
-                  {/* Stage-specific promote — write actions hidden for viewers */}
-                  {canEdit && activeStage === "TARGET" && (
-                    <button onClick={() => handleAction(lead.id, "LEAD")}
+                  {/* Single forward-promotion button — always advances by
+                      exactly one stage. Hidden when there's no next stage
+                      (CUSTOMER or ARCHIVED). Colour matches destination. */}
+                  {canEdit && NEXT_STAGE[activeStage] && (
+                    <button onClick={() => handleAction(lead.id, NEXT_STAGE[activeStage]!)}
                       disabled={actionId === lead.id}
-                      className="flex-1 disabled:opacity-50 text-white text-xs py-1.5 rounded font-medium bg-cyan-700 hover:bg-cyan-600">
-                      {actionId === lead.id ? "..." : "→ Lead"}
-                    </button>
-                  )}
-                  {canEdit && activeStage === "LEAD" && (
-                    <button onClick={() => handleAction(lead.id, "OPPORTUNITY")}
-                      disabled={actionId === lead.id}
-                      className="flex-1 disabled:opacity-50 text-white text-xs py-1.5 rounded font-medium bg-amber-700 hover:bg-amber-600">
-                      {actionId === lead.id ? "..." : "→ Opportunity"}
-                    </button>
-                  )}
-                  {canEdit && activeStage === "OPPORTUNITY" && (
-                    <button onClick={() => handleAction(lead.id, "CUSTOMER")}
-                      disabled={actionId === lead.id}
-                      className="flex-1 disabled:opacity-50 text-white text-xs py-1.5 rounded font-medium bg-green-700 hover:bg-green-600">
-                      {actionId === lead.id ? "..." : "→ Customer"}
+                      className={`flex-1 disabled:opacity-50 text-white text-xs py-1.5 rounded font-medium ${
+                        NEXT_STAGE[activeStage] === "LEAD"        ? "bg-cyan-700 hover:bg-cyan-600"
+                      : NEXT_STAGE[activeStage] === "VETTED"      ? "bg-teal-700 hover:bg-teal-600"
+                      : NEXT_STAGE[activeStage] === "ANALYZED"    ? "bg-indigo-700 hover:bg-indigo-600"
+                      : NEXT_STAGE[activeStage] === "VALIDATED"   ? "bg-purple-700 hover:bg-purple-600"
+                      : NEXT_STAGE[activeStage] === "OPPORTUNITY" ? "bg-amber-700 hover:bg-amber-600"
+                      : NEXT_STAGE[activeStage] === "CUSTOMER"    ? "bg-green-700 hover:bg-green-600"
+                      : "bg-gray-700 hover:bg-gray-600"
+                      }`}>
+                      {actionId === lead.id ? "..." : `→ ${NEXT_STAGE[activeStage]}`}
                     </button>
                   )}
 

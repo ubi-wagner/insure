@@ -1,33 +1,31 @@
 """
-NAL County Seeder
+NAL County Seeder — TARGET ingestion only.
 
-Seeds leads from FL DOR NAL tax roll files. This is the PRIMARY
-source of truth for property data — not Overpass.
+Reads FL DOR NAL tax roll files and creates one TARGET-stage Entity
+per parcel. NO filtering happens here beyond skipping single-family
+homes (DOR_UC=001) and mobile homes (002). Every other use code —
+condo masters, individual condo units, multi-family, retirement,
+hotels, commercial, mixed-use, vacant, agricultural — lands as a
+TARGET.
 
-Filters for target DOR use codes:
-  004 = Condominium
-  005 = Cooperatives
-  006 = Retirement Homes
-  008 = Multi-Family (10+ units)
-  039 = Hotels/Motels
+The downstream qualifier worker (TARGET → LEAD) applies the admin's
+configurable use-code allowlist. The aggregator (LEAD → VETTED) then
+groups parcels by street + zip + county, picks one master, and links
+the rest as siblings via Entity.parent_id.
 
-Creates Entity records with authoritative data already populated:
-  - Owner name + mailing address
-  - Market value (JV) → TIV at 1.3x
-  - Construction class
-  - Year built
-  - Living area sqft
-  - Number of buildings + residential units
-  - Parcel ID
-  - Physical address
-  - County
+Per-parcel Entity characteristics include:
+  - Owner name + mailing address (DOR)
+  - Market value (JV), per-parcel — masters are unreliable, units are honest
+  - Construction class (mapped to readable label)
+  - Year built (ACT_YR_BLT) and effective year built (EFF_YR_BLT)
+  - Living area sqft, number of buildings, NO_RES_UNTS
+  - Parcel ID, physical address (PHY_ADDR1 + PHY_ADDR2 concatenated)
   - DOR use code + description
+  - is_condo_master / is_condo_unit_parcel flags for the aggregator
+  - tiv_estimate (per-parcel; aggregator overwrites at master level)
 
-Then enrichment pipeline adds:
-  - FEMA flood zone
-  - DBPR condo name + managing entity
-  - Payment history / delinquency
-  - Auto-advance to ENRICHED
+Sale history (SALE_PRC1, SALE_YR1, SALE_MO1) and SDF latest-sale data
+are merged in when available.
 """
 
 import csv
@@ -89,6 +87,17 @@ DOR_COUNTIES = {
     "74": "Volusia",        # Daytona, New Smyrna Beach
     # Florida Keys
     "54": "Monroe",         # Key Largo, Marathon, Key West
+}
+
+# DOR use codes we explicitly skip at seed time. Everything else
+# (commercial, condos, multi-family, retirement, hotels, mixed-use,
+# vacant commercial, government, even agricultural) lands as TARGET.
+# Filtering down to the "really actionable" subset happens later, at
+# the TARGET → LEAD qualifier transition, where the admin can
+# configure the use-code allowlist.
+SKIP_USE_CODES = {
+    "001",  # Single-family home
+    "002",  # Mobile home
 }
 
 # Target DOR use codes for insurance leads
@@ -280,13 +289,17 @@ def _get_col(row: dict, col_map: dict[str, str], *names: str) -> str:
 
 
 def seed_county(county_no: str, db: Session, min_value: int | None = None) -> dict:
-    """Seed leads from a NAL file for one county.
+    """Seed every NAL parcel for a county as a TARGET.
 
-    Args:
-        min_value: Override MIN_MARKET_VALUE threshold. Pass 0 to disable.
+    The ``min_value`` argument is accepted for backwards compatibility with
+    the admin endpoints but is no longer applied — TARGET ingestion is
+    deliberately permissive. Filtering happens at the qualifier transition
+    (TARGET → LEAD) where the admin's use-code allowlist gates promotion.
 
-    Returns stats: {total_parcels, filtered, created, skipped_dupe, county_name, min_value}
+    Returns stats: {total_parcels, type_passed, filtered, created,
+                    skipped_dupe, county_name}.
     """
+    del min_value  # accepted but unused — see docstring
     county_name = DOR_COUNTIES.get(county_no, f"County {county_no}")
     nal_path = _find_nal_file(county_no)
     if not nal_path:
@@ -339,41 +352,39 @@ def seed_county(county_no: str, db: Session, min_value: int | None = None) -> di
                 if sample_row is None:
                     sample_row = {k: v for k, v in list(row.items())[:10]}
 
-                # Filter by DOR use code using normalized column lookup
+                # Normalize the use code so we can compare against SKIP_USE_CODES
+                # ("4" / "04" / "004" / "4.0" all become "004").
                 dor_uc = _get_col(row, col_map, "DOR_UC").strip()
-
-                # Normalize: could be "4", "04", "004", "4.0"
                 try:
                     dor_uc = str(int(float(dor_uc))).zfill(3) if dor_uc else ""
                 except (ValueError, TypeError):
                     dor_uc = dor_uc.zfill(3) if dor_uc else ""
 
-                num_units = _safe_int(_get_col(row, col_map, "NO_RES_UNTS", "NO_RES_UNITS"))
-
-                if dor_uc not in TARGET_USE_CODES:
-                    # Include other codes if they have enough units
-                    if not num_units or num_units < MIN_UNITS_FOR_OTHER:
-                        continue
+                # Skip only the use codes we never care about. Everything
+                # else — commercial, multi-family, condo master, condo unit,
+                # retirement, hotels, mixed-use, vacant, agricultural — is
+                # ingested as TARGET. The qualifier transition (TARGET → LEAD)
+                # applies the admin-configurable allowlist later.
+                if dor_uc in SKIP_USE_CODES:
+                    continue
 
                 type_passed += 1
+                filtered += 1  # No threshold filter at seed time anymore.
 
-                # Extract value and construction data for TIV computation
+                # Extract value and construction data so we can write rich
+                # TARGET characteristics. None of these gate ingestion now.
                 jv_raw = _safe_int(_get_col(row, col_map, "JV"))
                 living_sqft = _safe_int(_get_col(row, col_map, "TOT_LVG_AREA"))
                 const_class_raw = _get_col(row, col_map, "CONST_CLASS").strip() or None
                 const_class = DOR_CONSTRUCTION_CLASSES.get(const_class_raw, const_class_raw)
+                num_units = _safe_int(_get_col(row, col_map, "NO_RES_UNTS", "NO_RES_UNITS"))
 
-                # Pull owner and parcel_id early — needed for the condo master
-                # parcel detection below
+                # Master vs unit-parcel detection. Used by the aggregator to
+                # promote the right row to VETTED master, and by the UI to
+                # show "X linked unit parcels" on a master card.
                 parcel_id_early = _get_col(row, col_map, "PARCEL_ID").strip()
                 owner_early = _get_col(row, col_map, "OWN_NAME").strip()
                 owner_upper = owner_early.upper()
-
-                # Condo master parcel detection: Miami-Dade and other counties
-                # assess master parcels with near-zero JV and blank num_units,
-                # so they fail both the value filter and the unit filter. Detect
-                # them via owner name patterns and parcel ID conventions so they
-                # pass through the filter even without a realistic JV or unit count.
                 is_condo_master = dor_uc == "004" and (
                     any(kw in owner_upper for kw in [
                         "CONDO", "CONDOMINIUM", "ASSN", "ASSOCIATION",
@@ -383,60 +394,28 @@ def seed_county(county_no: str, db: Session, min_value: int | None = None) -> di
                         ("9999", "99990", "99999", "0000")
                     ))
                 )
-
-                # Skip individual condo unit parcels — DOR NAL contains both
-                # the master common-elements parcel AND one parcel per unit
-                # (each unit row carries NO_RES_UNTS=1 and a personal owner
-                # name). We only want one Entity per building, so reject the
-                # unit-level rows. A row is a "unit parcel" when it's
-                # DOR_UC=004 and is NOT a master AND has unit count <= 1.
-                # This drops thousands of duplicate Entity rows in Miami-Dade
-                # / Broward / Palm Beach where condo unit counts dominate NAL.
-                if dor_uc == "004" and not is_condo_master and (num_units or 0) <= 1:
-                    continue
-
-                # Sanity-cap absurd unit counts. Real condo buildings top out
-                # around ~700 units (the largest in FL is ~640). NAL master
-                # parcels occasionally aggregate multiple buildings, producing
-                # 1000+ unit counts that poison TIV downstream. We don't drop
-                # the row — we just clamp the value used for TIV math and tag
-                # it for follow-up. The DBPR Building enricher (when scraping
-                # works) will overwrite with the truth.
-                MAX_REASONABLE_UNITS = 800
-                num_units_overcap = bool(num_units and num_units > MAX_REASONABLE_UNITS)
-                num_units_for_tiv = (
-                    min(num_units, MAX_REASONABLE_UNITS) if num_units else None
+                # A row is a per-unit condo parcel when it's DOR_UC=004,
+                # not a master, and has at most one residential unit. The
+                # aggregator uses this flag to roll these up under the
+                # building's master at LEAD → VETTED.
+                is_condo_unit_parcel = (
+                    dor_uc == "004"
+                    and not is_condo_master
+                    and (num_units or 0) <= 1
                 )
 
-                # Compute replacement cost TIV — more reliable than DOR JV for
-                # condo master parcels where the building value is split across
-                # individual unit parcels. Use the capped unit count so a
-                # single bad NAL row doesn't push TIV into the hundreds of
-                # millions for an average building.
+                # Per-parcel TIV estimate. Honest for non-condo and for unit
+                # parcels (their JV is real). Suspect for condo masters
+                # because their JV is artificially low — but we keep the
+                # estimate anyway and let the aggregator sum sibling JVs at
+                # the master level for the truth.
                 tiv_estimate = _compute_replacement_tiv(
-                    num_units=num_units_for_tiv,
+                    num_units=num_units,
                     living_sqft=living_sqft,
                     construction_class=const_class,
                     county=county_name,
                     jv=jv_raw,
                 )
-
-                # Filter on computed TIV (not raw DOR JV) — this lets condo
-                # master parcels with understated JV but real physical characteristics
-                # pass through the filter.
-                #
-                # EXCEPTION: if this is an identifiable condo master parcel with
-                # near-zero JV, let it through even below the threshold — it will
-                # be revalued after DBPR enrichment provides the real unit count.
-                threshold = min_value if min_value is not None else MIN_MARKET_VALUE
-                effective_value = tiv_estimate or jv_raw or 0
-                if not is_condo_master:
-                    if threshold > 0 and 0 < effective_value < threshold:
-                        continue
-                    if dor_uc in ("004", "005", "008") and num_units and num_units < MIN_UNITS_TARGET:
-                        continue
-
-                filtered += 1
 
                 # Get physical address. NAL splits the street line across
                 # PHY_ADDR1 (number + name) and PHY_ADDR2 (directional or
@@ -493,23 +472,26 @@ def seed_county(county_no: str, db: Session, min_value: int | None = None) -> di
                     "dor_effective_year_built": _safe_int(_get_col(row, col_map, "EFF_YR_BLT")),
                     "dor_living_sqft": _safe_int(_get_col(row, col_map, "TOT_LVG_AREA")),
                     "dor_num_buildings": _safe_int(_get_col(row, col_map, "NO_BULDNG")),
-                    "dor_num_units": num_units_for_tiv,
-                    "units_estimate": num_units_for_tiv,
+                    "dor_num_units": num_units,
+                    "units_estimate": num_units,
                     "dor_land_sqft": _safe_int(_get_col(row, col_map, "LND_SQFOOT")),
                     "dor_special_features_value": _safe_int(_get_col(row, col_map, "SPEC_FEAT_VAL")),
                     "tiv_estimate": tiv_estimate,
                     "tiv": f"${tiv_estimate:,.0f}" if tiv_estimate else None,
+                    # Per-parcel TIV is always an estimate. The aggregator
+                    # rolls up sibling JVs at the master level, where it can
+                    # write a real summed number — see /agents/aggregator.py.
+                    "tiv_is_estimate": True,
                     "tiv_method": (
-                        "unit_replacement" if (num_units_for_tiv and num_units_for_tiv > 0 and tiv_estimate and
-                            tiv_estimate == (num_units_for_tiv * (500_000 if county_name in HIGH_COST_COUNTIES
+                        "unit_replacement" if (num_units and num_units > 0 and tiv_estimate and
+                            tiv_estimate == (num_units * (500_000 if county_name in HIGH_COST_COUNTIES
                                 else 400_000 if county_name in MID_COST_COUNTIES else 300_000)))
                         else "sqft_replacement" if (living_sqft and living_sqft > 0 and tiv_estimate and
                             tiv_estimate > (jv_raw * 1.3 if jv_raw else 0))
                         else "jv_markup"
                     ) if tiv_estimate else None,
                     "is_condo_master": is_condo_master,
-                    "dor_num_units_raw": num_units if num_units_overcap else None,
-                    "dor_num_units_overcap": True if num_units_overcap else None,
+                    "is_condo_unit_parcel": is_condo_unit_parcel,
                     "construction_class": const_class,
                     "imp_qual": _get_col(row, col_map, "IMP_QUAL").strip() or None,
                     "phy_city": phy_city or None,
@@ -612,8 +594,6 @@ def seed_county(county_no: str, db: Session, min_value: int | None = None) -> di
              detail=f"{county_name}: {str(e)[:200]}")
         return {"error": str(e), "county": county_name, "total": total, "filtered": filtered, "created": created}
 
-    threshold_used = min_value if min_value is not None else MIN_MARKET_VALUE
-
     result = {
         "county": county_name,
         "county_no": county_no,
@@ -622,7 +602,6 @@ def seed_county(county_no: str, db: Session, min_value: int | None = None) -> di
         "filtered": filtered,
         "created": created,
         "skipped_dupe": skipped_dupe,
-        "min_value_used": threshold_used,
         "nal_file": os.path.basename(nal_path),
         "sdf_records": len(sdf_data),
     }
@@ -631,7 +610,7 @@ def seed_county(county_no: str, db: Session, min_value: int | None = None) -> di
     _save_seed_stats(county_no, result)
 
     emit(EventType.HUNTER, "seed_county", EventStatus.SUCCESS,
-         detail=f"{county_name}: {created} from {filtered} value-filtered / {type_passed} type-matched / {total} parcels")
+         detail=f"{county_name}: {created} TARGETs created from {total} NAL rows ({skipped_dupe} duplicates skipped)")
     logger.info(f"Seed complete: {result}")
 
     return result

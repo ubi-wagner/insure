@@ -118,7 +118,8 @@ def _create_entity_folder(entity: Entity) -> str:
 
 
 def _promote_geocoded(entity: Entity, lat: float, lon: float, db: Session, source: str = "census") -> bool:
-    """Promote a geocoded TARGET to LEAD."""
+    """Write coordinates onto a LEAD entity. Does NOT advance pipeline stage —
+    the qualifier owns the TARGET → LEAD transition now."""
     try:
         from utils.geo import distance_to_ocean_miles
 
@@ -127,27 +128,31 @@ def _promote_geocoded(entity: Entity, lat: float, lon: float, db: Session, sourc
 
         chars = dict(entity.characteristics or {})
         chars["geocode_source"] = source
-        # Compute distance to ocean now that we have coordinates
         ocean_dist = distance_to_ocean_miles(lat, lon)
         if ocean_dist is not None:
             chars["distance_to_ocean_miles"] = ocean_dist
         entity.characteristics = chars
 
-        entity.pipeline_stage = "LEAD"
-        entity.enrichment_status = "idle"
+        if entity.enrichment_status is None:
+            entity.enrichment_status = "idle"
         _create_entity_folder(entity)
         db.commit()
         return True
     except Exception as e:
         db.rollback()
-        logger.error(f"Geocode promotion failed for entity {entity.id}: {e}")
+        logger.error(f"Geocode write failed for entity {entity.id}: {e}")
         return False
 
 
 def run_association_cycle(db: Session) -> int:
-    """Run one cycle: batch geocode TARGETs → promote to LEAD."""
+    """Geocode LEADs that haven't been located yet.
+
+    The associator no longer promotes pipeline stage — the qualifier
+    handles TARGET → LEAD. Geocoding only fires once a parcel has
+    cleared the qualifier (so we don't burn Census API calls on
+    millions of single-family homes that never become LEADs)."""
     targets = db.query(Entity).filter(
-        Entity.pipeline_stage == "TARGET",
+        Entity.pipeline_stage == "LEAD",
         Entity.latitude.is_(None),
     ).limit(BATCH_SIZE).all()
 

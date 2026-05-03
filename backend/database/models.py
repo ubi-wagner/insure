@@ -29,11 +29,25 @@ class RegionStatus(str, enum.Enum):
 
 
 class PipelineStage(str, enum.Enum):
-    TARGET = "TARGET"           # Raw NAL parcel, pending geocoding + enrichment
-    LEAD = "LEAD"               # Associated, continuously enriching, scored cold/warm/hot
+    """8-stage pipeline.
+
+    The first five (TARGET → VALIDATED) are deterministic gated
+    transitions driven by the seeder, qualifier, aggregator, enricher,
+    and validator workers. The last three (OPPORTUNITY, CUSTOMER,
+    ARCHIVED) are user-driven CRM stages.
+
+    Aggregation note: VETTED and beyond use Entity.parent_id to model
+    a master with linked unit-parcel siblings. Children share the
+    master's stage; the UI hides children unless explicitly expanded.
+    """
+    TARGET      = "TARGET"      # Raw NAL parcel — every non-residential row
+    LEAD        = "LEAD"        # Passed admin use-code allowlist
+    VETTED      = "VETTED"      # Aggregated; masters carry summed TIV / unit count
+    ANALYZED    = "ANALYZED"    # Cream + Sunbiz + DBPR + FEMA + OIR done
+    VALIDATED   = "VALIDATED"   # Zillow / VRBO / property appraiser deep verified
     OPPORTUNITY = "OPPORTUNITY"  # User-promoted for CRM engagement
-    CUSTOMER = "CUSTOMER"        # Converted deal
-    ARCHIVED = "ARCHIVED"        # Dismissed
+    CUSTOMER    = "CUSTOMER"     # Converted deal
+    ARCHIVED    = "ARCHIVED"     # Dismissed at any stage
 
 
 class ActionType(str, enum.Enum):

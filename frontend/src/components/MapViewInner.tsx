@@ -23,6 +23,9 @@ const STORAGE_KEY = "insure_map_view";
 const STAGE_STYLES: Record<string, { border: string }> = {
   TARGET:      { border: "#6b7280" }, // gray
   LEAD:        { border: "#06b6d4" }, // cyan
+  VETTED:      { border: "#14b8a6" }, // teal
+  ANALYZED:    { border: "#6366f1" }, // indigo
+  VALIDATED:   { border: "#a855f7" }, // purple
   OPPORTUNITY: { border: "#f59e0b" }, // amber
   CUSTOMER:    { border: "#22c55e" }, // green
   ARCHIVED:    { border: "#450a0a" }, // dark red

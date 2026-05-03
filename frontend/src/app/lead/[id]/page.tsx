@@ -74,6 +74,7 @@ const HEAT_STYLES: Record<string, string> = {
 
 const STAGE_COLORS: Record<string, string> = {
   TARGET: "bg-gray-700", LEAD: "bg-cyan-900",
+  VETTED: "bg-teal-900", ANALYZED: "bg-indigo-900", VALIDATED: "bg-purple-900",
   OPPORTUNITY: "bg-blue-900", CUSTOMER: "bg-green-800", ARCHIVED: "bg-red-900",
 };
 
@@ -195,7 +196,10 @@ export default function LeadDetailPage() {
   }
 
   const chars = lead.characteristics || {};
-  const stages = ["TARGET", "LEAD", "OPPORTUNITY", "CUSTOMER", "ARCHIVED"];
+  const stages = [
+    "TARGET", "LEAD", "VETTED", "ANALYZED", "VALIDATED",
+    "OPPORTUNITY", "CUSTOMER", "ARCHIVED",
+  ];
   const isEngageReady = ["OPPORTUNITY", "CUSTOMER"].includes(lead.pipeline_stage);
   const tabs: { key: TabName; label: string; count?: number }[] = [
     { key: "overview", label: "Overview" },
@@ -257,14 +261,47 @@ export default function LeadDetailPage() {
           </div>
         </div>
         {(lead.children?.length ?? 0) > 0 && (
-          <div className="mt-2 flex gap-2 items-center">
-            <span className="text-gray-500 text-xs">Sub-entities:</span>
-            {(lead.children || []).map((ch) => (
-              <Link key={ch.id} href={`/lead/${ch.id}`}
-                className="bg-gray-800 text-gray-300 hover:text-white text-xs px-2 py-1 rounded">
-                {ch.name}
-              </Link>
-            ))}
+          <details className="mt-2 bg-gray-900/40 border border-gray-800 rounded">
+            <summary className="cursor-pointer px-3 py-2 text-xs text-gray-300 hover:bg-gray-900/70 list-none flex items-center justify-between">
+              <span>
+                <span className="text-teal-400 font-semibold">VETTED master</span>
+                <span className="text-gray-500"> — {lead.children?.length ?? 0} linked unit parcel{(lead.children?.length ?? 0) === 1 ? "" : "s"}</span>
+              </span>
+              <span className="text-gray-600 text-[10px]">click to expand</span>
+            </summary>
+            <div className="border-t border-gray-800 max-h-[40vh] overflow-y-auto">
+              <table className="w-full text-[11px]">
+                <thead className="sticky top-0 bg-gray-900">
+                  <tr className="border-b border-gray-800 text-gray-500">
+                    <th className="text-left px-3 py-1.5">Parcel</th>
+                    <th className="text-left px-2 py-1.5">Address</th>
+                    <th className="text-left px-2 py-1.5">Stage</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(lead.children || []).map((ch) => (
+                    <tr key={ch.id} className="border-b border-gray-800/50 hover:bg-gray-800/30">
+                      <td className="px-3 py-1">
+                        <Link href={`/lead/${ch.id}`}
+                          className="text-blue-400 hover:text-blue-300 font-mono">
+                          #{ch.id}
+                        </Link>
+                      </td>
+                      <td className="px-2 py-1 text-gray-400 truncate max-w-[420px]">{ch.name || ch.address}</td>
+                      <td className="px-2 py-1 text-gray-600">{ch.pipeline_stage}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </details>
+        )}
+        {lead.parent_id != null && (
+          <div className="mt-2 bg-gray-900/40 border border-gray-800 rounded px-3 py-2 text-xs text-gray-400">
+            Linked unit parcel under{" "}
+            <Link href={`/lead/${lead.parent_id}`} className="text-blue-400 hover:text-blue-300 font-medium">
+              master #{lead.parent_id}
+            </Link>
           </div>
         )}
         {/* Stage error / readiness warning */}
@@ -273,9 +310,13 @@ export default function LeadDetailPage() {
             <p className="text-amber-300 text-xs">{stageError}</p>
             {canEdit && (
               <button onClick={() => {
-                const nextStage = lead.pipeline_stage === "TARGET" ? "LEAD" :
-                  lead.pipeline_stage === "LEAD" ? "OPPORTUNITY" :
-                  lead.pipeline_stage === "OPPORTUNITY" ? "CUSTOMER" : "";
+                const nextStage =
+                  lead.pipeline_stage === "TARGET"      ? "LEAD"        :
+                  lead.pipeline_stage === "LEAD"        ? "VETTED"      :
+                  lead.pipeline_stage === "VETTED"      ? "ANALYZED"    :
+                  lead.pipeline_stage === "ANALYZED"    ? "VALIDATED"   :
+                  lead.pipeline_stage === "VALIDATED"   ? "OPPORTUNITY" :
+                  lead.pipeline_stage === "OPPORTUNITY" ? "CUSTOMER"    : "";
                 if (nextStage) handleStageChange(nextStage, true);
               }}
                 className="bg-amber-800 hover:bg-amber-700 text-amber-200 text-xs px-2 py-1 rounded ml-3 shrink-0">
