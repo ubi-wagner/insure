@@ -82,24 +82,70 @@ _SUFFIX_NORMALISE = {
     "southwest": "sw", "sw": "sw",
 }
 
+# Tokens that anchor the building street line. Anything after one of
+# these (plus an optional trailing directional like "S" or "N") is
+# unit / suite / apartment noise that must be stripped before
+# aggregation, otherwise every condo unit becomes its own group.
+_STREET_SUFFIXES = {
+    "ave", "blvd", "st", "rd", "dr", "ln", "pl", "ct", "ter",
+    "pkwy", "hwy", "cir", "way", "mile",
+}
+_DIRECTIONALS = {"n", "s", "e", "w", "ne", "nw", "se", "sw"}
+
+# Tokens that explicitly mark unit-level information. Encountering one
+# stops street parsing immediately even if no suffix has been seen.
+_UNIT_MARKERS = {
+    "unit", "apt", "apartment", "ste", "suite", "bldg", "building",
+    "lot", "fl", "floor", "rm", "room", "ph",
+}
+
 
 def _normalize_street(addr: str | None) -> str:
     """Canonical key for the street segment of an address.
 
-    Drops everything after the first comma (city/state/zip) so the
-    aggregator key stays focused on "this exact street line in this
-    zip in this county". Lowercases, normalises suffix/directional
-    spelling, and squashes punctuation. Returns empty string when
-    no usable street is present.
+    Strips city / state / zip (everything past the first comma), then
+    normalises directional and street-suffix spellings, then walks the
+    tokens left-to-right and TRUNCATES at the first sign of a
+    unit / apartment / suite suffix. The truncation rule:
+
+      [number] [name…] [suffix] [optional one directional]
+
+    Anything after that — bare numeric (e.g. "1702" in
+    "1451 BRICKELL AVE 1702") or an explicit unit marker (#, UNIT,
+    APT, STE, FL, RM, etc.) — is dropped. Without this every condo
+    unit row produces a unique aggregation key and we end up with
+    171 single-row "masters" instead of one Echo Brickell master
+    with 171 linked siblings.
     """
     if not addr:
         return ""
     street = addr.split(",", 1)[0].lower()
-    street = re.sub(r"[.,#]", " ", street)
-    parts = [p for p in street.split() if p]
+    # Pre-tokenise: replace #, dashes, commas, dots with spaces so they
+    # don't fuse to neighbouring tokens. "AVE-S" → "AVE S", "#106" → " 106".
+    street = re.sub(r"[#.,\-]", " ", street)
+    raw_tokens = [t for t in street.split() if t]
+    tokens = [_SUFFIX_NORMALISE.get(t, t) for t in raw_tokens]
+
     out: list[str] = []
-    for p in parts:
-        out.append(_SUFFIX_NORMALISE.get(p, p))
+    have_suffix = False
+    for t in tokens:
+        # Explicit unit marker terminates parsing regardless of whether
+        # we've seen a suffix yet.
+        if t in _UNIT_MARKERS:
+            break
+        if have_suffix:
+            # We've already captured a suffix — accept exactly one
+            # trailing directional, then stop. Bare numbers / letters
+            # after the directional are unit codes.
+            if t in _DIRECTIONALS:
+                out.append(t)
+                # Don't allow another suffix or anything else past this.
+                break
+            # Any other token after the suffix is unit noise.
+            break
+        out.append(t)
+        if t in _STREET_SUFFIXES:
+            have_suffix = True
     return " ".join(out)
 
 

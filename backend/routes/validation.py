@@ -358,8 +358,25 @@ def find_match(
             else:
                 score -= 6
 
-        if target_zip and cand_zip and target_zip == cand_zip:
-            score += 4
+        # ZIP scoring. ZIPs in Florida cluster by region (33xxx South,
+        # 32xxx Central/North, 34xxx Central Gulf, 30s NW Panhandle).
+        # When both sides have a ZIP and the first three digits don't
+        # even match, we're looking at a different region of the state
+        # entirely — a hard reject for an address-anchored matcher.
+        if target_zip and cand_zip:
+            if target_zip == cand_zip:
+                score += 4
+            elif target_zip[:3] != cand_zip[:3]:
+                # Different ZIP region — almost certainly the wrong
+                # county / city / building. Skip outright instead of
+                # penalising; this catches the "1120 NORTH SHORE DR
+                # in St. Pete" → "1120 SHORE VIEW DR in Englewood"
+                # type of cross-county collision.
+                continue
+            else:
+                # Same region, different zip — small penalty (could be
+                # a stale DOR zip or a multi-zip building).
+                score -= 3
         if target_city and cand_city and (
             target_city in cand_city or cand_city in target_city
         ):
