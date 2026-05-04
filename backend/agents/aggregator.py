@@ -292,10 +292,15 @@ def _rollup_master(master: Entity, group: list[Entity]) -> dict:
 
 
 def _list_counties_with_leads(db: Session) -> list[str]:
-    """Distinct county names that currently hold un-linked LEADs."""
+    """Counties that hold rows the aggregator should consider.
+
+    Includes LEAD AND VETTED at parent_id IS NULL so that re-clicking
+    Aggregate after a code fix can re-group previously-promoted
+    singletons (the broken pre-fix pass left ~1.9M of them).
+    """
     rows = (
         db.query(Entity.county)
-        .filter(Entity.pipeline_stage == "LEAD")
+        .filter(Entity.pipeline_stage.in_(["LEAD", "VETTED"]))
         .filter(Entity.parent_id.is_(None))
         .filter(Entity.county.isnot(None))
         .distinct()
@@ -304,16 +309,65 @@ def _list_counties_with_leads(db: Session) -> list[str]:
     return sorted(r[0] for r in rows if r[0])
 
 
-def _aggregate_one_county(db: Session, county_name: str) -> dict:
-    """Run the LEAD → VETTED transition for a single county.
+def _is_orphan_condo_unit(entity: Entity) -> bool:
+    """A DOR_UC=004 row with no master flag and no real unit count is
+    an orphan unit parcel — a single condo unit that didn't find any
+    sibling rows at the same building. Promoting it to VETTED produces
+    the "1-unit condo" UI bug; keep it as LEAD until siblings show up.
+    """
+    chars = entity.characteristics or {}
+    if str(chars.get("dor_use_code") or "").zfill(3) != "004":
+        return False
+    if chars.get("is_condo_master"):
+        return False
+    units = _to_int(chars.get("dor_num_units")) or 0
+    return units <= 1
 
-    Loads only that county's LEAD set, groups by (zip5, normalized
-    street), and writes the result back via bulk SQL. Cross-county
-    collisions are impossible because the load is county-filtered.
+
+def _is_already_aggregated_master(entity: Entity) -> bool:
+    """A VETTED row whose siblings already point at it. Re-grouping it
+    alone (siblings are filtered out by parent_id IS NOT NULL) would
+    wrongly reset its sibling_count. Skip."""
+    chars = entity.characteristics or {}
+    return bool(
+        chars.get("is_aggregation_master")
+        and (chars.get("sibling_count") or 0) > 0
+    )
+
+
+_MASTER_KEYS_TO_CLEAR = (
+    "is_aggregation_master", "sibling_count", "sibling_ids",
+    "aggregated_at", "tiv_estimate_master", "dor_market_value_master",
+    "num_units_master", "stories_master", "tiv_master_is_estimate",
+)
+
+
+def _strip_master_metadata(chars: dict) -> dict:
+    """Remove rolled-up master fields from a row that's being demoted
+    back to LEAD. Returns a fresh dict (SQLAlchemy needs a new object
+    on the JSONB column to detect the change)."""
+    out = dict(chars or {})
+    for k in _MASTER_KEYS_TO_CLEAR:
+        out.pop(k, None)
+    return out
+
+
+def _aggregate_one_county(db: Session, county_name: str) -> dict:
+    """Run the LEAD/VETTED → VETTED transition for a single county.
+
+    Loads only that county's un-linked rows, groups by (zip5,
+    normalized street), and writes the result back via bulk SQL.
+    Cross-county collisions are impossible because the load is
+    county-filtered.
+
+    Idempotent. Safe to re-run after a code change in the address
+    normaliser — singleton VETTED rows from a previous pass get
+    re-considered and either group correctly or fall back to LEAD
+    if they're orphan condo units.
     """
     candidates = (
         db.query(Entity)
-        .filter(Entity.pipeline_stage == "LEAD")
+        .filter(Entity.pipeline_stage.in_(["LEAD", "VETTED"]))
         .filter(Entity.parent_id.is_(None))
         .filter(Entity.county == county_name)
         .all()
@@ -321,8 +375,15 @@ def _aggregate_one_county(db: Session, county_name: str) -> dict:
 
     groups: dict[tuple[str, str], list[Entity]] = defaultdict(list)
     skipped_no_address = 0
+    skipped_existing_master = 0
 
     for e in candidates:
+        # Don't re-touch already-correctly-aggregated masters — they
+        # appear as a group of 1 because their siblings are filtered
+        # out, and re-rolling-up would reset their sibling_count.
+        if _is_already_aggregated_master(e):
+            skipped_existing_master += 1
+            continue
         zip5 = _entity_zip(e)
         street = _entity_street(e)
         if not street:
@@ -333,17 +394,38 @@ def _aggregate_one_county(db: Session, county_name: str) -> dict:
     masters_promoted = 0
     siblings_linked = 0
     singletons = 0
+    orphan_units = 0
     new_master_ids: list[int] = []
 
     for (zip5, street), group in groups.items():
+        # ── Singleton path ─────────────────────────────────────────
+        if len(group) == 1:
+            only = group[0]
+            if _is_orphan_condo_unit(only):
+                # Don't promote a 1-unit condo. If a previous broken
+                # pass already promoted it to VETTED, demote it back
+                # to LEAD and strip the bogus master metadata so the
+                # pipeline list doesn't show a "1-unit master".
+                orphan_units += 1
+                if only.pipeline_stage == "VETTED":
+                    only.pipeline_stage = "LEAD"
+                    only.characteristics = _strip_master_metadata(only.characteristics)
+                continue
+
+            # Legitimate singleton (small commercial / hotel / etc.)
+            only.characteristics = _rollup_master(only, group)
+            only.pipeline_stage = "VETTED"
+            new_master_ids.append(only.id)
+            masters_promoted += 1
+            singletons += 1
+            continue
+
+        # ── Multi-row group ────────────────────────────────────────
         master = _select_master(group)
         master.characteristics = _rollup_master(master, group)
         master.pipeline_stage = "VETTED"
         new_master_ids.append(master.id)
         masters_promoted += 1
-        if len(group) == 1:
-            singletons += 1
-            continue
 
         sibling_ids = [e.id for e in group if e.id != master.id]
         # One bulk UPDATE per group instead of one ORM update per
@@ -369,6 +451,8 @@ def _aggregate_one_county(db: Session, county_name: str) -> dict:
         "masters_promoted": masters_promoted,
         "siblings_linked": siblings_linked,
         "singletons": singletons,
+        "orphan_units_demoted": orphan_units,
+        "skipped_existing_master": skipped_existing_master,
         "skipped_no_address": skipped_no_address,
         "new_master_ids": new_master_ids,
     }
@@ -419,6 +503,7 @@ def run_aggregator(db: Session, county: str | None = None) -> dict:
     total_masters = 0
     total_siblings = 0
     total_singletons = 0
+    total_orphans = 0
     total_scanned = 0
     total_skipped = 0
     all_new_master_ids: list[int] = []
@@ -431,6 +516,7 @@ def run_aggregator(db: Session, county: str | None = None) -> dict:
                 "completed_counties": [r["county"] for r in per_county],
                 "total_masters_promoted": total_masters,
                 "total_siblings_linked": total_siblings,
+                "total_orphan_units_demoted": total_orphans,
             },
         )
 
@@ -443,7 +529,8 @@ def run_aggregator(db: Session, county: str | None = None) -> dict:
                 "county": c, "error": str(e),
                 "scanned_leads": 0, "groups_formed": 0,
                 "masters_promoted": 0, "siblings_linked": 0,
-                "singletons": 0, "skipped_no_address": 0,
+                "singletons": 0, "orphan_units_demoted": 0,
+                "skipped_existing_master": 0, "skipped_no_address": 0,
                 "new_master_ids": [],
             }
 
@@ -451,13 +538,17 @@ def run_aggregator(db: Session, county: str | None = None) -> dict:
         total_masters += r["masters_promoted"]
         total_siblings += r["siblings_linked"]
         total_singletons += r["singletons"]
+        total_orphans += r.get("orphan_units_demoted", 0)
         total_scanned += r["scanned_leads"]
         total_skipped += r["skipped_no_address"]
         all_new_master_ids.extend(r["new_master_ids"])
 
         emit(EventType.HUNTER, "aggregator_county", EventStatus.SUCCESS,
-             detail=(f"Aggregator {c}: {r['masters_promoted']:,} masters, "
-                     f"{r['siblings_linked']:,} siblings"))
+             detail=(
+                 f"Aggregator {c}: {r['masters_promoted']:,} masters, "
+                 f"{r['siblings_linked']:,} siblings, "
+                 f"{r.get('orphan_units_demoted', 0):,} orphan units → LEAD"
+             ))
 
     # Defer enrichment queueing until after every county is done.
     # Doing this once at the end (instead of per-master inside the
@@ -484,6 +575,7 @@ def run_aggregator(db: Session, county: str | None = None) -> dict:
         "masters_promoted": total_masters,
         "siblings_linked": total_siblings,
         "singletons": total_singletons,
+        "orphan_units_demoted": total_orphans,
         "skipped_no_address": total_skipped,
         "counties_processed": len(counties),
         "per_county": per_county,
@@ -500,7 +592,7 @@ def run_aggregator(db: Session, county: str | None = None) -> dict:
         summary=(
             f"{total_masters:,} VETTED masters across {len(counties)} counties "
             f"({total_siblings:,} siblings, {total_singletons:,} singletons, "
-            f"{duration:.1f}s)"
+            f"{total_orphans:,} orphan units → LEAD, {duration:.1f}s)"
         ),
         details=result,
     )
@@ -508,7 +600,8 @@ def run_aggregator(db: Session, county: str | None = None) -> dict:
     emit(EventType.HUNTER, "aggregator_done", EventStatus.SUCCESS,
          detail=(
              f"Aggregator: {total_masters:,} masters across {len(counties)} "
-             f"counties in {duration:.1f}s"
+             f"counties in {duration:.1f}s "
+             f"({total_orphans:,} orphan units demoted to LEAD)"
          ))
     logger.info(f"Aggregator: {result}")
     return result
