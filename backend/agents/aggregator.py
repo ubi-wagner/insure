@@ -219,6 +219,54 @@ def _select_master(group: list[Entity]) -> Entity:
     return min(group, key=lambda e: e.id)
 
 
+# Owner-name patterns that mean "this row IS the association/master"
+# (e.g., "ECHO BRICKELL CONDOMINIUM ASSOCIATION INC"). When the picked
+# master's name doesn't contain any of these, the master is really a
+# unit parcel that just happens to have the lowest id — its owner is
+# a person, not the building. In that case we overwrite entity.name
+# with a synthesized building label so the UI doesn't display
+# "JOHN SMITH" as if he owns 41 other parcels.
+_ASSOCIATION_NAME_KEYWORDS = (
+    "CONDO", "CONDOMINIUM", "ASSN", "ASSOCIATION", "ASSOC",
+    "HOMEOWNERS", "OWNERS ASSOC", "HOA", "POA", "COOP",
+    "COOPERATIVE", "MASTER",
+)
+
+
+def _looks_like_association_name(name: str | None) -> bool:
+    if not name:
+        return False
+    upper = name.upper()
+    return any(kw in upper for kw in _ASSOCIATION_NAME_KEYWORDS)
+
+
+def _synthesize_master_name(group: list[Entity], master: Entity) -> str:
+    """Build a clean display name for an aggregation master that's
+    really a unit parcel (no association row was found in the group).
+
+    Uses the canonical street + sibling count: "1161 Hillsboro Mile
+    (42 units)". Title-cases for readability."""
+    chars = master.characteristics or {}
+    canon = chars.get("street_canon") or ""
+    canon_parts = canon.split() if canon else []
+    if canon_parts:
+        # Title-case everything except the first token (the number) and
+        # 1- or 2-letter directional/suffix tokens which look ugly when
+        # capitalized. Mile/St/Ave/Blvd are already short so leave as-is.
+        labelled: list[str] = []
+        for i, p in enumerate(canon_parts):
+            if i == 0 or len(p) <= 2:
+                labelled.append(p.upper() if len(p) <= 2 and not p[0].isdigit() else p)
+            else:
+                labelled.append(p.title())
+        street_label = " ".join(labelled)
+    else:
+        street_label = master.address.split(",", 1)[0] if master.address else "Building"
+
+    n = len(group)
+    return f"{street_label} ({n} unit{'s' if n != 1 else ''})"
+
+
 def _rollup_master(master: Entity, group: list[Entity]) -> dict:
     """Compute summed/maxed values across the group; return the chars patch."""
     chars = dict(master.characteristics or {})
@@ -435,6 +483,19 @@ def _aggregate_one_county(db: Session, county_name: str) -> dict:
         master = _select_master(group)
         master.characteristics = _rollup_master(master, group)
         master.pipeline_stage = "VETTED"
+
+        # If the picked master's owner name is a person (no "CONDO"
+        # / "ASSOCIATION" / etc.), the row is really a unit parcel
+        # that just happened to have the lowest id. Synthesize a
+        # clean building label so the UI doesn't show "JOHN SMITH"
+        # as if he owns 41 other parcels. Also stash the original
+        # name for the contact list.
+        if not _looks_like_association_name(master.name):
+            chars = dict(master.characteristics or {})
+            chars["dor_owner_personal"] = master.name
+            master.characteristics = chars
+            master.name = _synthesize_master_name(group, master)
+
         new_master_ids.append(master.id)
         masters_promoted += 1
 
