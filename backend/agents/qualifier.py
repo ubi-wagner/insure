@@ -152,6 +152,40 @@ _BULK_UPDATE_SQL = text("""
       AND (characteristics ->> 'dor_use_code') = ANY(:codes)
 """)
 
+# Pass-2 rule: single-family parcels (DOR_UC=001) are normally noise,
+# but when 2+ of them share the same (zip, canonical street) at the
+# parcel level it's almost certainly a converted condo where DOR
+# still tags each unit individually. Promote those.
+#
+# The CTE finds canonical-street groups of size >= 2 inside one
+# county that contain at least one DOR_UC=001 row, then the outer
+# UPDATE moves every member of those groups into LEAD (regardless of
+# whether the row's own use code is 001 — the master parcel might
+# carry a different code).
+_BULK_SF_CONVERSION_SQL = text("""
+    WITH groups AS (
+        SELECT
+            (characteristics ->> 'phy_zip')        AS zip5,
+            (characteristics ->> 'street_canon')   AS canon,
+            COUNT(*)                                AS cnt
+        FROM entities
+        WHERE pipeline_stage = 'TARGET'
+          AND county = :county
+          AND (characteristics ->> 'street_canon') IS NOT NULL
+          AND (characteristics ->> 'street_canon') <> ''
+        GROUP BY zip5, canon
+        HAVING COUNT(*) >= 2
+           AND BOOL_OR((characteristics ->> 'dor_use_code') = '001')
+    )
+    UPDATE entities
+    SET pipeline_stage = 'LEAD'
+    WHERE pipeline_stage = 'TARGET'
+      AND county = :county
+      AND (characteristics ->> 'phy_zip',
+           characteristics ->> 'street_canon')
+          IN (SELECT zip5, canon FROM groups)
+""")
+
 
 def _list_counties_with_targets(db: Session) -> list[str]:
     """Distinct county names that currently hold TARGETs. We loop over
@@ -210,34 +244,67 @@ def run_qualifier(db: Session, county: str | None = None) -> dict:
                 f"across {len(counties)} counties")
 
     promoted_by_county: dict[str, int] = {}
+    sf_conversions_by_county: dict[str, int] = {}
     total_promoted = 0
+    total_sf_conversions = 0
 
     for idx, c in enumerate(counties, start=1):
         pipeline_state.mark_progress(
             "qualifier",
             current=f"({idx}/{len(counties)}) {c}",
-            details={"promoted_by_county": promoted_by_county,
-                     "total_promoted": total_promoted},
+            details={
+                "promoted_by_county": promoted_by_county,
+                "total_promoted": total_promoted,
+                "total_sf_conversions": total_sf_conversions,
+            },
         )
 
+        # Pass 1 — DOR use-code allowlist
         try:
-            result = db.execute(
+            r1 = db.execute(
                 _BULK_UPDATE_SQL,
                 {"county": c, "codes": list(allowlist)},
             )
-            row_count = result.rowcount or 0
+            row_count = r1.rowcount or 0
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Qualifier pass-1 failed for {c}: {e}")
+            promoted_by_county[c] = 0
+            sf_conversions_by_county[c] = 0
+            continue
+
+        # Pass 2 — single-family condo-conversion: DOR_UC=001 parcels
+        # that share a canonical address with at least one other
+        # parcel in the same zip get promoted too.
+        try:
+            r2 = db.execute(
+                _BULK_SF_CONVERSION_SQL,
+                {"county": c},
+            )
+            sf_count = r2.rowcount or 0
+        except Exception as e:
+            logger.warning(f"Qualifier pass-2 (SF condos) failed for {c}: {e}")
+            sf_count = 0
+
+        try:
             db.commit()
         except Exception as e:
             db.rollback()
-            logger.error(f"Qualifier failed for {c}: {e}")
+            logger.error(f"Qualifier commit failed for {c}: {e}")
             promoted_by_county[c] = 0
+            sf_conversions_by_county[c] = 0
             continue
 
-        promoted_by_county[c] = row_count
-        total_promoted += row_count
+        promoted_by_county[c] = row_count + sf_count
+        sf_conversions_by_county[c] = sf_count
+        total_promoted += row_count + sf_count
+        total_sf_conversions += sf_count
 
         emit(EventType.HUNTER, "qualifier_county", EventStatus.SUCCESS,
-             detail=f"Qualifier {c}: {row_count:,} TARGET → LEAD")
+             detail=(
+                 f"Qualifier {c}: {row_count:,} by use_code"
+                 + (f" + {sf_count:,} SF condo conversions" if sf_count else "")
+             ))
 
     finished = datetime.now(timezone.utc)
     duration = (finished - started).total_seconds()
@@ -245,6 +312,8 @@ def run_qualifier(db: Session, county: str | None = None) -> dict:
     result = {
         "promoted": total_promoted,
         "promoted_by_county": promoted_by_county,
+        "sf_conversions_by_county": sf_conversions_by_county,
+        "sf_conversions": total_sf_conversions,
         "use_codes": sorted(allowlist),
         "counties_processed": len(counties),
         "county_filter": county,
@@ -256,7 +325,8 @@ def run_qualifier(db: Session, county: str | None = None) -> dict:
     emit(EventType.HUNTER, "qualifier_done", EventStatus.SUCCESS,
          detail=(
              f"Qualifier: {total_promoted:,} TARGETs → LEADs across "
-             f"{len(counties)} counties in {duration:.1f}s"
+             f"{len(counties)} counties in {duration:.1f}s "
+             f"({total_sf_conversions:,} via SF condo-conversion rule)"
          ))
     logger.info(f"Qualifier: {result}")
 
@@ -264,7 +334,9 @@ def run_qualifier(db: Session, county: str | None = None) -> dict:
         "qualifier",
         summary=(
             f"{total_promoted:,} TARGETs promoted to LEAD across "
-            f"{len(counties)} counties ({duration:.1f}s)"
+            f"{len(counties)} counties "
+            f"({total_sf_conversions:,} SF condo conversions, "
+            f"{duration:.1f}s)"
         ),
         details=result,
     )
