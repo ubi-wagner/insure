@@ -20,11 +20,11 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
-from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from database import get_db
 from database.models import Entity
+from utils.address import canonicalize_address
 
 router = APIRouter()
 
@@ -180,218 +180,79 @@ def parse_freeform(text: str) -> list[ValidationInput]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def _street_number(addr: Optional[str]) -> Optional[str]:
-    if not addr:
-        return None
-    m = re.match(r"\s*(\d{1,6}[A-Z]?)\b", addr)
-    return m.group(1) if m else None
-
-
-# Street-suffix and directional canonicalisation. We keep these tokens
-# (they're the most discriminating part of an address — "Brickell Ave"
-# and "Brickell Bay Dr" share the same number range) but normalise spelling
-# so "Avenue" and "Ave" compare equal.
-_SUFFIX_NORMALISE = {
-    "avenue": "ave", "ave": "ave",
-    "boulevard": "blvd", "blvd": "blvd",
-    "street": "st", "st": "st",
-    "road": "rd", "rd": "rd",
-    "drive": "dr", "dr": "dr",
-    "lane": "ln", "ln": "ln",
-    "place": "pl", "pl": "pl",
-    "court": "ct", "ct": "ct",
-    "terrace": "ter", "ter": "ter",
-    "parkway": "pkwy", "pkwy": "pkwy",
-    "highway": "hwy", "hwy": "hwy",
-    "circle": "cir", "cir": "cir",
-    "way": "way",
-    "mile": "mile",
-    "north": "n", "n": "n",
-    "south": "s", "s": "s",
-    "east": "e", "e": "e",
-    "west": "w", "w": "w",
-    "northeast": "ne", "ne": "ne",
-    "northwest": "nw", "nw": "nw",
-    "southeast": "se", "se": "se",
-    "southwest": "sw", "sw": "sw",
-}
-
-# Words we drop entirely — pure noise that makes false matches.
-_NOISE_TOKENS = {"the", "of", "at"}
-
-
-def _street_tokens(addr: Optional[str]) -> list[str]:
-    """Lowercase street tokens minus the leading number, with directional
-    and street-suffix abbreviations normalised so "Avenue" matches "Ave".
-
-    Restricts to the first comma-delimited segment of the address — the
-    street line — so that the city/state/ZIP tail doesn't leak into the
-    "name tokens" set and create false matches (e.g. "1451 Brickell Ave,
-    Miami FL 33131" sharing "miami" with "1451 S Miami Ave, Miami FL").
-    """
-    if not addr:
-        return []
-    # Use only the first segment (street line). Both seeded addresses and
-    # validation-page input follow the "<street>, <city>, FL <zip>" shape.
-    street_part = addr.split(",", 1)[0]
-    cleaned = re.sub(r"^\s*\d{1,6}[A-Z]?\s*", "", street_part).lower()
-    cleaned = re.sub(r"[.,#]", " ", cleaned)
-    out: list[str] = []
-    for t in cleaned.split():
-        if not t or t in _NOISE_TOKENS:
-            continue
-        out.append(_SUFFIX_NORMALISE.get(t, t))
-    return out
-
-
-def _classify_tokens(tokens: list[str]) -> tuple[set[str], set[str], set[str]]:
-    """Return (name_tokens, directional_tokens, suffix_tokens) so the
-    matcher can require *each* class to overlap when both sides have one.
-    """
-    suffixes = {"ave", "blvd", "st", "rd", "dr", "ln", "pl", "ct", "ter",
-                "pkwy", "hwy", "cir", "way", "mile"}
-    directionals = {"n", "s", "e", "w", "ne", "nw", "se", "sw"}
-    name = {t for t in tokens if t not in suffixes and t not in directionals}
-    return name, set(tokens) & directionals, set(tokens) & suffixes
-
-
-# Match threshold — below this we don't consider a candidate a real match.
-# Calibrated so that street-number alone scores below threshold (3 pts max
-# for the number itself) but a number + 1 name token + matching suffix or
-# city clears it (3 + 5 + 4 = 12).
-MIN_MATCH_SCORE = 10
+# Match score legend used by the frontend pill:
+#   100  zip + canon both matched a VETTED master   (green)
+#    80  canon matched a VETTED master, no zip on input  (green)
+#    60  zip + canon matched a non-master row        (yellow)
+#     0  no match                                    (red)
+_SCORE_VETTED_FULL = 100
+_SCORE_CANON_ONLY = 80
+_SCORE_NON_MASTER = 60
 
 
 def find_match(
     db: Session,
     item: ValidationInput,
 ) -> tuple[Optional[Entity], int]:
-    """Find the best entity matching the input. Returns ``(entity, score)``
-    where ``entity`` is ``None`` when no candidate clears MIN_MATCH_SCORE.
+    """Match an input row against the entities table by (zip, canon).
 
-    Algorithm:
-      1. Filter Entity rows by street-number prefix (cheap discriminator).
-      2. Score each candidate by:
-         - overlap on street-name tokens (5 pts each, up to 4 tokens)
-         - matching street suffix (4 pts)
-         - matching directional (4 pts)
-         - matching ZIP (4 pts) or city contained in either direction (3)
-         - overlap on association-name tokens (2 pts each, up to 4)
-      3. Require BOTH (a) at least one street-name token overlap AND
-         (b) suffix-or-zip-or-name agreement, to rule out wrong-street
-         collisions like "1451 Brickell Ave" vs "1451 S Miami Ave".
-      4. Skip ARCHIVED entities — those are dismissals, not active leads.
+    The single source of truth for "what is one building" is the
+    canonical street key produced by utils.address.canonicalize_address.
+    Two records belong to the same building when their (phy_zip,
+    street_canon) tuples are equal, period — same rule the seeder used
+    to compute the key, the qualifier used to find SF condo
+    conversions, and the aggregator used to group masters.
+
+    Returns ``(entity, score)`` where score is one of the constants
+    above. ``score == 0`` means no match (UI shows red "Not in DB").
+
+    Strict-match rules:
+      - canonical street key required on input (no canon → no match)
+      - zip required when input provides one (cross-zip never matches)
+      - prefer VETTED masters over LEAD/TARGET orphans
+      - skip ARCHIVED rows
+
+    No fuzzy scoring, no token-overlap, no name fallback. The only
+    reason a real building would slip through this is if the input's
+    parsed canon disagrees with the seeded canon, in which case the
+    canonicalise function needs improvement, not the matcher.
     """
-    num = _street_number(item.address)
-    candidates: list[Entity] = []
+    target = canonicalize_address(item.address or "")
+    target_canon = target["canon"]
+    target_zip = (item.zip or "").strip()[:5]
 
-    if num:
-        candidates = (
-            db.query(Entity)
-            .filter(Entity.address.ilike(f"{num} %"))
-            .filter(Entity.pipeline_stage != "ARCHIVED")
-            .limit(200)
-            .all()
-        )
+    if not target_canon:
+        return None, 0
 
-    if not candidates and item.address and item.name:
-        candidates = (
-            db.query(Entity)
-            .filter(Entity.name.ilike(f"%{item.name}%"))
-            .filter(Entity.pipeline_stage != "ARCHIVED")
-            .limit(50)
-            .all()
-        )
+    q = (
+        db.query(Entity)
+        .filter(Entity.parent_id.is_(None))
+        .filter(Entity.pipeline_stage != "ARCHIVED")
+        .filter(Entity.characteristics["street_canon"].astext == target_canon)
+    )
+    if target_zip:
+        q = q.filter(Entity.characteristics["phy_zip"].astext == target_zip)
 
+    candidates = q.limit(20).all()
     if not candidates:
         return None, 0
 
-    target_tokens = _street_tokens(item.address)
-    target_name_set, target_dirs, target_sufs = _classify_tokens(target_tokens)
-    target_full_name = set(re.findall(r"\w+", (item.name or "").lower()))
-    target_city = (item.city or "").lower().strip()
-    target_zip = (item.zip or "").strip()[:5]
+    # Prefer a VETTED aggregation master.
+    masters = [
+        c for c in candidates
+        if c.pipeline_stage == "VETTED"
+        and (c.characteristics or {}).get("is_aggregation_master")
+    ]
+    if masters:
+        return masters[0], _SCORE_VETTED_FULL if target_zip else _SCORE_CANON_ONLY
 
-    best_entity: Optional[Entity] = None
-    best_score = 0
+    # Fall back to any VETTED row (singleton master) at the address.
+    vetted = [c for c in candidates if c.pipeline_stage == "VETTED"]
+    if vetted:
+        return vetted[0], _SCORE_VETTED_FULL if target_zip else _SCORE_CANON_ONLY
 
-    for c in candidates:
-        cand_tokens = _street_tokens(c.address)
-        cand_name_set, cand_dirs, cand_sufs = _classify_tokens(cand_tokens)
-        cand_full_name = set(re.findall(r"\w+", (c.name or "").lower()))
-
-        chars: dict[str, Any] = c.characteristics or {}
-        cand_city = (
-            chars.get("phy_city")
-            or chars.get("dor_city")
-            or chars.get("city")
-            or ""
-        ).lower().strip()
-        cand_zip = str(
-            chars.get("phy_zip")
-            or chars.get("dor_zip_code")
-            or chars.get("zip")
-            or ""
-        ).strip()[:5]
-
-        # Street-name overlap — the strongest signal. No overlap = wrong street.
-        name_overlap = target_name_set & cand_name_set
-        if not name_overlap:
-            continue
-
-        score = 3  # baseline for street-number match
-        score += min(len(name_overlap), 4) * 5
-
-        # Directional and suffix only contribute when BOTH sides have one
-        # (otherwise we can't tell agreement from "didn't know").
-        if target_dirs and cand_dirs:
-            if target_dirs & cand_dirs:
-                score += 4
-            else:
-                # Real disagreement (e.g. our row is "30TH AVE S" but the
-                # input said "30th Avenue N") — penalise hard.
-                score -= 6
-
-        if target_sufs and cand_sufs:
-            if target_sufs & cand_sufs:
-                score += 4
-            else:
-                score -= 6
-
-        # ZIP scoring. ZIPs in Florida cluster by region (33xxx South,
-        # 32xxx Central/North, 34xxx Central Gulf, 30s NW Panhandle).
-        # When both sides have a ZIP and the first three digits don't
-        # even match, we're looking at a different region of the state
-        # entirely — a hard reject for an address-anchored matcher.
-        if target_zip and cand_zip:
-            if target_zip == cand_zip:
-                score += 4
-            elif target_zip[:3] != cand_zip[:3]:
-                # Different ZIP region — almost certainly the wrong
-                # county / city / building. Skip outright instead of
-                # penalising; this catches the "1120 NORTH SHORE DR
-                # in St. Pete" → "1120 SHORE VIEW DR in Englewood"
-                # type of cross-county collision.
-                continue
-            else:
-                # Same region, different zip — small penalty (could be
-                # a stale DOR zip or a multi-zip building).
-                score -= 3
-        if target_city and cand_city and (
-            target_city in cand_city or cand_city in target_city
-        ):
-            score += 3
-
-        # Association-name overlap — useful but secondary.
-        full_overlap = target_full_name & cand_full_name
-        if full_overlap:
-            score += min(len(full_overlap), 4) * 2
-
-        if score >= MIN_MATCH_SCORE and score > best_score:
-            best_entity = c
-            best_score = score
-
-    return best_entity, best_score
+    # Otherwise return the first non-archived candidate (LEAD/TARGET).
+    return candidates[0], _SCORE_NON_MASTER
 
 
 # ─────────────────────────────────────────────────────────────────────────────

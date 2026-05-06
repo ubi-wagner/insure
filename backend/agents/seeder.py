@@ -38,6 +38,7 @@ from sqlalchemy.orm import Session
 
 from database import SessionLocal
 from database.models import Entity
+from utils.address import canonicalize_address
 from services.event_bus import EventStatus, EventType, emit
 
 logger = logging.getLogger(__name__)
@@ -89,16 +90,13 @@ DOR_COUNTIES = {
     "54": "Monroe",         # Key Largo, Marathon, Key West
 }
 
-# DOR use codes we explicitly skip at seed time. Everything else
-# (commercial, condos, multi-family, retirement, hotels, mixed-use,
-# vacant commercial, government, even agricultural) lands as TARGET.
-# Filtering down to the "really actionable" subset happens later, at
-# the TARGET → LEAD qualifier transition, where the admin can
-# configure the use-code allowlist.
-SKIP_USE_CODES = {
-    "001",  # Single-family home
-    "002",  # Mobile home
-}
+# Seed every NAL row as a TARGET — no use-code filtering at this
+# stage. Single-family homes (001) come in too because the qualifier
+# re-evaluates them: a single-family parcel with ≥2 siblings sharing
+# the same (county, zip, canonical street) is almost certainly a
+# converted condo unit. We can only catch that pattern if 001 is in
+# the TARGET pool.
+SKIP_USE_CODES: set[str] = set()
 
 # Target DOR use codes for insurance leads
 TARGET_USE_CODES = {
@@ -469,6 +467,12 @@ def seed_county(county_no: str, db: Session, min_value: int | None = None) -> di
                 parcel_id = _get_col(row, col_map, "PARCEL_ID").strip()
                 owner = _get_col(row, col_map, "OWN_NAME").strip()
 
+                # Compute the canonical street key now so it lands on every
+                # TARGET. Downstream stages (qualifier, aggregator,
+                # validator) all read this single field instead of
+                # re-normalising the raw address every time.
+                addr_canon = canonicalize_address(phy_addr)
+
                 # Build full address for geocoding
                 full_addr = phy_addr
                 if phy_city:
@@ -533,6 +537,13 @@ def seed_county(county_no: str, db: Session, min_value: int | None = None) -> di
                     "imp_qual": _get_col(row, col_map, "IMP_QUAL").strip() or None,
                     "phy_city": phy_city or None,
                     "phy_zip": phy_zip or None,
+                    # Pre-computed canonical street keys — single source of
+                    # truth for the qualifier's "≥2 parcels at one address"
+                    # rule, the aggregator's grouping key, and the
+                    # validation matcher. See utils/address.py.
+                    "street_number": addr_canon.get("number"),
+                    "street_canon":  addr_canon.get("canon"),
+                    "street_full":   addr_canon.get("full"),
                 }
 
                 # Owner address

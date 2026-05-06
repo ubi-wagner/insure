@@ -172,6 +172,17 @@ def _entity_zip(entity: Entity) -> str:
 
 
 def _entity_street(entity: Entity) -> str:
+    """Canonical street key for grouping.
+
+    Prefers the precomputed ``street_canon`` field that the seeder
+    writes via utils.address.canonicalize_address. Falls back to
+    re-deriving from entity.address for old rows that landed before
+    the seeder started writing the field.
+    """
+    chars = entity.characteristics or {}
+    cached = chars.get("street_canon")
+    if cached:
+        return str(cached)
     return _normalize_street(entity.address)
 
 
