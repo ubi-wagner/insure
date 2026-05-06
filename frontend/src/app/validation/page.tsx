@@ -44,12 +44,21 @@ interface MatchEntity {
 
 type OverallStatus = "match" | "conflict" | "missing" | "no_data";
 
+interface MatchDebug {
+  parsed_canon?: string | null;
+  parsed_zip?: string | null;
+  parsed_city?: string | null;
+  match_phase?: string | null;
+  candidates_by_canon?: number;
+}
+
 interface CompareResult {
   input: ParsedItem;
   match: MatchEntity | null;
   fields: Record<string, FieldDiff>;
   status: OverallStatus;
   match_score?: number;
+  match_debug?: MatchDebug;
 }
 
 interface CompareResponse {
@@ -537,13 +546,13 @@ function ResultCard({ r }: { r: CompareResult }) {
               {typeof r.match_score === "number" && (
                 <span
                   className={`text-[9px] font-mono px-1 py-0.5 rounded ${
-                    r.match_score >= 20
+                    r.match_score >= 80
                       ? "bg-green-900/60 text-green-300"
-                      : r.match_score >= 14
+                      : r.match_score >= 60
                       ? "bg-yellow-900/60 text-yellow-300"
                       : "bg-red-900/60 text-red-300"
                   }`}
-                  title={`Address match confidence (>= 20 = strong, 14-19 = moderate, < 14 = weak)`}
+                  title={`Match confidence — 100: zip+canon | 85: canon+city (zip mismatch) | 80: canon-only | 60: non-master`}
                 >
                   m:{r.match_score}
                 </span>
@@ -570,8 +579,35 @@ function ResultCard({ r }: { r: CompareResult }) {
           )}
         </div>
       ) : (
-        <div className="mb-2 pb-2 border-b border-gray-800 text-[11px] text-red-300">
-          No matching entity in our database.
+        <div className="mb-2 pb-2 border-b border-gray-800 text-[11px] text-red-300 space-y-0.5">
+          <div>No matching entity in our database.</div>
+          {r.match_debug && (
+            <div className="text-gray-500 text-[10px] font-mono mt-1">
+              {r.match_debug.parsed_canon ? (
+                <>
+                  canon: <span className="text-gray-300">{r.match_debug.parsed_canon}</span>
+                  {" · "}
+                </>
+              ) : (
+                <>canon: <span className="text-amber-400">parser couldn&apos;t extract</span>{" · "}</>
+              )}
+              {r.match_debug.parsed_zip ? (
+                <>zip: <span className="text-gray-300">{r.match_debug.parsed_zip}</span>{" · "}</>
+              ) : (
+                <>zip: <span className="text-gray-600">none</span>{" · "}</>
+              )}
+              {r.match_debug.parsed_city && (
+                <>city: <span className="text-gray-300">{r.match_debug.parsed_city}</span>{" · "}</>
+              )}
+              <span className="text-gray-400">
+                {r.match_debug.candidates_by_canon ?? 0} canon hit
+                {r.match_debug.candidates_by_canon === 1 ? "" : "s"}
+                {r.match_debug.match_phase
+                  ? ` (${r.match_debug.match_phase.replace(/_/g, " ")})`
+                  : ""}
+              </span>
+            </div>
+          )}
         </div>
       )}
 

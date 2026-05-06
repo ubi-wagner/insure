@@ -181,78 +181,124 @@ def parse_freeform(text: str) -> list[ValidationInput]:
 
 
 # Match score legend used by the frontend pill:
-#   100  zip + canon both matched a VETTED master   (green)
-#    80  canon matched a VETTED master, no zip on input  (green)
-#    60  zip + canon matched a non-master row        (yellow)
-#     0  no match                                    (red)
+#   100  zip + canon both matched a VETTED master       (green, strong)
+#    85  canon + city matched (zip mismatched)          (green, typo-tolerant)
+#    80  canon matched, no zip on input                 (green)
+#    60  zip + canon matched a non-master row           (yellow)
+#     0  no match                                       (red)
 _SCORE_VETTED_FULL = 100
+_SCORE_CITY_FALLBACK = 85
 _SCORE_CANON_ONLY = 80
 _SCORE_NON_MASTER = 60
+
+
+def _pick_best(candidates: list[Entity]) -> Entity:
+    """Prefer VETTED aggregation master, then any VETTED, then first."""
+    for c in candidates:
+        if (c.pipeline_stage == "VETTED"
+                and (c.characteristics or {}).get("is_aggregation_master")):
+            return c
+    for c in candidates:
+        if c.pipeline_stage == "VETTED":
+            return c
+    return candidates[0]
 
 
 def find_match(
     db: Session,
     item: ValidationInput,
-) -> tuple[Optional[Entity], int]:
-    """Match an input row against the entities table by (zip, canon).
+) -> tuple[Optional[Entity], int, dict]:
+    """Match an input row against the entities table.
 
     The single source of truth for "what is one building" is the
     canonical street key produced by utils.address.canonicalize_address.
     Two records belong to the same building when their (phy_zip,
-    street_canon) tuples are equal, period — same rule the seeder used
-    to compute the key, the qualifier used to find SF condo
-    conversions, and the aggregator used to group masters.
+    street_canon) tuples are equal — same rule the seeder used to
+    compute the key, the qualifier used to find SF condo conversions,
+    and the aggregator used to group masters.
 
-    Returns ``(entity, score)`` where score is one of the constants
-    above. ``score == 0`` means no match (UI shows red "Not in DB").
+    Three-pass strategy:
+      1. STRICT: zip + canon match a VETTED master (score 100)
+      2. CITY FALLBACK: canon match + city contains the input city,
+         even when the zip differs. Catches user-typo'd ZIPs like
+         "33602" for Hillsboro Beach (real zip 33062). Score 85.
+      3. CANON-ONLY: canon match when input had no zip. Score 80.
 
-    Strict-match rules:
-      - canonical street key required on input (no canon → no match)
-      - zip required when input provides one (cross-zip never matches)
-      - prefer VETTED masters over LEAD/TARGET orphans
-      - skip ARCHIVED rows
-
-    No fuzzy scoring, no token-overlap, no name fallback. The only
-    reason a real building would slip through this is if the input's
-    parsed canon disagrees with the seeded canon, in which case the
-    canonicalise function needs improvement, not the matcher.
+    Returns (entity, score, debug). ``debug`` exposes parsed_canon /
+    target_zip / target_city / match_phase so the validation page can
+    show WHY a match failed instead of an opaque "Not in our DB".
     """
     target = canonicalize_address(item.address or "")
     target_canon = target["canon"]
     target_zip = (item.zip or "").strip()[:5]
+    target_city = (item.city or "").strip().lower()
+
+    debug: dict = {
+        "parsed_canon": target_canon,
+        "parsed_zip": target_zip or None,
+        "parsed_city": target_city or None,
+        "match_phase": None,
+        "candidates_by_canon": 0,
+    }
 
     if not target_canon:
-        return None, 0
+        debug["match_phase"] = "no_canon"
+        return None, 0, debug
 
-    q = (
+    # Pull every entity that shares the canon key — small set (most
+    # buildings have one master), cheap with the JSONB index.
+    canon_q = (
         db.query(Entity)
         .filter(Entity.parent_id.is_(None))
         .filter(Entity.pipeline_stage != "ARCHIVED")
         .filter(Entity.characteristics["street_canon"].astext == target_canon)
     )
+    canon_candidates = canon_q.limit(50).all()
+    debug["candidates_by_canon"] = len(canon_candidates)
+
+    if not canon_candidates:
+        debug["match_phase"] = "no_canon_match"
+        return None, 0, debug
+
+    # ── Pass 1: strict zip + canon ──────────────────────────────
     if target_zip:
-        q = q.filter(Entity.characteristics["phy_zip"].astext == target_zip)
+        zip_match = [
+            c for c in canon_candidates
+            if str((c.characteristics or {}).get("phy_zip") or "")[:5] == target_zip
+        ]
+        if zip_match:
+            debug["match_phase"] = "zip_canon"
+            best = _pick_best(zip_match)
+            score = (
+                _SCORE_VETTED_FULL if best.pipeline_stage == "VETTED"
+                else _SCORE_NON_MASTER
+            )
+            return best, score, debug
 
-    candidates = q.limit(20).all()
-    if not candidates:
-        return None, 0
+    # ── Pass 2: city fallback (catches ZIP typos) ──────────────
+    if target_city:
+        city_match = [
+            c for c in canon_candidates
+            if target_city in (
+                str((c.characteristics or {}).get("phy_city") or "").lower()
+            )
+            or str((c.characteristics or {}).get("phy_city") or "").lower()
+            in target_city
+        ]
+        if city_match:
+            debug["match_phase"] = "city_canon_zip_mismatch" if target_zip else "city_canon"
+            best = _pick_best(city_match)
+            return best, _SCORE_CITY_FALLBACK, debug
 
-    # Prefer a VETTED aggregation master.
-    masters = [
-        c for c in candidates
-        if c.pipeline_stage == "VETTED"
-        and (c.characteristics or {}).get("is_aggregation_master")
-    ]
-    if masters:
-        return masters[0], _SCORE_VETTED_FULL if target_zip else _SCORE_CANON_ONLY
+    # ── Pass 3: canon-only (no zip on input) ────────────────────
+    if not target_zip:
+        debug["match_phase"] = "canon_only"
+        best = _pick_best(canon_candidates)
+        return best, _SCORE_CANON_ONLY, debug
 
-    # Fall back to any VETTED row (singleton master) at the address.
-    vetted = [c for c in candidates if c.pipeline_stage == "VETTED"]
-    if vetted:
-        return vetted[0], _SCORE_VETTED_FULL if target_zip else _SCORE_CANON_ONLY
-
-    # Otherwise return the first non-archived candidate (LEAD/TARGET).
-    return candidates[0], _SCORE_NON_MASTER
+    # Canon hit something, but neither zip nor city agreed.
+    debug["match_phase"] = "canon_only_zip_city_disagree"
+    return None, 0, debug
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -402,7 +448,7 @@ def compare_validation(req: CompareRequest, db: Session = Depends(get_db)):
     counts = {"match": 0, "conflict": 0, "missing": 0, "no_data": 0}
 
     for item in req.items:
-        ent, match_score = find_match(db, item)
+        ent, match_score, match_debug = find_match(db, item)
         comparison = compare_fields(item, ent)
         status = comparison["status"]
         counts[status] = counts.get(status, 0) + 1
@@ -422,6 +468,8 @@ def compare_validation(req: CompareRequest, db: Session = Depends(get_db)):
                         "heat_score": ent.heat_score,
                         "cream_score": (ent.characteristics or {}).get("cream_score"),
                         "cream_tier": (ent.characteristics or {}).get("cream_tier"),
+                        "phy_zip": (ent.characteristics or {}).get("phy_zip"),
+                        "phy_city": (ent.characteristics or {}).get("phy_city"),
                     }
                     if ent
                     else None
@@ -429,6 +477,7 @@ def compare_validation(req: CompareRequest, db: Session = Depends(get_db)):
                 "fields": comparison["fields"],
                 "status": status,
                 "match_score": match_score,
+                "match_debug": match_debug,
             }
         )
 
