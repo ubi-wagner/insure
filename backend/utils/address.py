@@ -41,18 +41,19 @@ from typing import Optional
 
 
 _SUFFIX_NORMALISE = {
-    "avenue": "ave", "ave": "ave",
-    "boulevard": "blvd", "blvd": "blvd",
+    "avenue": "ave", "ave": "ave", "av": "ave",
+    "boulevard": "blvd", "blvd": "blvd", "blv": "blvd",
     "street": "st", "st": "st",
     "road": "rd", "rd": "rd",
     "drive": "dr", "dr": "dr",
     "lane": "ln", "ln": "ln",
     "place": "pl", "pl": "pl",
     "court": "ct", "ct": "ct",
-    "terrace": "ter", "ter": "ter",
+    "terrace": "ter", "ter": "ter", "terr": "ter",
     "parkway": "pkwy", "pkwy": "pkwy",
     "highway": "hwy", "hwy": "hwy",
     "circle": "cir", "cir": "cir",
+    "trail": "trl", "trl": "trl",
     "way": "way",
     "mile": "mile",
     "north": "n", "n": "n",
@@ -77,6 +78,60 @@ _UNIT_MARKERS = {
 
 _NUMERIC_RE = re.compile(r"^\d+[A-Z]?$", re.IGNORECASE)
 _PUNCT_RE = re.compile(r"[#.,\-/]")
+_ORDINAL_TOKEN_RE = re.compile(r"^(\d+)(st|nd|rd|th)$", re.IGNORECASE)
+
+
+def _strip_ordinal_suffix(token: str) -> str:
+    """Strip the ordinal suffix from a numeric street token.
+
+    "14th" → "14", "1st" → "1", "23rd" → "23", "104th" → "104".
+    Non-ordinal tokens are returned unchanged.
+    """
+    m = _ORDINAL_TOKEN_RE.match(token)
+    return m.group(1) if m else token
+
+
+def _add_ordinal_suffix(n: int) -> str:
+    """Add the English ordinal suffix to an integer: 1→1st, 2→2nd,
+    3→3rd, 4→4th, 11→11th, 12→12th, 13→13th, 21→21st, etc."""
+    if 11 <= (n % 100) <= 13:
+        return f"{n}th"
+    return {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th").join([str(n), ""])
+
+
+def canon_variants(canon: str) -> set[str]:
+    """Generate equivalent canon strings for matcher queries.
+
+    Returns the original canon plus an ordinal-inserted version. The
+    canonicaliser strips ordinal suffixes by default ("14th ave" stores
+    as "14 ave"), but existing seeded data may still contain either
+    form depending on what the NAL file said. The matcher queries
+    against this set so it works on both old and new data without a
+    full reseed.
+    """
+    if not canon:
+        return set()
+
+    parts = canon.split()
+    if len(parts) < 2:
+        return {canon}
+
+    out = {canon}
+
+    # Build the ordinal-inserted variant for every all-digit name token
+    # AFTER the leading house number.
+    rebuilt: list[str] = [parts[0]]
+    changed = False
+    for p in parts[1:]:
+        if p.isdigit():
+            rebuilt.append(_add_ordinal_suffix(int(p)))
+            changed = True
+        else:
+            rebuilt.append(p)
+    if changed:
+        out.add(" ".join(rebuilt))
+
+    return out
 
 
 def canonicalize_address(addr: Optional[str]) -> dict:
@@ -159,10 +214,16 @@ def canonicalize_address(addr: Optional[str]) -> dict:
         # land here and need to preserve the "1").
         street_tokens = list(rest)
 
+    # Strip ordinal suffixes from numeric name tokens — "14th" / "14TH"
+    # / "14 TH" / "14 AVE" all need to canonicalise the same way because
+    # NAL files vary by county on whether they spell out the ordinal.
+    # Only applied to street-name tokens, NOT to the leading house number.
+    canon_street = [_strip_ordinal_suffix(t) for t in street_tokens]
+
     canon_parts: list[str] = []
     if number:
         canon_parts.append(number)
-    canon_parts.extend(street_tokens)
+    canon_parts.extend(canon_street)
     canon = " ".join(canon_parts)
 
     full_parts: list[str] = []

@@ -50,6 +50,8 @@ interface MatchDebug {
   parsed_city?: string | null;
   match_phase?: string | null;
   candidates_by_canon?: number;
+  tried_canons?: string[];
+  nearby_canons?: string[];
 }
 
 interface CompareResult {
@@ -606,6 +608,17 @@ function ResultCard({ r }: { r: CompareResult }) {
                   ? ` (${r.match_debug.match_phase.replace(/_/g, " ")})`
                   : ""}
               </span>
+              {r.match_debug.tried_canons && r.match_debug.tried_canons.length > 1 && (
+                <div className="text-gray-600 text-[10px] mt-0.5">
+                  tried: {r.match_debug.tried_canons.map((c) => `"${c}"`).join(" · ")}
+                </div>
+              )}
+              {r.match_debug.nearby_canons && r.match_debug.nearby_canons.length > 0 && (
+                <div className="text-amber-400 text-[10px] mt-0.5">
+                  found at zip+number: {r.match_debug.nearby_canons.map((c) => `"${c}"`).join(" · ")}
+                  <span className="text-gray-600 ml-1">— our seeded canon differs from your input</span>
+                </div>
+              )}
             </div>
           )}
         </div>

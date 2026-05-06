@@ -24,7 +24,7 @@ from sqlalchemy.orm import Session
 
 from database import get_db
 from database.models import Entity
-from utils.address import canonicalize_address
+from utils.address import canon_variants, canonicalize_address
 
 router = APIRouter()
 
@@ -230,6 +230,7 @@ def find_match(
     """
     target = canonicalize_address(item.address or "")
     target_canon = target["canon"]
+    target_number = target.get("number")
     target_zip = (item.zip or "").strip()[:5]
     target_city = (item.city or "").strip().lower()
 
@@ -239,24 +240,50 @@ def find_match(
         "parsed_city": target_city or None,
         "match_phase": None,
         "candidates_by_canon": 0,
+        "tried_canons": [],
+        "nearby_canons": [],
     }
 
     if not target_canon:
         debug["match_phase"] = "no_canon"
         return None, 0, debug
 
-    # Pull every entity that shares the canon key — small set (most
-    # buildings have one master), cheap with the JSONB index.
+    # Build canon variants so we match buildings whose seeded canon
+    # may have a different ordinal form ("14 ave" vs "14th ave"). The
+    # canonicaliser now strips ordinals at write time, but existing
+    # data was seeded under the older form — variants make us
+    # compatible with both without a full reseed.
+    variants = canon_variants(target_canon) | {target_canon}
+    debug["tried_canons"] = sorted(variants)
+
     canon_q = (
         db.query(Entity)
         .filter(Entity.parent_id.is_(None))
         .filter(Entity.pipeline_stage != "ARCHIVED")
-        .filter(Entity.characteristics["street_canon"].astext == target_canon)
+        .filter(Entity.characteristics["street_canon"].astext.in_(variants))
     )
     canon_candidates = canon_q.limit(50).all()
     debug["candidates_by_canon"] = len(canon_candidates)
 
     if not canon_candidates:
+        # No canon hit anywhere. Surface "nearby" entities by
+        # (zip, street_number) so we can see whether the building
+        # is seeded under a totally different canon (different street
+        # name spelling, different abbreviation we don't yet handle).
+        if target_number and target_zip:
+            nearby = (
+                db.query(Entity)
+                .filter(Entity.parent_id.is_(None))
+                .filter(Entity.characteristics["phy_zip"].astext == target_zip)
+                .filter(Entity.characteristics["street_number"].astext == target_number)
+                .limit(10)
+                .all()
+            )
+            debug["nearby_canons"] = sorted({
+                (e.characteristics or {}).get("street_canon") or ""
+                for e in nearby
+                if (e.characteristics or {}).get("street_canon")
+            })
         debug["match_phase"] = "no_canon_match"
         return None, 0, debug
 
