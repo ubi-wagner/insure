@@ -41,20 +41,47 @@ from typing import Optional
 
 
 _SUFFIX_NORMALISE = {
-    "avenue": "ave", "ave": "ave",
-    "boulevard": "blvd", "blvd": "blvd",
-    "street": "st", "st": "st",
+    # Avenue
+    "avenue": "ave", "ave": "ave", "av": "ave", "aven": "ave",
+    # Boulevard
+    "boulevard": "blvd", "blvd": "blvd", "blv": "blvd", "boul": "blvd",
+    "boulvd": "blvd",
+    # Street
+    "street": "st", "st": "st", "str": "st", "stre": "st",
+    # Road
     "road": "rd", "rd": "rd",
-    "drive": "dr", "dr": "dr",
+    # Drive
+    "drive": "dr", "dr": "dr", "drv": "dr",
+    # Lane
     "lane": "ln", "ln": "ln",
+    # Place
     "place": "pl", "pl": "pl",
+    # Court
     "court": "ct", "ct": "ct",
-    "terrace": "ter", "ter": "ter",
-    "parkway": "pkwy", "pkwy": "pkwy",
-    "highway": "hwy", "hwy": "hwy",
-    "circle": "cir", "cir": "cir",
-    "way": "way",
+    # Terrace
+    "terrace": "ter", "ter": "ter", "terr": "ter",
+    # Parkway
+    "parkway": "pkwy", "pkwy": "pkwy", "pky": "pkwy",
+    # Highway
+    "highway": "hwy", "hwy": "hwy", "hway": "hwy",
+    # Circle
+    "circle": "cir", "cir": "cir", "circ": "cir",
+    # Way
+    "way": "way", "wy": "way",
+    # Mile
     "mile": "mile",
+    # Trail
+    "trail": "trl", "trl": "trl",
+    # Plaza
+    "plaza": "plz", "plz": "plz",
+    # Crossing
+    "crossing": "xing", "xing": "xing",
+    # Other commonly seen suffixes that we keep as-is
+    "loop": "loop", "run": "run", "bend": "bend", "park": "park",
+    "row": "row", "ridge": "ridge", "rdg": "ridge",
+    "alley": "aly", "aly": "aly",
+    "extension": "ext", "ext": "ext", "extn": "ext",
+    # Directionals — full names normalise to single-letter abbreviations
     "north": "n", "n": "n",
     "south": "s", "s": "s",
     "east": "e", "e": "e",
@@ -71,12 +98,77 @@ _SUFFIXES = {
 }
 _DIRECTIONALS = {"n", "s", "e", "w", "ne", "nw", "se", "sw"}
 _UNIT_MARKERS = {
-    "unit", "apt", "apartment", "ste", "suite", "bldg", "building",
-    "lot", "fl", "floor", "rm", "room", "ph",
+    "unit",  "units",
+    "apt",   "apartment", "apartments", "apts",
+    "ste",   "suite",     "suites",
+    "bldg",  "building",  "bld",
+    "lot",
+    "fl",    "floor",     "flr",
+    "rm",    "room",
+    "ph",    "penthouse",
+    "number",  # "650 Main St Number 5" → strip
+    # NB: "no" is intentionally not here — collides with "N"/"NORTH"
+    # in inputs like "650 No Main St".
+    "trlr",  "trailer",
+    "spc",   "space",
 }
 
 _NUMERIC_RE = re.compile(r"^\d+[A-Z]?$", re.IGNORECASE)
 _PUNCT_RE = re.compile(r"[#.,\-/]")
+_ORDINAL_TOKEN_RE = re.compile(r"^(\d+)(st|nd|rd|th)$", re.IGNORECASE)
+
+
+def _strip_ordinal_suffix(token: str) -> str:
+    """Strip the ordinal suffix from a numeric street token.
+
+    "14th" → "14", "1st" → "1", "23rd" → "23", "104th" → "104".
+    Non-ordinal tokens are returned unchanged.
+    """
+    m = _ORDINAL_TOKEN_RE.match(token)
+    return m.group(1) if m else token
+
+
+def _add_ordinal_suffix(n: int) -> str:
+    """Add the English ordinal suffix to an integer: 1→1st, 2→2nd,
+    3→3rd, 4→4th, 11→11th, 12→12th, 13→13th, 21→21st, etc."""
+    if 11 <= (n % 100) <= 13:
+        return f"{n}th"
+    return {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th").join([str(n), ""])
+
+
+def canon_variants(canon: str) -> set[str]:
+    """Generate equivalent canon strings for matcher queries.
+
+    Returns the original canon plus an ordinal-inserted version. The
+    canonicaliser strips ordinal suffixes by default ("14th ave" stores
+    as "14 ave"), but existing seeded data may still contain either
+    form depending on what the NAL file said. The matcher queries
+    against this set so it works on both old and new data without a
+    full reseed.
+    """
+    if not canon:
+        return set()
+
+    parts = canon.split()
+    if len(parts) < 2:
+        return {canon}
+
+    out = {canon}
+
+    # Build the ordinal-inserted variant for every all-digit name token
+    # AFTER the leading house number.
+    rebuilt: list[str] = [parts[0]]
+    changed = False
+    for p in parts[1:]:
+        if p.isdigit():
+            rebuilt.append(_add_ordinal_suffix(int(p)))
+            changed = True
+        else:
+            rebuilt.append(p)
+    if changed:
+        out.add(" ".join(rebuilt))
+
+    return out
 
 
 def canonicalize_address(addr: Optional[str]) -> dict:
@@ -159,10 +251,16 @@ def canonicalize_address(addr: Optional[str]) -> dict:
         # land here and need to preserve the "1").
         street_tokens = list(rest)
 
+    # Strip ordinal suffixes from numeric name tokens — "14th" / "14TH"
+    # / "14 TH" / "14 AVE" all need to canonicalise the same way because
+    # NAL files vary by county on whether they spell out the ordinal.
+    # Only applied to street-name tokens, NOT to the leading house number.
+    canon_street = [_strip_ordinal_suffix(t) for t in street_tokens]
+
     canon_parts: list[str] = []
     if number:
         canon_parts.append(number)
-    canon_parts.extend(street_tokens)
+    canon_parts.extend(canon_street)
     canon = " ".join(canon_parts)
 
     full_parts: list[str] = []
