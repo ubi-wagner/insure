@@ -95,13 +95,30 @@ def _find_csv() -> str | None:
         if csvs:
             return os.path.join(sunbiz_dir, csvs[0])
 
-    # No pre-built CSV found — check for raw zip files and auto-process
-    zip_dirs = [
+    # No pre-built CSV found — check for already-extracted .txt chunks
+    # FIRST. Sunbiz publishes corprindata{,2..9}.txt; the chunk-1 zip
+    # uses a compression method Python's zipfile can't extract, so the
+    # ZIP-extract path fails on Railway. Using the chunks-2..9 .txt
+    # files directly gives us ~88% of the data without needing the zip.
+    raw_dirs = [
         sunbiz_dir,
         os.path.join(BASE_DIR, "data"),
         os.path.join(BASE_DIR, "data", "sunbiz_raw"),
     ]
-    for d in zip_dirs:
+    for d in raw_dirs:
+        if not os.path.isdir(d):
+            continue
+        txts = sorted(
+            f for f in os.listdir(d)
+            if f.lower().startswith("corprindata") and f.lower().endswith(".txt")
+        )
+        if txts:
+            csv_path = _process_chunks_to_csv([os.path.join(d, f) for f in txts])
+            if csv_path:
+                return csv_path
+
+    # Last-ditch fallback: try the zip (some compression methods are supported).
+    for d in raw_dirs:
         if not os.path.isdir(d):
             continue
         zips = [f for f in os.listdir(d)
@@ -114,6 +131,49 @@ def _find_csv() -> str | None:
                 return csv_path
 
     return None
+
+
+def _process_chunks_to_csv(chunk_paths: list[str]) -> str | None:
+    """Parse already-extracted Sunbiz fixed-width chunks into one CSV.
+
+    Sunbiz publishes corprindata as a numbered series of fixed-width
+    files. We just iterate through them, run parse_and_filter on each,
+    accumulate matches, and write a single sunbiz_corps.csv.
+    """
+    if not chunk_paths:
+        return None
+    try:
+        from scripts.download_sunbiz import parse_and_filter, write_csv
+
+        all_matches: list[dict] = []
+        for path in chunk_paths:
+            try:
+                logger.info(f"Parsing Sunbiz chunk: {os.path.basename(path)}")
+                all_matches.extend(parse_and_filter(path))
+            except Exception as e:
+                logger.warning(f"Skipping Sunbiz chunk {path}: {e}")
+
+        if not all_matches:
+            logger.warning("No matching associations found across Sunbiz chunks")
+            return None
+
+        csv_path = os.path.join(BASE_DIR, "data", "sunbiz_corps.csv")
+        write_csv(all_matches, csv_path)
+
+        # Mirror to filestore for visibility.
+        filestore_dir = os.path.join(BASE_DIR, "filestore", "System Data", "Sunbiz")
+        os.makedirs(filestore_dir, exist_ok=True)
+        write_csv(all_matches, os.path.join(filestore_dir, "sunbiz_corps.csv"))
+
+        logger.info(
+            f"Auto-processed {len(chunk_paths)} Sunbiz chunks: "
+            f"{len(all_matches):,} associations -> {csv_path}"
+        )
+        return csv_path
+
+    except Exception as e:
+        logger.error(f"Failed to process Sunbiz chunks: {e}")
+        return None
 
 
 def _process_zip_to_csv(zip_path: str) -> str | None:

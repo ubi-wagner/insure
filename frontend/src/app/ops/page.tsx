@@ -55,19 +55,23 @@ interface DashboardData {
    Constants
    ================================================================ */
 
+// Active enricher labels — must match the chain in
+// backend/agents/enrichers/pipeline.py:_load_enrichers. Deprecated
+// enrichers (dor_nal, fdot_parcels, dbpr_condo) intentionally omitted
+// so they don't show up as "missing" rows on the queue dashboard.
 const ENRICHER_LABELS: Record<string, string> = {
-  dor_nal: "DOR NAL",
+  name_parse: "Name Parse",
   fema_flood: "FEMA Flood",
   property_appraiser: "Property Appraiser",
   dbpr_bulk: "DBPR Condo",
   dbpr_payments: "DBPR Payments",
-  cam_license: "CAM License",
-  sunbiz: "Sunbiz",
-  sunbiz_bulk: "Sunbiz",
+  dbpr_kfi: "DBPR Financial",
   dbpr_sirs: "DBPR SIRS",
   dbpr_building: "DBPR Building",
+  dbpr_noic: "DBPR NOIC",
+  cam_license: "CAM License",
+  sunbiz_bulk: "Sunbiz",
   citizens_insurance: "Citizens",
-  fdot_parcels: "FDOT Parcels",
   oir_market: "OIR Market",
   cream_score: "Cream Score",
 };
