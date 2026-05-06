@@ -32,9 +32,13 @@ logger = logging.getLogger(__name__)
 # Worker identity — unique per process
 WORKER_ID = f"worker-{uuid.uuid4().hex[:8]}"
 
-# Enricher dependency graph — enricher: [must complete first]
-# cream_score runs last (depends on everything else)
+# Enricher dependency graph — must mirror the loaded chain in
+# agents/enrichers/pipeline.py:_load_enrichers. Deprecated enrichers
+# (dor_nal, fdot_parcels, dbpr_condo) are NOT listed here because the
+# seeder writes the same data they used to provide. cream_score runs
+# last (depends_on="__all__").
 ENRICHER_CHAIN = [
+    {"enricher": "name_parse",          "priority": 11, "depends_on": None},
     {"enricher": "fema_flood",          "priority": 10, "depends_on": None},
     {"enricher": "property_appraiser",  "priority": 10, "depends_on": None},
     {"enricher": "dbpr_bulk",           "priority": 10, "depends_on": None},
@@ -45,10 +49,8 @@ ENRICHER_CHAIN = [
     {"enricher": "dbpr_noic",           "priority": 7,  "depends_on": None},
     {"enricher": "cam_license",         "priority": 7,  "depends_on": None},
     {"enricher": "sunbiz_bulk",         "priority": 9,  "depends_on": None},
-    {"enricher": "dor_nal",             "priority": 6,  "depends_on": None},
-    {"enricher": "citizens_insurance",  "priority": 4,  "depends_on": "oir_market"},
-    {"enricher": "fdot_parcels",        "priority": 4,  "depends_on": None},
     {"enricher": "oir_market",          "priority": 5,  "depends_on": None},
+    {"enricher": "citizens_insurance",  "priority": 4,  "depends_on": "oir_market"},
     {"enricher": "cream_score",         "priority": -1, "depends_on": "__all__"},  # Runs last
 ]
 
@@ -60,15 +62,15 @@ MAX_ATTEMPTS = 3
 # Enrichers that only read local files / do pure computation — no need
 # for the per-job sleep throttle that protects external APIs.
 FAST_LOCAL_ENRICHERS = {
-    "dbpr_bulk", "dbpr_payments", "dbpr_kfi", "dbpr_sirs", "dbpr_noic",
-    "cam_license", "sunbiz_bulk", "dor_nal",
+    "name_parse", "dbpr_bulk", "dbpr_payments", "dbpr_kfi", "dbpr_sirs",
+    "dbpr_noic", "cam_license", "sunbiz_bulk",
     "oir_market", "citizens_insurance", "cream_score",
 }
 
 # Enrichers that hit external APIs — keep the throttle so we don't get
 # rate-limited or blocked.
 NETWORK_ENRICHERS = {
-    "fema_flood", "property_appraiser", "fdot_parcels", "dbpr_building",
+    "fema_flood", "property_appraiser", "dbpr_building",
 }
 
 
@@ -313,8 +315,24 @@ def consume_batch(db: Session, enricher_filter: str | None = None) -> int:
 
 
 def _run_enricher(enricher_name: str, entity: Entity, db: Session) -> bool:
-    """Run a single enricher function by name. Returns True if data was written."""
+    """Run a single enricher function by name.
+
+    Centralized stage/sibling gate — no enricher should fire on a sibling
+    parcel (parent_id IS NOT NULL) because every enricher is master-level.
+    The aggregator only ever queues jobs for masters, but defending here
+    too means a stray manual job-insert can't accidentally re-enrich a
+    unit parcel and pollute its inherited characteristics.
+
+    Returns True if data was written, False otherwise.
+    """
     from agents.enrichers.pipeline import ENRICHERS
+
+    if entity.parent_id is not None:
+        logger.debug(
+            f"Enricher '{enricher_name}' skipped for sibling entity {entity.id} "
+            f"(parent_id={entity.parent_id})"
+        )
+        return False
 
     for enricher_info in ENRICHERS:
         if enricher_info["source_id"] == enricher_name:
