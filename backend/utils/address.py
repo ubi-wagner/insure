@@ -41,21 +41,47 @@ from typing import Optional
 
 
 _SUFFIX_NORMALISE = {
-    "avenue": "ave", "ave": "ave", "av": "ave",
-    "boulevard": "blvd", "blvd": "blvd", "blv": "blvd",
-    "street": "st", "st": "st",
+    # Avenue
+    "avenue": "ave", "ave": "ave", "av": "ave", "aven": "ave",
+    # Boulevard
+    "boulevard": "blvd", "blvd": "blvd", "blv": "blvd", "boul": "blvd",
+    "boulvd": "blvd",
+    # Street
+    "street": "st", "st": "st", "str": "st", "stre": "st",
+    # Road
     "road": "rd", "rd": "rd",
-    "drive": "dr", "dr": "dr",
+    # Drive
+    "drive": "dr", "dr": "dr", "drv": "dr",
+    # Lane
     "lane": "ln", "ln": "ln",
+    # Place
     "place": "pl", "pl": "pl",
+    # Court
     "court": "ct", "ct": "ct",
+    # Terrace
     "terrace": "ter", "ter": "ter", "terr": "ter",
-    "parkway": "pkwy", "pkwy": "pkwy",
-    "highway": "hwy", "hwy": "hwy",
-    "circle": "cir", "cir": "cir",
-    "trail": "trl", "trl": "trl",
-    "way": "way",
+    # Parkway
+    "parkway": "pkwy", "pkwy": "pkwy", "pky": "pkwy",
+    # Highway
+    "highway": "hwy", "hwy": "hwy", "hway": "hwy",
+    # Circle
+    "circle": "cir", "cir": "cir", "circ": "cir",
+    # Way
+    "way": "way", "wy": "way",
+    # Mile
     "mile": "mile",
+    # Trail
+    "trail": "trl", "trl": "trl",
+    # Plaza
+    "plaza": "plz", "plz": "plz",
+    # Crossing
+    "crossing": "xing", "xing": "xing",
+    # Other commonly seen suffixes that we keep as-is
+    "loop": "loop", "run": "run", "bend": "bend", "park": "park",
+    "row": "row", "ridge": "ridge", "rdg": "ridge",
+    "alley": "aly", "aly": "aly",
+    "extension": "ext", "ext": "ext", "extn": "ext",
+    # Directionals — full names normalise to single-letter abbreviations
     "north": "n", "n": "n",
     "south": "s", "s": "s",
     "east": "e", "e": "e",
@@ -72,8 +98,19 @@ _SUFFIXES = {
 }
 _DIRECTIONALS = {"n", "s", "e", "w", "ne", "nw", "se", "sw"}
 _UNIT_MARKERS = {
-    "unit", "apt", "apartment", "ste", "suite", "bldg", "building",
-    "lot", "fl", "floor", "rm", "room", "ph",
+    "unit",  "units",
+    "apt",   "apartment", "apartments", "apts",
+    "ste",   "suite",     "suites",
+    "bldg",  "building",  "bld",
+    "lot",
+    "fl",    "floor",     "flr",
+    "rm",    "room",
+    "ph",    "penthouse",
+    "number",  # "650 Main St Number 5" → strip
+    # NB: "no" is intentionally not here — collides with "N"/"NORTH"
+    # in inputs like "650 No Main St".
+    "trlr",  "trailer",
+    "spc",   "space",
 }
 
 _NUMERIC_RE = re.compile(r"^\d+[A-Z]?$", re.IGNORECASE)

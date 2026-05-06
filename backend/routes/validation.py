@@ -192,16 +192,47 @@ _SCORE_CANON_ONLY = 80
 _SCORE_NON_MASTER = 60
 
 
-def _pick_best(candidates: list[Entity]) -> Entity:
-    """Prefer VETTED aggregation master, then any VETTED, then first."""
-    for c in candidates:
-        if (c.pipeline_stage == "VETTED"
-                and (c.characteristics or {}).get("is_aggregation_master")):
-            return c
-    for c in candidates:
-        if c.pipeline_stage == "VETTED":
-            return c
-    return candidates[0]
+def _street_name_tokens(canon: str) -> set[str]:
+    """The set of tokens in a canon AFTER the leading house number.
+
+    Canons start with the house number, e.g. "650 main st" or
+    "16800 14 ave". This drops the first token so the remaining set
+    represents just the street name + suffix — what we actually score
+    on for tiebreaking when (zip, number) returns multiple buildings.
+    """
+    if not canon:
+        return set()
+    parts = canon.split()
+    return set(parts[1:]) if len(parts) > 1 else set()
+
+
+def _score_candidate(c: Entity, target_canon_tokens: set[str]) -> float:
+    """Tiebreaker score for picking among (zip, number)-matched candidates.
+
+    Heavily weights street-name token overlap — that's what
+    distinguishes "650 Main St" from "650 Lakeshore Dr" at the same
+    zip + number (rare but possible). VETTED aggregation masters get
+    a small boost so a master beats a stray sibling at the same key.
+    """
+    chars = c.characteristics or {}
+    cand_canon = chars.get("street_canon") or ""
+    cand_tokens = _street_name_tokens(cand_canon)
+
+    overlap = len(target_canon_tokens & cand_tokens) if target_canon_tokens else 0
+    score = float(overlap) * 5.0
+
+    # First non-number street token agreement is a probability accelerator
+    # ("brickell" in target tokens AND in candidate tokens).
+    if target_canon_tokens and cand_tokens:
+        if next(iter(sorted(target_canon_tokens))) in cand_tokens:
+            score += 2.0
+
+    if chars.get("is_aggregation_master"):
+        score += 1.5
+    elif c.pipeline_stage == "VETTED":
+        score += 0.5
+
+    return score
 
 
 def find_match(
@@ -210,37 +241,45 @@ def find_match(
 ) -> tuple[Optional[Entity], int, dict]:
     """Match an input row against the entities table.
 
-    The single source of truth for "what is one building" is the
-    canonical street key produced by utils.address.canonicalize_address.
-    Two records belong to the same building when their (phy_zip,
-    street_canon) tuples are equal — same rule the seeder used to
-    compute the key, the qualifier used to find SF condo conversions,
-    and the aggregator used to group masters.
+    The rule, finally simple:
 
-    Three-pass strategy:
-      1. STRICT: zip + canon match a VETTED master (score 100)
-      2. CITY FALLBACK: canon match + city contains the input city,
-         even when the zip differs. Catches user-typo'd ZIPs like
-         "33602" for Hillsboro Beach (real zip 33062). Score 85.
-      3. CANON-ONLY: canon match when input had no zip. Score 80.
+        1. ZIP5 is the reconciler. Strip everything but the first
+           five digits.
+        2. House number (first token of the address) is the
+           probability accelerator.
+        3. WHERE phy_zip = zip5 AND street_number = number returns
+           the candidate set. At any real (zip, number) there's
+           almost always one building — the rest is just tiebreaking.
+        4. Tiebreaker: street-name token overlap (Avenue vs Boulevard
+           at the same number is the rare case where this matters).
+        5. Fallback: if zip turns up nothing, try (city contains
+           input city) + number — catches typo'd ZIPs like 33602 for
+           Hillsboro Beach.
+        6. Fallback: no zip in input → match by canon alone.
 
-    Returns (entity, score, debug). ``debug`` exposes parsed_canon /
-    target_zip / target_city / match_phase so the validation page can
-    show WHY a match failed instead of an opaque "Not in our DB".
+    Score legend on the returned int:
+        100  zip + number matched a VETTED master
+         85  city + number matched (zip didn't, or wasn't given)
+         80  canon match without zip on input
+         60  zip + number matched but only LEAD/TARGET was there
+          0  no match
     """
     target = canonicalize_address(item.address or "")
     target_canon = target["canon"]
     target_number = target.get("number")
+    target_canon_tokens = _street_name_tokens(target_canon)
     target_zip = (item.zip or "").strip()[:5]
     target_city = (item.city or "").strip().lower()
 
     debug: dict = {
         "parsed_canon": target_canon,
+        "parsed_number": target_number,
         "parsed_zip": target_zip or None,
         "parsed_city": target_city or None,
         "match_phase": None,
+        "candidates_by_zip_number": 0,
+        "candidates_by_city_number": 0,
         "candidates_by_canon": 0,
-        "tried_canons": [],
         "nearby_canons": [],
     }
 
@@ -248,83 +287,95 @@ def find_match(
         debug["match_phase"] = "no_canon"
         return None, 0, debug
 
-    # Build canon variants so we match buildings whose seeded canon
-    # may have a different ordinal form ("14 ave" vs "14th ave"). The
-    # canonicaliser now strips ordinals at write time, but existing
-    # data was seeded under the older form — variants make us
-    # compatible with both without a full reseed.
-    variants = canon_variants(target_canon) | {target_canon}
-    debug["tried_canons"] = sorted(variants)
-
-    canon_q = (
+    base_q = (
         db.query(Entity)
         .filter(Entity.parent_id.is_(None))
         .filter(Entity.pipeline_stage != "ARCHIVED")
-        .filter(Entity.characteristics["street_canon"].astext.in_(variants))
     )
-    canon_candidates = canon_q.limit(50).all()
-    debug["candidates_by_canon"] = len(canon_candidates)
 
-    if not canon_candidates:
-        # No canon hit anywhere. Surface "nearby" entities by
-        # (zip, street_number) so we can see whether the building
-        # is seeded under a totally different canon (different street
-        # name spelling, different abbreviation we don't yet handle).
-        if target_number and target_zip:
-            nearby = (
-                db.query(Entity)
-                .filter(Entity.parent_id.is_(None))
-                .filter(Entity.characteristics["phy_zip"].astext == target_zip)
-                .filter(Entity.characteristics["street_number"].astext == target_number)
-                .limit(10)
-                .all()
-            )
-            debug["nearby_canons"] = sorted({
-                (e.characteristics or {}).get("street_canon") or ""
-                for e in nearby
-                if (e.characteristics or {}).get("street_canon")
-            })
-        debug["match_phase"] = "no_canon_match"
-        return None, 0, debug
-
-    # ── Pass 1: strict zip + canon ──────────────────────────────
-    if target_zip:
-        zip_match = [
-            c for c in canon_candidates
-            if str((c.characteristics or {}).get("phy_zip") or "")[:5] == target_zip
-        ]
-        if zip_match:
-            debug["match_phase"] = "zip_canon"
-            best = _pick_best(zip_match)
+    # ── Pass 1: PRIMARY ANCHOR — (zip5, house_number) ───────────
+    # Use ilike so "33162" matches both "33162" and "33162-2836"
+    # phy_zip values, because NAL files vary on whether they store
+    # the +4 suffix.
+    if target_zip and target_number:
+        candidates = (
+            base_q
+            .filter(Entity.characteristics["phy_zip"].astext.ilike(f"{target_zip}%"))
+            .filter(Entity.characteristics["street_number"].astext == target_number)
+            .limit(50).all()
+        )
+        debug["candidates_by_zip_number"] = len(candidates)
+        if candidates:
+            best = max(candidates, key=lambda c: _score_candidate(c, target_canon_tokens))
             score = (
                 _SCORE_VETTED_FULL if best.pipeline_stage == "VETTED"
                 else _SCORE_NON_MASTER
             )
+            debug["match_phase"] = "zip_number"
+            debug["nearby_canons"] = sorted({
+                (c.characteristics or {}).get("street_canon") or "" for c in candidates
+            })
             return best, score, debug
 
-    # ── Pass 2: city fallback (catches ZIP typos) ──────────────
-    if target_city:
-        city_match = [
-            c for c in canon_candidates
-            if target_city in (
-                str((c.characteristics or {}).get("phy_city") or "").lower()
+    # ── Pass 2: city + number (zip typo recovery) ──────────────
+    if target_city and target_number:
+        candidates = (
+            base_q
+            .filter(
+                Entity.characteristics["phy_city"].astext.ilike(f"%{target_city}%")
             )
-            or str((c.characteristics or {}).get("phy_city") or "").lower()
-            in target_city
-        ]
-        if city_match:
-            debug["match_phase"] = "city_canon_zip_mismatch" if target_zip else "city_canon"
-            best = _pick_best(city_match)
+            .filter(Entity.characteristics["street_number"].astext == target_number)
+            .limit(50).all()
+        )
+        debug["candidates_by_city_number"] = len(candidates)
+        if candidates:
+            best = max(candidates, key=lambda c: _score_candidate(c, target_canon_tokens))
+            debug["match_phase"] = "city_number"
+            debug["nearby_canons"] = sorted({
+                (c.characteristics or {}).get("street_canon") or "" for c in candidates
+            })
             return best, _SCORE_CITY_FALLBACK, debug
 
-    # ── Pass 3: canon-only (no zip on input) ────────────────────
-    if not target_zip:
+    # ── Pass 3: canon-only (used when input has no zip and no city,
+    # or as a last-ditch when zip+number missed entirely) ──────────
+    variants = canon_variants(target_canon) | {target_canon}
+    canon_candidates = (
+        base_q
+        .filter(Entity.characteristics["street_canon"].astext.in_(variants))
+        .limit(50).all()
+    )
+    debug["candidates_by_canon"] = len(canon_candidates)
+    if canon_candidates:
+        best = max(canon_candidates, key=lambda c: _score_candidate(c, target_canon_tokens))
         debug["match_phase"] = "canon_only"
-        best = _pick_best(canon_candidates)
+        debug["nearby_canons"] = sorted({
+            (c.characteristics or {}).get("street_canon") or "" for c in canon_candidates
+        })
         return best, _SCORE_CANON_ONLY, debug
 
-    # Canon hit something, but neither zip nor city agreed.
-    debug["match_phase"] = "canon_only_zip_city_disagree"
+    # No match anywhere. Surface what's seeded at the same number for
+    # diagnostic purposes — tells us whether (a) the building isn't
+    # seeded, (b) it's at a different zip, or (c) the canon differs
+    # in a way our normalizer doesn't yet handle.
+    if target_number:
+        nearby_q = (
+            base_q
+            .filter(Entity.characteristics["street_number"].astext == target_number)
+            .limit(20)
+        )
+        if target_zip:
+            nearby = nearby_q.filter(
+                Entity.characteristics["phy_zip"].astext.ilike(f"{target_zip[:3]}%")
+            ).all()
+        else:
+            nearby = nearby_q.all()
+        debug["nearby_canons"] = sorted({
+            (e.characteristics or {}).get("street_canon") or ""
+            for e in nearby
+            if (e.characteristics or {}).get("street_canon")
+        })
+
+    debug["match_phase"] = "no_match"
     return None, 0, debug
 
 

@@ -46,11 +46,13 @@ type OverallStatus = "match" | "conflict" | "missing" | "no_data";
 
 interface MatchDebug {
   parsed_canon?: string | null;
+  parsed_number?: string | null;
   parsed_zip?: string | null;
   parsed_city?: string | null;
   match_phase?: string | null;
+  candidates_by_zip_number?: number;
+  candidates_by_city_number?: number;
   candidates_by_canon?: number;
-  tried_canons?: string[];
   nearby_canons?: string[];
 }
 
@@ -584,39 +586,30 @@ function ResultCard({ r }: { r: CompareResult }) {
         <div className="mb-2 pb-2 border-b border-gray-800 text-[11px] text-red-300 space-y-0.5">
           <div>No matching entity in our database.</div>
           {r.match_debug && (
-            <div className="text-gray-500 text-[10px] font-mono mt-1">
-              {r.match_debug.parsed_canon ? (
-                <>
-                  canon: <span className="text-gray-300">{r.match_debug.parsed_canon}</span>
+            <div className="text-gray-500 text-[10px] font-mono mt-1 space-y-0.5">
+              <div>
+                <>num: <span className="text-gray-300">{r.match_debug.parsed_number ?? "—"}</span>{" · "}</>
+                <>zip: <span className="text-gray-300">{r.match_debug.parsed_zip ?? "—"}</span>{" · "}</>
+                <>city: <span className="text-gray-300">{r.match_debug.parsed_city ?? "—"}</span>{" · "}</>
+                <>canon: <span className="text-gray-300">{r.match_debug.parsed_canon ?? "—"}</span></>
+              </div>
+              <div>
+                <span className="text-gray-400">
+                  zip+num: <span className="text-gray-300">{r.match_debug.candidates_by_zip_number ?? 0}</span>
                   {" · "}
-                </>
-              ) : (
-                <>canon: <span className="text-amber-400">parser couldn&apos;t extract</span>{" · "}</>
-              )}
-              {r.match_debug.parsed_zip ? (
-                <>zip: <span className="text-gray-300">{r.match_debug.parsed_zip}</span>{" · "}</>
-              ) : (
-                <>zip: <span className="text-gray-600">none</span>{" · "}</>
-              )}
-              {r.match_debug.parsed_city && (
-                <>city: <span className="text-gray-300">{r.match_debug.parsed_city}</span>{" · "}</>
-              )}
-              <span className="text-gray-400">
-                {r.match_debug.candidates_by_canon ?? 0} canon hit
-                {r.match_debug.candidates_by_canon === 1 ? "" : "s"}
-                {r.match_debug.match_phase
-                  ? ` (${r.match_debug.match_phase.replace(/_/g, " ")})`
-                  : ""}
-              </span>
-              {r.match_debug.tried_canons && r.match_debug.tried_canons.length > 1 && (
-                <div className="text-gray-600 text-[10px] mt-0.5">
-                  tried: {r.match_debug.tried_canons.map((c) => `"${c}"`).join(" · ")}
-                </div>
-              )}
+                  city+num: <span className="text-gray-300">{r.match_debug.candidates_by_city_number ?? 0}</span>
+                  {" · "}
+                  canon: <span className="text-gray-300">{r.match_debug.candidates_by_canon ?? 0}</span>
+                  {r.match_debug.match_phase
+                    ? ` · phase: ${r.match_debug.match_phase.replace(/_/g, " ")}`
+                    : ""}
+                </span>
+              </div>
               {r.match_debug.nearby_canons && r.match_debug.nearby_canons.length > 0 && (
-                <div className="text-amber-400 text-[10px] mt-0.5">
-                  found at zip+number: {r.match_debug.nearby_canons.map((c) => `"${c}"`).join(" · ")}
-                  <span className="text-gray-600 ml-1">— our seeded canon differs from your input</span>
+                <div className="text-amber-400">
+                  seeded canons at this number:{" "}
+                  {r.match_debug.nearby_canons.slice(0, 8).map((c) => `"${c}"`).join(" · ")}
+                  {r.match_debug.nearby_canons.length > 8 && ` (+${r.match_debug.nearby_canons.length - 8} more)`}
                 </div>
               )}
             </div>
