@@ -20,11 +20,26 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from database import get_db
 from database.models import Entity
 from utils.address import canon_variants, canonicalize_address
+
+
+def _fold_city(s: str | None) -> str:
+    """Lowercase + strip "." + collapse whitespace.
+
+    The matcher's pass-2 city fallback compares against an indexed
+    LOWER(characteristics->>'phy_city'), so we have to fold the input
+    the same way before the equality check. "St. Petersburg" and
+    "ST PETERSBURG" both fold to "st petersburg".
+    """
+    if not s:
+        return ""
+    out = s.lower().replace(".", " ")
+    return " ".join(out.split())
 
 router = APIRouter()
 
@@ -269,7 +284,7 @@ def find_match(
     target_number = target.get("number")
     target_canon_tokens = _street_name_tokens(target_canon)
     target_zip = (item.zip or "").strip()[:5]
-    target_city = (item.city or "").strip().lower()
+    target_city = _fold_city(item.city)
 
     debug: dict = {
         "parsed_canon": target_canon,
@@ -294,13 +309,15 @@ def find_match(
     )
 
     # ── Pass 1: PRIMARY ANCHOR — (zip5, house_number) ───────────
-    # Use ilike so "33162" matches both "33162" and "33162-2836"
-    # phy_zip values, because NAL files vary on whether they store
-    # the +4 suffix.
+    # LEFT(phy_zip, 5) instead of ILIKE so the composite index
+    # ix_entities_chars_zip5_number gets hit. NAL files vary on
+    # whether they store the +4 suffix; LEFT(..., 5) handles both
+    # "33162" and "33162-2836" with one indexed lookup.
     if target_zip and target_number:
+        zip5_expr = func.left(Entity.characteristics["phy_zip"].astext, 5)
         candidates = (
             base_q
-            .filter(Entity.characteristics["phy_zip"].astext.ilike(f"{target_zip}%"))
+            .filter(zip5_expr == target_zip)
             .filter(Entity.characteristics["street_number"].astext == target_number)
             .limit(50).all()
         )
@@ -318,12 +335,16 @@ def find_match(
             return best, score, debug
 
     # ── Pass 2: city + number (zip typo recovery) ──────────────
+    # Equality on LOWER(phy_city) (folded to remove dots / collapse
+    # spaces) so the ix_entities_chars_phy_city index is used. Loses
+    # the previous "city contains" flexibility, but the fold handles
+    # the common variants ("St. Petersburg" / "ST PETERSBURG" /
+    # "St Petersburg" all collapse to "st petersburg").
     if target_city and target_number:
+        city_expr = func.lower(Entity.characteristics["phy_city"].astext)
         candidates = (
             base_q
-            .filter(
-                Entity.characteristics["phy_city"].astext.ilike(f"%{target_city}%")
-            )
+            .filter(city_expr == target_city)
             .filter(Entity.characteristics["street_number"].astext == target_number)
             .limit(50).all()
         )
@@ -363,12 +384,17 @@ def find_match(
             .filter(Entity.characteristics["street_number"].astext == target_number)
             .limit(20)
         )
+        # Diagnostic-only: street_number is already filtered (and
+        # indexed), so the result set is small. Filter by 3-digit zip
+        # prefix in Python rather than adding another non-indexable
+        # SQL expression.
+        nearby = nearby_q.all()
         if target_zip:
-            nearby = nearby_q.filter(
-                Entity.characteristics["phy_zip"].astext.ilike(f"{target_zip[:3]}%")
-            ).all()
-        else:
-            nearby = nearby_q.all()
+            zip3 = target_zip[:3]
+            nearby = [
+                e for e in nearby
+                if str((e.characteristics or {}).get("phy_zip") or "")[:3] == zip3
+            ]
         debug["nearby_canons"] = sorted({
             (e.characteristics or {}).get("street_canon") or ""
             for e in nearby
