@@ -11,14 +11,36 @@ POST /api/validation/compare
 POST /api/validation/parse
     Body: { text: "<free-form list, one property per line>" }
     Returns: { items: [ { ...parsed property... } ] }
+
+POST /api/validation/save
+    Save the current parse+compare set as a named test fixture so it
+    can be re-loaded — alone or combined with others — into a future
+    compare run. Stored as JSON files under filestore/System Data/
+    Validation/runs/<id>.json (S3-synced like the rest of filestore).
+
+GET /api/validation/saved
+    List all saved fixtures (metadata only — name, count, summary).
+
+POST /api/validation/load
+    Body: { ids: ["abc","def",…] }
+    Returns the union of items + raw_text from the requested fixtures,
+    so the UI can drop the merged set into the textarea and re-compare
+    a "small test → bigger test" flight in one click.
+
+DELETE /api/validation/saved/{id}
+    Delete one fixture.
 """
 
 from __future__ import annotations
 
+import json
+import os
 import re
+import uuid
+from datetime import datetime, timezone
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -26,6 +48,18 @@ from sqlalchemy.orm import Session
 from database import get_db
 from database.models import Entity
 from utils.address import _SUFFIXES as _STREET_SUFFIXES, canon_variants, canonicalize_address
+
+
+# Saved-runs filestore path. Mirrors the seed_stats / aggregator_last_run
+# pattern so it gets the same S3 sync treatment on Railway deploys.
+_SAVED_RUNS_DIR = os.path.join(
+    os.path.dirname(__file__),
+    "..",
+    "filestore",
+    "System Data",
+    "Validation",
+    "runs",
+)
 
 
 def _fold_city(s: str | None) -> str:
@@ -721,3 +755,124 @@ def compare_validation(req: CompareRequest, db: Session = Depends(get_db)):
         )
 
     return {"results": results, "counts": counts, "total": len(results)}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Saved-runs API — small/big test fixture library
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class SaveValidationRequest(BaseModel):
+    name: Optional[str] = None
+    input_text: str
+    items: list[ValidationInput]
+    summary: Optional[dict] = None  # {"match": N, "conflict": N, "missing": N, "total": N}
+
+
+class LoadValidationRequest(BaseModel):
+    ids: list[str]
+
+
+def _saved_run_path(run_id: str) -> str:
+    """Sanitised path lookup. Strips anything that isn't a hex char so
+    a malicious id can't escape the runs directory."""
+    safe_id = re.sub(r"[^a-fA-F0-9]", "", run_id)[:32]
+    if not safe_id:
+        raise HTTPException(status_code=400, detail="Invalid run id")
+    return os.path.join(_SAVED_RUNS_DIR, f"{safe_id}.json")
+
+
+@router.post("/api/validation/save")
+def save_validation_run(req: SaveValidationRequest):
+    """Persist the current parse+compare set as a reusable test
+    fixture. Auto-names based on item count + timestamp if no name
+    was provided ("30 props · 2026-05-07 22:15")."""
+    os.makedirs(_SAVED_RUNS_DIR, exist_ok=True)
+    run_id = uuid.uuid4().hex[:12]
+    now = datetime.now(timezone.utc)
+    name = (req.name or "").strip() or (
+        f"{len(req.items)} prop{'s' if len(req.items) != 1 else ''} · "
+        f"{now.strftime('%Y-%m-%d %H:%M')}"
+    )
+    payload = {
+        "id": run_id,
+        "name": name,
+        "created_at": now.isoformat(),
+        "input_text": req.input_text,
+        "input_items": [i.model_dump() for i in req.items],
+        "input_count": len(req.items),
+        "summary": req.summary or {},
+    }
+    with open(_saved_run_path(run_id), "w") as f:
+        json.dump(payload, f, indent=2)
+    return {"id": run_id, "name": name, "created_at": payload["created_at"]}
+
+
+@router.get("/api/validation/saved")
+def list_saved_runs():
+    """List metadata for every saved fixture (newest first). Excludes
+    the heavy input_items payload — that's only fetched when a fixture
+    is actually loaded."""
+    if not os.path.isdir(_SAVED_RUNS_DIR):
+        return {"runs": []}
+
+    runs: list[dict] = []
+    for fname in os.listdir(_SAVED_RUNS_DIR):
+        if not fname.endswith(".json"):
+            continue
+        path = os.path.join(_SAVED_RUNS_DIR, fname)
+        try:
+            with open(path) as f:
+                d = json.load(f)
+            runs.append({
+                "id": d.get("id"),
+                "name": d.get("name"),
+                "created_at": d.get("created_at"),
+                "input_count": d.get("input_count", 0),
+                "summary": d.get("summary") or {},
+            })
+        except Exception:
+            # Skip unreadable / malformed files but don't fail the
+            # whole listing — keep it resilient to S3 sync glitches.
+            continue
+
+    runs.sort(key=lambda r: r.get("created_at") or "", reverse=True)
+    return {"runs": runs}
+
+
+@router.post("/api/validation/load")
+def load_saved_runs(req: LoadValidationRequest):
+    """Combine the items + raw text of one or more saved fixtures
+    into a single payload the UI can drop into the textarea."""
+    items: list[dict] = []
+    raw_chunks: list[str] = []
+    used_ids: list[str] = []
+    for run_id in req.ids[:100]:  # cap to keep payload bounded
+        path = _saved_run_path(run_id)
+        if not os.path.exists(path):
+            continue
+        try:
+            with open(path) as f:
+                d = json.load(f)
+            items.extend(d.get("input_items") or [])
+            txt = (d.get("input_text") or "").strip()
+            if txt:
+                raw_chunks.append(txt)
+            used_ids.append(d.get("id") or run_id)
+        except Exception:
+            continue
+    return {
+        "items": items,
+        "raw_text": "\n\n".join(raw_chunks),
+        "loaded_ids": used_ids,
+        "item_count": len(items),
+    }
+
+
+@router.delete("/api/validation/saved/{run_id}")
+def delete_saved_run(run_id: str):
+    path = _saved_run_path(run_id)
+    if os.path.exists(path):
+        os.unlink(path)
+        return {"deleted": True, "id": run_id}
+    raise HTTPException(status_code=404, detail="Saved run not found")
