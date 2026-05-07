@@ -814,17 +814,30 @@ function FieldRow({ field, diff }: { field: string; diff: FieldDiff }) {
     valueColor = "text-gray-600";
   }
 
+  // ISO is the only field where the user benefits from seeing the raw
+  // DOR construction string — the derivation is heuristic, and "Masonry"
+  // → 4 vs Jason's 2 (JM) is something the user wants to eyeball. For
+  // every other field db_raw lives in the title tooltip.
+  const showRaw = field === "iso_class" && diff.db_raw;
+
   return (
-    <div className="flex items-center justify-between text-[11px] gap-2">
-      <div className="flex items-center gap-2 min-w-0">
-        <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dot}`} />
-        <span className="text-gray-500 w-20 shrink-0">{label}</span>
+    <div className="text-[11px]">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2 min-w-0">
+          <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dot}`} />
+          <span className="text-gray-500 w-20 shrink-0">{label}</span>
+        </div>
+        <div className={`font-mono truncate ${valueColor}`} title={diff.db_raw ?? ""}>
+          <span>{inputStr}</span>
+          <span className="text-gray-600 mx-1">vs</span>
+          <span>{dbStr}</span>
+        </div>
       </div>
-      <div className={`font-mono truncate ${valueColor}`} title={diff.db_raw ?? ""}>
-        <span>{inputStr}</span>
-        <span className="text-gray-600 mx-1">vs</span>
-        <span>{dbStr}</span>
-      </div>
+      {showRaw && (
+        <div className="text-[9px] text-gray-600 ml-[14px] truncate" title={diff.db_raw ?? ""}>
+          DOR class: <span className="text-gray-500">{diff.db_raw}</span>
+        </div>
+      )}
     </div>
   );
 }

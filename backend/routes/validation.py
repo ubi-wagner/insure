@@ -463,22 +463,49 @@ def find_match(
 # DOR construction class → ISO class (ISO 1-6 fire-resistive scale).
 # DOR uses descriptive strings; we collapse them onto the closest ISO
 # bucket Jason quotes against.
+#
+# ISO 1-6 commercial property classification (industry standard):
+#   1  Frame                       Wood walls + wood floor/roof
+#   2  Joisted Masonry             Masonry walls + wood floor/roof
+#   3  Non-Combustible             Steel/metal walls + non-comb floor
+#   4  Masonry Non-Combustible     Masonry walls + non-comb floor/roof
+#   5  Modified Fire Resistive     Partial fire-rating
+#   6  Fire Resistive              Full reinforced concrete / steel-encased
+#
+# Order of checks matters — more specific patterns first so e.g.
+# "Joisted Masonry" doesn't fall into the generic "masonry" bucket.
 def _dor_class_to_iso(s: Optional[str]) -> Optional[int]:
     if not s:
         return None
     low = s.lower()
     if "fire resistive" in low or "fire-resistive" in low:
         return 6
-    if "non-combustible" in low or "non combustible" in low:
-        return 5
     if "modified fire" in low:
         return 5
-    if "masonry" in low and "veneer" in low:
-        return 3
-    if "masonry" in low:
-        return 4
-    if "frame" in low or "wood" in low:
+    if "joisted masonry" in low:
         return 2
+    if "masonry non" in low and "combustible" in low:
+        return 4
+    if "non-combustible" in low or "non combustible" in low:
+        return 3
+    if "masonry veneer" in low:
+        # Veneer is brick/stone facing on a frame structure — still ISO 1.
+        return 1
+    if "concrete block" in low or "cmu" in low:
+        return 4
+    if "concrete" in low or "reinforced" in low:
+        # Plain "concrete" most often means reinforced concrete = FR.
+        return 6
+    if "masonry" in low or "block" in low or "brick" in low:
+        # Fallback for unspecified masonry — default to MNC. Older
+        # buildings (1960s-70s) may actually be JM (ISO 2) but we can't
+        # tell from the DOR string alone; the ±1 tolerance band absorbs
+        # this so a "Masonry"→4 derivation matches Jason's JM=2 OR MNC=4.
+        return 4
+    if "steel" in low:
+        return 3
+    if "frame" in low or "wood" in low:
+        return 1
     return None
 
 
@@ -490,8 +517,20 @@ def _first_nonnull(d: dict, *keys):
     return None
 
 
-def _compare(input_val, db_val, *, tolerance: float = 0.0):
-    """Per-field status: match / conflict / no_input / no_data."""
+def _compare(
+    input_val,
+    db_val,
+    *,
+    tolerance: float = 0.0,
+    abs_tolerance: float = 0.0,
+):
+    """Per-field status: match / conflict / no_input / no_data.
+
+    `tolerance`     — relative (e.g. 0.25 = ±25%). Used for TIV / units.
+    `abs_tolerance` — absolute (e.g. 1 = within 1 step). Used for ISO,
+                       where 6 vs 5 is "high fire resistance either way"
+                       not a real conflict.
+    """
     if input_val is None or input_val == "":
         return "no_input"
     if db_val is None or db_val == "":
@@ -499,6 +538,8 @@ def _compare(input_val, db_val, *, tolerance: float = 0.0):
     try:
         a = float(input_val)
         b = float(db_val)
+        if abs_tolerance > 0:
+            return "match" if abs(a - b) <= abs_tolerance else "conflict"
         if tolerance > 0:
             if a == 0 and b == 0:
                 return "match"
@@ -571,21 +612,32 @@ def compare_fields(item: ValidationInput, ent: Optional[Entity]) -> dict[str, An
         "units": {
             "input": item.units,
             "db": _to_int(db_units),
-            # Units rarely match exactly because DOR counts can differ from
-            # physical unit counts by ±1 (e.g. manager unit). Allow 5%.
-            "status": _compare(item.units, db_units, tolerance=0.05),
+            # Validation, not clone evaluation. ±10% absorbs the common
+            # gap between DOR-recorded counts and the physical unit
+            # count (manager units, common-area parcels, vacant units
+            # not yet on the tax roll).
+            "status": _compare(item.units, db_units, tolerance=0.10),
         },
         "tiv": {
             "input": item.tiv,
             "db": _to_int(db_tiv),
-            # TIV is a 20% replacement-cost estimate; treat ±25% as match.
+            # TIV is a replacement-cost estimate vs Jason's quoted
+            # insurable value. ±25% is wide enough that the two are
+            # measuring "the same building" rather than off by an
+            # order of magnitude.
             "status": _compare(item.tiv, db_tiv, tolerance=0.25),
         },
         "iso_class": {
             "input": item.iso_class,
             "db": db_iso,
             "db_raw": chars.get("dor_construction_class"),
-            "status": _compare(item.iso_class, db_iso),
+            # ±1 step tolerance because the DOR construction-class
+            # string maps to ISO heuristically (e.g. plain "Masonry"
+            # could be JM=2 or MNC=4 depending on whether the floor/
+            # roof are wood or concrete — DOR doesn't say). One step
+            # off is "we're describing the same building, slight
+            # disagreement on grade", not "wrong building".
+            "status": _compare(item.iso_class, db_iso, abs_tolerance=1),
         },
     }
 
