@@ -25,7 +25,7 @@ from sqlalchemy.orm import Session
 
 from database import get_db
 from database.models import Entity
-from utils.address import canon_variants, canonicalize_address
+from utils.address import _SUFFIXES as _STREET_SUFFIXES, canon_variants, canonicalize_address
 
 
 def _fold_city(s: str | None) -> str:
@@ -208,17 +208,26 @@ _SCORE_NON_MASTER = 60
 
 
 def _street_name_tokens(canon: str) -> set[str]:
-    """The set of tokens in a canon AFTER the leading house number.
+    """The set of NAME tokens after the leading house number, excluding
+    the generic street suffix.
 
     Canons start with the house number, e.g. "650 main st" or
-    "16800 14 ave". This drops the first token so the remaining set
-    represents just the street name + suffix — what we actually score
-    on for tiebreaking when (zip, number) returns multiple buildings.
+    "16800 14 ave". We drop the first token (the number) AND drop any
+    trailing suffix token ("st", "ave", "blvd", …) — the suffix is
+    nearly universal, so it's a poor discriminator. The remaining
+    set represents the actual street name + numeric route name.
+
+    Used both for tiebreaker scoring AND a hard floor: if best
+    candidate's name tokens have ZERO overlap with target's name
+    tokens, the match is rejected (catches "3000 59 st" vs "3000 56
+    st" — both share "st" but obviously different streets).
     """
     if not canon:
         return set()
     parts = canon.split()
-    return set(parts[1:]) if len(parts) > 1 else set()
+    if len(parts) < 2:
+        return set()
+    return {t for t in parts[1:] if t not in _STREET_SUFFIXES}
 
 
 def _score_candidate(c: Entity, target_canon_tokens: set[str]) -> float:
@@ -308,6 +317,43 @@ def find_match(
         .filter(Entity.pipeline_stage != "ARCHIVED")
     )
 
+    def _accept_or_reject(
+        candidates: list[Entity],
+        phase_label: str,
+        accept_score: int,
+    ) -> tuple[Optional[Entity], int, bool]:
+        """Pick the best candidate; reject if its name tokens have
+        zero overlap with the target's name tokens.
+
+        Catches false positives where (zip + number) returns a hit on
+        a completely different street: "3000 59 st" anchored at zip
+        33707 also returns "3000 56 st" and "3000 51 st" at the same
+        zip+number. Without this floor the matcher would accept any
+        of them on the suffix overlap alone.
+
+        Returns (entity, score, accepted). When accepted=False the
+        caller falls through to the next pass.
+        """
+        best = max(candidates, key=lambda c: _score_candidate(c, target_canon_tokens))
+        cand_canon = (best.characteristics or {}).get("street_canon") or ""
+        cand_name_tokens = _street_name_tokens(cand_canon)
+        # If target has any name tokens, require at least one overlap.
+        # Targets with no name tokens (canon was just a number) fall
+        # through to the canon-only / nearby diagnostic.
+        overlap = bool(target_canon_tokens & cand_name_tokens)
+        if target_canon_tokens and not overlap:
+            debug.setdefault("rejected", []).append({
+                "phase": phase_label,
+                "best_canon": cand_canon,
+                "reason": "no name-token overlap",
+            })
+            return None, 0, False
+        score = (
+            _SCORE_VETTED_FULL if best.pipeline_stage == "VETTED"
+            else accept_score
+        )
+        return best, score, True
+
     # ── Pass 1: PRIMARY ANCHOR — (zip5, house_number) ───────────
     # LEFT(phy_zip, 5) instead of ILIKE so the composite index
     # ix_entities_chars_zip5_number gets hit. NAL files vary on
@@ -323,16 +369,15 @@ def find_match(
         )
         debug["candidates_by_zip_number"] = len(candidates)
         if candidates:
-            best = max(candidates, key=lambda c: _score_candidate(c, target_canon_tokens))
-            score = (
-                _SCORE_VETTED_FULL if best.pipeline_stage == "VETTED"
-                else _SCORE_NON_MASTER
+            best, score, accepted = _accept_or_reject(
+                candidates, "zip_number", _SCORE_NON_MASTER
             )
-            debug["match_phase"] = "zip_number"
-            debug["nearby_canons"] = sorted({
-                (c.characteristics or {}).get("street_canon") or "" for c in candidates
-            })
-            return best, score, debug
+            if accepted:
+                debug["match_phase"] = "zip_number"
+                debug["nearby_canons"] = sorted({
+                    (c.characteristics or {}).get("street_canon") or "" for c in candidates
+                })
+                return best, score, debug
 
     # ── Pass 2: city + number (zip typo recovery) ──────────────
     # Equality on LOWER(phy_city) (folded to remove dots / collapse
@@ -350,15 +395,20 @@ def find_match(
         )
         debug["candidates_by_city_number"] = len(candidates)
         if candidates:
-            best = max(candidates, key=lambda c: _score_candidate(c, target_canon_tokens))
-            debug["match_phase"] = "city_number"
-            debug["nearby_canons"] = sorted({
-                (c.characteristics or {}).get("street_canon") or "" for c in candidates
-            })
-            return best, _SCORE_CITY_FALLBACK, debug
+            best, score, accepted = _accept_or_reject(
+                candidates, "city_number", _SCORE_CITY_FALLBACK
+            )
+            if accepted:
+                debug["match_phase"] = "city_number"
+                debug["nearby_canons"] = sorted({
+                    (c.characteristics or {}).get("street_canon") or "" for c in candidates
+                })
+                return best, score, debug
 
     # ── Pass 3: canon-only (used when input has no zip and no city,
     # or as a last-ditch when zip+number missed entirely) ──────────
+    # Canon match is exact, so name overlap is guaranteed — no need
+    # for the rejection gate here.
     variants = canon_variants(target_canon) | {target_canon}
     canon_candidates = (
         base_q
@@ -492,6 +542,19 @@ def compare_fields(item: ValidationInput, ent: Optional[Entity]) -> dict[str, An
         "tiv_estimate_master", "tiv_estimate",
         "dor_market_value_master", "dor_market_value",
     )
+
+    # Unit-parcel-only matches: the matcher landed on a single unit
+    # parcel (not an aggregation master), usually because the
+    # aggregator hasn't grouped this building yet. Comparing its $400K
+    # / 1-unit values against Jason's quoted building total ($22M / 92
+    # units) is apples-to-oranges and floods the card with bogus
+    # "conflict" flags. Suppress TIV / units comparison in that case;
+    # year_built and ISO still apply since they're building-wide
+    # attributes that any unit row will record correctly.
+    is_master = bool(chars.get("is_aggregation_master"))
+    if not is_master and bool(chars.get("is_condo_unit_parcel")):
+        db_tiv = None
+        db_units = None
     db_iso = _dor_class_to_iso(chars.get("dor_construction_class"))
 
     fields = {
@@ -590,6 +653,7 @@ def compare_validation(req: CompareRequest, db: Session = Depends(get_db)):
                         # rolled-up master ("$9.9M / 56 units summed from
                         # 56 linked parcels") from a lonely unit parcel.
                         "is_aggregation_master": (ent.characteristics or {}).get("is_aggregation_master", False),
+                        "is_condo_unit_parcel": (ent.characteristics or {}).get("is_condo_unit_parcel", False),
                         "sibling_count": (ent.characteristics or {}).get("sibling_count", 0),
                         "tiv_estimate_master": (ent.characteristics or {}).get("tiv_estimate_master"),
                         "num_units_master": (ent.characteristics or {}).get("num_units_master"),

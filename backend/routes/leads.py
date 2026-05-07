@@ -543,6 +543,63 @@ def get_lead(entity_id: int, db: Session = Depends(get_db)):
     }
 
 
+@router.get("/api/leads/{entity_id}/siblings")
+def get_siblings(
+    entity_id: int,
+    limit: int = Query(500, ge=1, le=2000),
+    db: Session = Depends(get_db),
+):
+    """Return the rolled-up parcels under an aggregation master.
+
+    For a VETTED master with `is_aggregation_master=True`, returns each
+    sibling parcel's identifying info so the UI can show the unit-by-
+    unit breakdown — owner name, unit suffix in the address, square
+    footage, individual TIV/market value, num_units field. Used by the
+    EntityDetailModal "Linked parcels" panel and the validation page
+    drill-down on rollup matches.
+
+    Returns an empty list (with sibling_count=0) if the entity is not
+    a master or has no siblings."""
+    master = db.query(Entity).filter(Entity.id == entity_id).first()
+    if not master:
+        raise HTTPException(status_code=404, detail="Entity not found")
+
+    rows = (
+        db.query(Entity)
+        .filter(Entity.parent_id == entity_id)
+        .order_by(Entity.address.asc().nullslast(), Entity.id.asc())
+        .limit(limit)
+        .all()
+    )
+
+    def _sib(e: Entity) -> dict:
+        c = e.characteristics or {}
+        return {
+            "id": e.id,
+            "address": e.address,
+            "owner_name": e.name,
+            "unit_suffix": c.get("phy_addr2") or None,
+            "dor_use_code": c.get("dor_use_code"),
+            "dor_num_units": c.get("dor_num_units"),
+            "living_sqft": c.get("dor_living_sqft") or c.get("living_sqft"),
+            "tiv_estimate": c.get("tiv_estimate"),
+            "dor_market_value": c.get("dor_market_value"),
+            "is_condo_unit_parcel": bool(c.get("is_condo_unit_parcel")),
+            "is_condo_master": bool(c.get("is_condo_master")),
+        }
+
+    return {
+        "master_id": master.id,
+        "master_name": master.name,
+        "is_aggregation_master": bool(
+            (master.characteristics or {}).get("is_aggregation_master")
+        ),
+        "sibling_count": len(rows),
+        # Returned sum is for the rendered slice; matches the limit cap.
+        "siblings": [_sib(e) for e in rows],
+    }
+
+
 @router.post("/api/leads/{entity_id}/vote")
 def vote_lead(entity_id: int, vote: VoteRequest, db: Session = Depends(get_db)):
     entity = db.query(Entity).filter(Entity.id == entity_id).first()
