@@ -371,6 +371,156 @@ function DataSection({ title, children }: { title: string; children?: React.Reac
   );
 }
 
+/* ----- Linked-parcels panel for VETTED masters ------------------- */
+
+interface SiblingRow {
+  id: number;
+  address: string | null;
+  owner_name: string | null;
+  unit_suffix: string | null;
+  dor_use_code: string | null;
+  dor_num_units: number | null;
+  living_sqft: number | null;
+  tiv_estimate: number | null;
+  dor_market_value: number | null;
+  is_condo_unit_parcel: boolean;
+  is_condo_master: boolean;
+}
+
+interface SiblingsResponse {
+  master_id: number;
+  master_name: string;
+  is_aggregation_master: boolean;
+  sibling_count: number;
+  siblings: SiblingRow[];
+}
+
+function siblingsMoney(n: number | null | undefined): string {
+  if (n == null) return "—";
+  if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(2)}M`;
+  if (n >= 1_000) return `$${Math.round(n / 1_000)}k`;
+  return `$${n.toLocaleString()}`;
+}
+
+function siblingUnitLabel(addr: string | null, id: number): string {
+  if (!addr) return `#${id}`;
+  // Extract the unit / apartment suffix from the NAL address. Most rows
+  // look like "1451 BRICKELL AVE 1702" or "445 HAMDEN DR # 406". We
+  // strip the building number + street + suffix and keep just the
+  // trailing unit identifier.
+  const m = addr.match(/(?:#\s*|\bUNIT\s+|\bAPT\s+|\bSTE\s+|\s)([A-Z0-9-]+)\s*(?:BLD|BLDG|BUILDING)?/i);
+  if (m && m[1] && /[0-9]/.test(m[1])) return m[1];
+  return `#${id}`;
+}
+
+function ModalSiblingsPanel({
+  masterId,
+  siblingCount,
+}: {
+  masterId: number;
+  siblingCount: number;
+}) {
+  const [open, setOpen] = useState(false);
+  const [data, setData] = useState<SiblingsResponse | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open || data || loading) return;
+    setLoading(true);
+    fetch(`/api/proxy/leads/${masterId}/siblings`)
+      .then(async (r) => {
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(j?.detail ?? `HTTP ${r.status}`);
+        return j as SiblingsResponse;
+      })
+      .then(setData)
+      .catch((e) => setError(String(e)))
+      .finally(() => setLoading(false));
+  }, [open, data, loading, masterId]);
+
+  const tivSum = data
+    ? data.siblings.reduce(
+        (s, x) => s + (x.tiv_estimate ?? x.dor_market_value ?? 0),
+        0
+      )
+    : null;
+
+  return (
+    <details
+      open={open}
+      onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)}
+    >
+      <summary className="cursor-pointer flex items-center gap-2 text-xs select-none">
+        <span className="text-teal-300 font-semibold">VETTED master</span>
+        <span className="text-gray-400">
+          {siblingCount} linked unit parcel{siblingCount === 1 ? "" : "s"}
+        </span>
+        {tivSum != null && (
+          <span className="text-teal-200 font-mono text-[10px]">
+            sum {siblingsMoney(tivSum)}
+          </span>
+        )}
+        <span className="text-gray-600 text-[10px] ml-auto">
+          {open ? "▼" : "▶"}
+        </span>
+      </summary>
+      <div className="mt-2 max-h-72 overflow-y-auto border-t border-teal-900/60 pt-2">
+        {loading && <div className="text-[11px] text-gray-500">Loading…</div>}
+        {error && <div className="text-[11px] text-red-400">{error}</div>}
+        {data && data.siblings.length === 0 && (
+          <div className="text-[11px] text-gray-500">No linked parcels recorded.</div>
+        )}
+        {data && data.siblings.length > 0 && (
+          <table className="w-full text-[10px] font-mono">
+            <thead className="bg-gray-900 text-gray-400 sticky top-0">
+              <tr>
+                <th className="text-left px-2 py-1 font-normal">Unit</th>
+                <th className="text-left px-2 py-1 font-normal">Owner</th>
+                <th className="text-right px-2 py-1 font-normal">Sqft</th>
+                <th className="text-right px-2 py-1 font-normal">JV</th>
+                <th className="text-right px-2 py-1 font-normal">TIV est.</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.siblings.map((s) => (
+                <tr key={s.id} className="border-t border-teal-900/30 hover:bg-gray-900/60">
+                  <td className="px-2 py-0.5">
+                    <a
+                      href={`/lead/${s.id}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-blue-400 hover:text-blue-300"
+                      title={s.address ?? `#${s.id}`}
+                    >
+                      {siblingUnitLabel(s.address, s.id)}
+                    </a>
+                  </td>
+                  <td
+                    className="px-2 py-0.5 text-gray-300 truncate max-w-[180px]"
+                    title={s.owner_name ?? ""}
+                  >
+                    {s.owner_name ?? "—"}
+                  </td>
+                  <td className="px-2 py-0.5 text-right text-gray-400">
+                    {s.living_sqft ? s.living_sqft.toLocaleString() : "—"}
+                  </td>
+                  <td className="px-2 py-0.5 text-right text-gray-400">
+                    {siblingsMoney(s.dor_market_value)}
+                  </td>
+                  <td className="px-2 py-0.5 text-right text-gray-300">
+                    {siblingsMoney(s.tiv_estimate)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </details>
+  );
+}
+
 /* ------------------------------------------------------------------ */
 /*  Main Component                                                     */
 /* ------------------------------------------------------------------ */
@@ -608,30 +758,16 @@ export default function EntityDetailModal({
             </div>
 
             {/* Aggregation — only meaningful when this is a VETTED master
-                or a sibling under one. Shows a simple count + drill-down. */}
+                or a sibling under one. Master version expands into a
+                full unit-by-unit table (owner, sqft, JV, TIV) fetched
+                lazily on first open. */}
             {(lead.children.length > 0 || lead.parent_id != null) && (
               <div className="bg-teal-950/30 border border-teal-900 rounded p-3 mb-3">
                 {lead.children.length > 0 && (
-                  <details>
-                    <summary className="cursor-pointer flex items-center gap-2 text-xs">
-                      <span className="text-teal-300 font-semibold">VETTED master</span>
-                      <span className="text-gray-400">{lead.children.length} linked unit parcel{lead.children.length === 1 ? "" : "s"}</span>
-                      <span className="text-gray-600 text-[10px] ml-auto">click to expand</span>
-                    </summary>
-                    <div className="mt-2 max-h-56 overflow-y-auto border-t border-teal-900/60 pt-2">
-                      <ul className="space-y-0.5 text-[11px]">
-                        {lead.children.slice(0, 200).map((ch) => (
-                          <li key={ch.id} className="flex items-center justify-between gap-2">
-                            <span className="text-gray-400 truncate">{ch.name || ch.address}</span>
-                            <span className="text-gray-600 font-mono shrink-0">#{ch.id}</span>
-                          </li>
-                        ))}
-                        {lead.children.length > 200 && (
-                          <li className="text-gray-600 italic">… and {lead.children.length - 200} more</li>
-                        )}
-                      </ul>
-                    </div>
-                  </details>
+                  <ModalSiblingsPanel
+                    masterId={lead.id}
+                    siblingCount={lead.children.length}
+                  />
                 )}
                 {lead.parent_id != null && (
                   <p className="text-xs text-gray-400">

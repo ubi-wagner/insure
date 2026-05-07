@@ -41,6 +41,7 @@ interface MatchEntity {
   cream_score: number | null;
   cream_tier: string | null;
   is_aggregation_master?: boolean;
+  is_condo_unit_parcel?: boolean;
   sibling_count?: number;
   tiv_estimate_master?: number | null;
   num_units_master?: number | null;
@@ -489,6 +490,137 @@ function fmtField(v: number | string | null | undefined, key: string): string {
   return String(v);
 }
 
+interface SiblingRow {
+  id: number;
+  address: string | null;
+  owner_name: string | null;
+  unit_suffix: string | null;
+  dor_use_code: string | null;
+  dor_num_units: number | null;
+  living_sqft: number | null;
+  tiv_estimate: number | null;
+  dor_market_value: number | null;
+  is_condo_unit_parcel: boolean;
+  is_condo_master: boolean;
+}
+
+interface SiblingsResponse {
+  master_id: number;
+  master_name: string;
+  is_aggregation_master: boolean;
+  sibling_count: number;
+  siblings: SiblingRow[];
+}
+
+function fmtMoney(n: number | null | undefined): string {
+  if (n == null) return "—";
+  if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(2)}M`;
+  if (n >= 1_000) return `$${Math.round(n / 1_000)}k`;
+  return `$${n.toLocaleString()}`;
+}
+
+function unitSuffixFromAddress(addr: string | null): string {
+  if (!addr) return "";
+  // Most NAL rows look like "1451 BRICKELL AVE 1702" or "445 HAMDEN DR
+  // # 406". Pull just the unit/apt portion so the table doesn't repeat
+  // the building street number on every row.
+  const m = addr.match(/(?:#\s*|\bUNIT\s+|\bAPT\s+|\bSTE\s+|\s)([A-Z0-9-]+)\s*(?:BLD|BLDG|BUILDING)?/i);
+  if (m && m[1] && /[0-9]/.test(m[1])) return m[1];
+  return "";
+}
+
+function SiblingsPanel({
+  masterId,
+  expectedCount,
+}: {
+  masterId: number;
+  expectedCount: number;
+}) {
+  const [open, setOpen] = useState(false);
+  const [data, setData] = useState<SiblingsResponse | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open || data || loading) return;
+    setLoading(true);
+    fetch(`/api/proxy/leads/${masterId}/siblings`)
+      .then(async (r) => {
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(j?.detail ?? `HTTP ${r.status}`);
+        return j as SiblingsResponse;
+      })
+      .then(setData)
+      .catch((e) => setError(String(e)))
+      .finally(() => setLoading(false));
+  }, [open, data, loading, masterId]);
+
+  return (
+    <details
+      className="mt-1.5"
+      open={open}
+      onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)}
+    >
+      <summary className="text-[10px] text-teal-300 cursor-pointer hover:text-teal-200 select-none">
+        {open ? "▼" : "▶"} {expectedCount} linked parcels
+        {data ? ` · sum ${fmtMoney(
+          data.siblings.reduce((s, x) => s + (x.tiv_estimate ?? x.dor_market_value ?? 0), 0)
+        )}` : ""}
+      </summary>
+      {open && (
+        <div className="mt-1 max-h-64 overflow-auto rounded border border-gray-800 bg-gray-950">
+          {loading && <div className="p-2 text-[10px] text-gray-500">Loading…</div>}
+          {error && <div className="p-2 text-[10px] text-red-400">{error}</div>}
+          {data && data.siblings.length === 0 && (
+            <div className="p-2 text-[10px] text-gray-500">No linked parcels recorded.</div>
+          )}
+          {data && data.siblings.length > 0 && (
+            <table className="w-full text-[10px] font-mono">
+              <thead className="bg-gray-900 text-gray-400 sticky top-0">
+                <tr>
+                  <th className="text-left px-2 py-1 font-normal">Unit</th>
+                  <th className="text-left px-2 py-1 font-normal">Owner</th>
+                  <th className="text-right px-2 py-1 font-normal">Sqft</th>
+                  <th className="text-right px-2 py-1 font-normal">JV</th>
+                  <th className="text-right px-2 py-1 font-normal">TIV est.</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.siblings.map((s) => (
+                  <tr key={s.id} className="border-t border-gray-900 hover:bg-gray-900">
+                    <td className="px-2 py-0.5">
+                      <Link
+                        href={`/lead/${s.id}`}
+                        target="_blank"
+                        className="text-blue-400 hover:text-blue-300"
+                        title={s.address ?? `#${s.id}`}
+                      >
+                        {unitSuffixFromAddress(s.address) || `#${s.id}`}
+                      </Link>
+                    </td>
+                    <td className="px-2 py-0.5 text-gray-300 truncate max-w-[160px]" title={s.owner_name ?? ""}>
+                      {s.owner_name ?? "—"}
+                    </td>
+                    <td className="px-2 py-0.5 text-right text-gray-400">
+                      {s.living_sqft ? s.living_sqft.toLocaleString() : "—"}
+                    </td>
+                    <td className="px-2 py-0.5 text-right text-gray-400">
+                      {fmtMoney(s.dor_market_value)}
+                    </td>
+                    <td className="px-2 py-0.5 text-right text-gray-300">
+                      {fmtMoney(s.tiv_estimate)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+    </details>
+  );
+}
+
 function CompareResultsView({ results }: { results: CompareResponse }) {
   const counts = results.counts ?? {};
   return (
@@ -583,6 +715,18 @@ function ResultCard({ r }: { r: CompareResult }) {
                 rollup ×{(r.match.sibling_count ?? 0) + 1}
               </span>
             )}
+            {!r.match.is_aggregation_master && r.match.is_condo_unit_parcel && (
+              <span
+                className="text-[10px] px-1.5 py-0.5 rounded bg-amber-900/60 text-amber-200"
+                title={
+                  "Matched on a single unit parcel — building total not " +
+                  "available. The aggregator hasn't grouped this address yet, " +
+                  "so TIV / units comparison is suppressed. Year / ISO still apply."
+                }
+              >
+                unit parcel only
+              </span>
+            )}
             {r.match.county && (
               <span className="text-[10px] text-gray-500">{r.match.county}</span>
             )}
@@ -595,6 +739,9 @@ function ResultCard({ r }: { r: CompareResult }) {
           </div>
           {r.match.address && (
             <div className="text-[10px] text-gray-500 mt-1 truncate">{r.match.address}</div>
+          )}
+          {r.match.is_aggregation_master && (r.match.sibling_count ?? 0) > 0 && (
+            <SiblingsPanel masterId={r.match.id} expectedCount={r.match.sibling_count ?? 0} />
           )}
         </div>
       ) : (
@@ -667,17 +814,30 @@ function FieldRow({ field, diff }: { field: string; diff: FieldDiff }) {
     valueColor = "text-gray-600";
   }
 
+  // ISO is the only field where the user benefits from seeing the raw
+  // DOR construction string — the derivation is heuristic, and "Masonry"
+  // → 4 vs Jason's 2 (JM) is something the user wants to eyeball. For
+  // every other field db_raw lives in the title tooltip.
+  const showRaw = field === "iso_class" && diff.db_raw;
+
   return (
-    <div className="flex items-center justify-between text-[11px] gap-2">
-      <div className="flex items-center gap-2 min-w-0">
-        <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dot}`} />
-        <span className="text-gray-500 w-20 shrink-0">{label}</span>
+    <div className="text-[11px]">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2 min-w-0">
+          <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dot}`} />
+          <span className="text-gray-500 w-20 shrink-0">{label}</span>
+        </div>
+        <div className={`font-mono truncate ${valueColor}`} title={diff.db_raw ?? ""}>
+          <span>{inputStr}</span>
+          <span className="text-gray-600 mx-1">vs</span>
+          <span>{dbStr}</span>
+        </div>
       </div>
-      <div className={`font-mono truncate ${valueColor}`} title={diff.db_raw ?? ""}>
-        <span>{inputStr}</span>
-        <span className="text-gray-600 mx-1">vs</span>
-        <span>{dbStr}</span>
-      </div>
+      {showRaw && (
+        <div className="text-[9px] text-gray-600 ml-[14px] truncate" title={diff.db_raw ?? ""}>
+          DOR class: <span className="text-gray-500">{diff.db_raw}</span>
+        </div>
+      )}
     </div>
   );
 }

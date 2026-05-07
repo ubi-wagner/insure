@@ -25,7 +25,7 @@ from sqlalchemy.orm import Session
 
 from database import get_db
 from database.models import Entity
-from utils.address import canon_variants, canonicalize_address
+from utils.address import _SUFFIXES as _STREET_SUFFIXES, canon_variants, canonicalize_address
 
 
 def _fold_city(s: str | None) -> str:
@@ -208,17 +208,26 @@ _SCORE_NON_MASTER = 60
 
 
 def _street_name_tokens(canon: str) -> set[str]:
-    """The set of tokens in a canon AFTER the leading house number.
+    """The set of NAME tokens after the leading house number, excluding
+    the generic street suffix.
 
     Canons start with the house number, e.g. "650 main st" or
-    "16800 14 ave". This drops the first token so the remaining set
-    represents just the street name + suffix — what we actually score
-    on for tiebreaking when (zip, number) returns multiple buildings.
+    "16800 14 ave". We drop the first token (the number) AND drop any
+    trailing suffix token ("st", "ave", "blvd", …) — the suffix is
+    nearly universal, so it's a poor discriminator. The remaining
+    set represents the actual street name + numeric route name.
+
+    Used both for tiebreaker scoring AND a hard floor: if best
+    candidate's name tokens have ZERO overlap with target's name
+    tokens, the match is rejected (catches "3000 59 st" vs "3000 56
+    st" — both share "st" but obviously different streets).
     """
     if not canon:
         return set()
     parts = canon.split()
-    return set(parts[1:]) if len(parts) > 1 else set()
+    if len(parts) < 2:
+        return set()
+    return {t for t in parts[1:] if t not in _STREET_SUFFIXES}
 
 
 def _score_candidate(c: Entity, target_canon_tokens: set[str]) -> float:
@@ -308,6 +317,43 @@ def find_match(
         .filter(Entity.pipeline_stage != "ARCHIVED")
     )
 
+    def _accept_or_reject(
+        candidates: list[Entity],
+        phase_label: str,
+        accept_score: int,
+    ) -> tuple[Optional[Entity], int, bool]:
+        """Pick the best candidate; reject if its name tokens have
+        zero overlap with the target's name tokens.
+
+        Catches false positives where (zip + number) returns a hit on
+        a completely different street: "3000 59 st" anchored at zip
+        33707 also returns "3000 56 st" and "3000 51 st" at the same
+        zip+number. Without this floor the matcher would accept any
+        of them on the suffix overlap alone.
+
+        Returns (entity, score, accepted). When accepted=False the
+        caller falls through to the next pass.
+        """
+        best = max(candidates, key=lambda c: _score_candidate(c, target_canon_tokens))
+        cand_canon = (best.characteristics or {}).get("street_canon") or ""
+        cand_name_tokens = _street_name_tokens(cand_canon)
+        # If target has any name tokens, require at least one overlap.
+        # Targets with no name tokens (canon was just a number) fall
+        # through to the canon-only / nearby diagnostic.
+        overlap = bool(target_canon_tokens & cand_name_tokens)
+        if target_canon_tokens and not overlap:
+            debug.setdefault("rejected", []).append({
+                "phase": phase_label,
+                "best_canon": cand_canon,
+                "reason": "no name-token overlap",
+            })
+            return None, 0, False
+        score = (
+            _SCORE_VETTED_FULL if best.pipeline_stage == "VETTED"
+            else accept_score
+        )
+        return best, score, True
+
     # ── Pass 1: PRIMARY ANCHOR — (zip5, house_number) ───────────
     # LEFT(phy_zip, 5) instead of ILIKE so the composite index
     # ix_entities_chars_zip5_number gets hit. NAL files vary on
@@ -323,16 +369,15 @@ def find_match(
         )
         debug["candidates_by_zip_number"] = len(candidates)
         if candidates:
-            best = max(candidates, key=lambda c: _score_candidate(c, target_canon_tokens))
-            score = (
-                _SCORE_VETTED_FULL if best.pipeline_stage == "VETTED"
-                else _SCORE_NON_MASTER
+            best, score, accepted = _accept_or_reject(
+                candidates, "zip_number", _SCORE_NON_MASTER
             )
-            debug["match_phase"] = "zip_number"
-            debug["nearby_canons"] = sorted({
-                (c.characteristics or {}).get("street_canon") or "" for c in candidates
-            })
-            return best, score, debug
+            if accepted:
+                debug["match_phase"] = "zip_number"
+                debug["nearby_canons"] = sorted({
+                    (c.characteristics or {}).get("street_canon") or "" for c in candidates
+                })
+                return best, score, debug
 
     # ── Pass 2: city + number (zip typo recovery) ──────────────
     # Equality on LOWER(phy_city) (folded to remove dots / collapse
@@ -350,15 +395,20 @@ def find_match(
         )
         debug["candidates_by_city_number"] = len(candidates)
         if candidates:
-            best = max(candidates, key=lambda c: _score_candidate(c, target_canon_tokens))
-            debug["match_phase"] = "city_number"
-            debug["nearby_canons"] = sorted({
-                (c.characteristics or {}).get("street_canon") or "" for c in candidates
-            })
-            return best, _SCORE_CITY_FALLBACK, debug
+            best, score, accepted = _accept_or_reject(
+                candidates, "city_number", _SCORE_CITY_FALLBACK
+            )
+            if accepted:
+                debug["match_phase"] = "city_number"
+                debug["nearby_canons"] = sorted({
+                    (c.characteristics or {}).get("street_canon") or "" for c in candidates
+                })
+                return best, score, debug
 
     # ── Pass 3: canon-only (used when input has no zip and no city,
     # or as a last-ditch when zip+number missed entirely) ──────────
+    # Canon match is exact, so name overlap is guaranteed — no need
+    # for the rejection gate here.
     variants = canon_variants(target_canon) | {target_canon}
     canon_candidates = (
         base_q
@@ -413,22 +463,49 @@ def find_match(
 # DOR construction class → ISO class (ISO 1-6 fire-resistive scale).
 # DOR uses descriptive strings; we collapse them onto the closest ISO
 # bucket Jason quotes against.
+#
+# ISO 1-6 commercial property classification (industry standard):
+#   1  Frame                       Wood walls + wood floor/roof
+#   2  Joisted Masonry             Masonry walls + wood floor/roof
+#   3  Non-Combustible             Steel/metal walls + non-comb floor
+#   4  Masonry Non-Combustible     Masonry walls + non-comb floor/roof
+#   5  Modified Fire Resistive     Partial fire-rating
+#   6  Fire Resistive              Full reinforced concrete / steel-encased
+#
+# Order of checks matters — more specific patterns first so e.g.
+# "Joisted Masonry" doesn't fall into the generic "masonry" bucket.
 def _dor_class_to_iso(s: Optional[str]) -> Optional[int]:
     if not s:
         return None
     low = s.lower()
     if "fire resistive" in low or "fire-resistive" in low:
         return 6
-    if "non-combustible" in low or "non combustible" in low:
-        return 5
     if "modified fire" in low:
         return 5
-    if "masonry" in low and "veneer" in low:
-        return 3
-    if "masonry" in low:
-        return 4
-    if "frame" in low or "wood" in low:
+    if "joisted masonry" in low:
         return 2
+    if "masonry non" in low and "combustible" in low:
+        return 4
+    if "non-combustible" in low or "non combustible" in low:
+        return 3
+    if "masonry veneer" in low:
+        # Veneer is brick/stone facing on a frame structure — still ISO 1.
+        return 1
+    if "concrete block" in low or "cmu" in low:
+        return 4
+    if "concrete" in low or "reinforced" in low:
+        # Plain "concrete" most often means reinforced concrete = FR.
+        return 6
+    if "masonry" in low or "block" in low or "brick" in low:
+        # Fallback for unspecified masonry — default to MNC. Older
+        # buildings (1960s-70s) may actually be JM (ISO 2) but we can't
+        # tell from the DOR string alone; the ±1 tolerance band absorbs
+        # this so a "Masonry"→4 derivation matches Jason's JM=2 OR MNC=4.
+        return 4
+    if "steel" in low:
+        return 3
+    if "frame" in low or "wood" in low:
+        return 1
     return None
 
 
@@ -440,8 +517,20 @@ def _first_nonnull(d: dict, *keys):
     return None
 
 
-def _compare(input_val, db_val, *, tolerance: float = 0.0):
-    """Per-field status: match / conflict / no_input / no_data."""
+def _compare(
+    input_val,
+    db_val,
+    *,
+    tolerance: float = 0.0,
+    abs_tolerance: float = 0.0,
+):
+    """Per-field status: match / conflict / no_input / no_data.
+
+    `tolerance`     — relative (e.g. 0.25 = ±25%). Used for TIV / units.
+    `abs_tolerance` — absolute (e.g. 1 = within 1 step). Used for ISO,
+                       where 6 vs 5 is "high fire resistance either way"
+                       not a real conflict.
+    """
     if input_val is None or input_val == "":
         return "no_input"
     if db_val is None or db_val == "":
@@ -449,6 +538,8 @@ def _compare(input_val, db_val, *, tolerance: float = 0.0):
     try:
         a = float(input_val)
         b = float(db_val)
+        if abs_tolerance > 0:
+            return "match" if abs(a - b) <= abs_tolerance else "conflict"
         if tolerance > 0:
             if a == 0 and b == 0:
                 return "match"
@@ -492,6 +583,19 @@ def compare_fields(item: ValidationInput, ent: Optional[Entity]) -> dict[str, An
         "tiv_estimate_master", "tiv_estimate",
         "dor_market_value_master", "dor_market_value",
     )
+
+    # Unit-parcel-only matches: the matcher landed on a single unit
+    # parcel (not an aggregation master), usually because the
+    # aggregator hasn't grouped this building yet. Comparing its $400K
+    # / 1-unit values against Jason's quoted building total ($22M / 92
+    # units) is apples-to-oranges and floods the card with bogus
+    # "conflict" flags. Suppress TIV / units comparison in that case;
+    # year_built and ISO still apply since they're building-wide
+    # attributes that any unit row will record correctly.
+    is_master = bool(chars.get("is_aggregation_master"))
+    if not is_master and bool(chars.get("is_condo_unit_parcel")):
+        db_tiv = None
+        db_units = None
     db_iso = _dor_class_to_iso(chars.get("dor_construction_class"))
 
     fields = {
@@ -508,21 +612,32 @@ def compare_fields(item: ValidationInput, ent: Optional[Entity]) -> dict[str, An
         "units": {
             "input": item.units,
             "db": _to_int(db_units),
-            # Units rarely match exactly because DOR counts can differ from
-            # physical unit counts by ±1 (e.g. manager unit). Allow 5%.
-            "status": _compare(item.units, db_units, tolerance=0.05),
+            # Validation, not clone evaluation. ±10% absorbs the common
+            # gap between DOR-recorded counts and the physical unit
+            # count (manager units, common-area parcels, vacant units
+            # not yet on the tax roll).
+            "status": _compare(item.units, db_units, tolerance=0.10),
         },
         "tiv": {
             "input": item.tiv,
             "db": _to_int(db_tiv),
-            # TIV is a 20% replacement-cost estimate; treat ±25% as match.
+            # TIV is a replacement-cost estimate vs Jason's quoted
+            # insurable value. ±25% is wide enough that the two are
+            # measuring "the same building" rather than off by an
+            # order of magnitude.
             "status": _compare(item.tiv, db_tiv, tolerance=0.25),
         },
         "iso_class": {
             "input": item.iso_class,
             "db": db_iso,
             "db_raw": chars.get("dor_construction_class"),
-            "status": _compare(item.iso_class, db_iso),
+            # ±1 step tolerance because the DOR construction-class
+            # string maps to ISO heuristically (e.g. plain "Masonry"
+            # could be JM=2 or MNC=4 depending on whether the floor/
+            # roof are wood or concrete — DOR doesn't say). One step
+            # off is "we're describing the same building, slight
+            # disagreement on grade", not "wrong building".
+            "status": _compare(item.iso_class, db_iso, abs_tolerance=1),
         },
     }
 
@@ -590,6 +705,7 @@ def compare_validation(req: CompareRequest, db: Session = Depends(get_db)):
                         # rolled-up master ("$9.9M / 56 units summed from
                         # 56 linked parcels") from a lonely unit parcel.
                         "is_aggregation_master": (ent.characteristics or {}).get("is_aggregation_master", False),
+                        "is_condo_unit_parcel": (ent.characteristics or {}).get("is_condo_unit_parcel", False),
                         "sibling_count": (ent.characteristics or {}).get("sibling_count", 0),
                         "tiv_estimate_master": (ent.characteristics or {}).get("tiv_estimate_master"),
                         "num_units_master": (ent.characteristics or {}).get("num_units_master"),
