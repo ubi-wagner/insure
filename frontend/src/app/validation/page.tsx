@@ -76,6 +76,14 @@ interface CompareResponse {
   total: number;
 }
 
+interface SavedRunMeta {
+  id: string;
+  name: string;
+  created_at: string;
+  input_count: number;
+  summary: { match?: number; conflict?: number; missing?: number; no_data?: number; total?: number };
+}
+
 interface EventItem {
   event_type: string;
   action: string;
@@ -106,6 +114,97 @@ export default function ValidationPage() {
   const [compareResults, setCompareResults] = useState<CompareResponse | null>(null);
   const [comparing, setComparing] = useState(false);
   const [compareError, setCompareError] = useState<string | null>(null);
+
+  // Saved-runs library
+  const [savedRuns, setSavedRuns] = useState<SavedRunMeta[]>([]);
+  const [savedExpanded, setSavedExpanded] = useState(false);
+  const [savedSelected, setSavedSelected] = useState<Set<string>>(new Set());
+  const [saveName, setSaveName] = useState<string>("");
+  const [savingRun, setSavingRun] = useState(false);
+  const [savedMsg, setSavedMsg] = useState<string | null>(null);
+
+  const fetchSavedRuns = useCallback(async () => {
+    try {
+      const res = await fetch("/api/proxy/validation/saved");
+      if (!res.ok) return;
+      const d = await res.json().catch(() => ({ runs: [] }));
+      setSavedRuns(d.runs ?? []);
+    } catch {}
+  }, []);
+
+  useEffect(() => { fetchSavedRuns(); }, [fetchSavedRuns]);
+
+  async function saveCurrentRun() {
+    if (!parsed || parsed.length === 0) return;
+    setSavingRun(true);
+    setSavedMsg(null);
+    try {
+      const res = await fetch("/api/proxy/validation/save", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: saveName.trim() || null,
+          input_text: pasteText,
+          items: parsed,
+          summary: compareResults
+            ? { ...compareResults.counts, total: compareResults.total }
+            : null,
+        }),
+      });
+      const d = await res.json().catch(() => ({ error: res.statusText }));
+      if (!res.ok || d.error) {
+        setSavedMsg(`Error: ${d.error ?? res.statusText}`);
+      } else {
+        setSavedMsg(`Saved as "${d.name}"`);
+        setSaveName("");
+        fetchSavedRuns();
+      }
+    } catch (err) {
+      setSavedMsg(`Error: ${err}`);
+    }
+    setSavingRun(false);
+  }
+
+  async function loadSelectedRuns() {
+    if (savedSelected.size === 0) return;
+    setSavedMsg(null);
+    try {
+      const res = await fetch("/api/proxy/validation/load", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids: Array.from(savedSelected) }),
+      });
+      const d = await res.json().catch(() => ({ error: res.statusText }));
+      if (!res.ok || d.error) {
+        setSavedMsg(`Error: ${d.error ?? res.statusText}`);
+        return;
+      }
+      // Drop merged items into the textarea (so the user can edit
+      // before parsing) AND auto-parse so they can hit Compare
+      // immediately on a small/big test.
+      const txt: string = d.raw_text ?? "";
+      setPasteText(txt);
+      setParsed(d.items ?? []);
+      setCompareResults(null);
+      setSavedSelected(new Set());
+      setSavedMsg(`Loaded ${d.item_count} items from ${d.loaded_ids?.length ?? 0} sets`);
+    } catch (err) {
+      setSavedMsg(`Error: ${err}`);
+    }
+  }
+
+  async function deleteSavedRun(id: string) {
+    if (!confirm("Delete this saved run?")) return;
+    try {
+      const res = await fetch(`/api/proxy/validation/saved/${id}`, { method: "DELETE" });
+      if (res.ok) {
+        setSavedRuns((prev) => prev.filter((r) => r.id !== id));
+        setSavedSelected((prev) => {
+          const next = new Set(prev); next.delete(id); return next;
+        });
+      }
+    } catch {}
+  }
 
   async function handleCompare(items: ParsedItem[]) {
     setComparing(true);
@@ -233,6 +332,99 @@ export default function ValidationPage() {
 
         {tab === "compare" && (
           <div className="space-y-4">
+            {/* Saved Test Sets — small/big test fixture library. Each entry
+                is the items+summary from a previous parse+compare run.
+                Multi-select + Load merges them into the textarea so a
+                small subset can be promoted into a bigger regression run. */}
+            <div className="bg-gray-900/60 border border-gray-800 rounded-lg">
+              <button
+                onClick={() => setSavedExpanded((x) => !x)}
+                className="w-full flex items-center justify-between px-3 py-2 text-xs text-gray-300 hover:bg-gray-900"
+              >
+                <span className="flex items-center gap-2">
+                  <span className="text-gray-500">{savedExpanded ? "▼" : "▶"}</span>
+                  <span className="font-semibold">Saved Test Sets</span>
+                  <span className="text-gray-500">({savedRuns.length})</span>
+                  {savedSelected.size > 0 && (
+                    <span className="text-blue-400">· {savedSelected.size} selected</span>
+                  )}
+                </span>
+                {savedExpanded && savedSelected.size > 0 && (
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    onClick={(e) => { e.stopPropagation(); loadSelectedRuns(); }}
+                    onKeyDown={(e) => { if (e.key === "Enter") { e.stopPropagation(); loadSelectedRuns(); } }}
+                    className="bg-blue-600 hover:bg-blue-500 text-white text-[11px] px-3 py-1 rounded font-medium cursor-pointer"
+                  >
+                    Load {savedSelected.size} into textarea
+                  </span>
+                )}
+              </button>
+              {savedExpanded && (
+                <div className="border-t border-gray-800 px-3 py-2">
+                  {savedRuns.length === 0 ? (
+                    <p className="text-[11px] text-gray-500">
+                      No saved sets yet. Run a parse + compare, then click "Save run" below.
+                    </p>
+                  ) : (
+                    <ul className="space-y-1">
+                      {savedRuns.map((r) => {
+                        const summary = r.summary || {};
+                        const checked = savedSelected.has(r.id);
+                        return (
+                          <li
+                            key={r.id}
+                            className={`flex items-center gap-2 text-[11px] px-2 py-1 rounded ${
+                              checked ? "bg-blue-950/50 border border-blue-900" : "hover:bg-gray-900"
+                            }`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={(e) => {
+                                setSavedSelected((prev) => {
+                                  const next = new Set(prev);
+                                  if (e.target.checked) next.add(r.id); else next.delete(r.id);
+                                  return next;
+                                });
+                              }}
+                              className="cursor-pointer"
+                            />
+                            <span className="flex-1 truncate text-gray-200" title={r.name}>{r.name}</span>
+                            <span className="text-gray-500 font-mono shrink-0">
+                              {r.input_count} item{r.input_count === 1 ? "" : "s"}
+                            </span>
+                            {summary.total != null && (
+                              <span className="text-[10px] font-mono shrink-0">
+                                <span className="text-green-400">{summary.match ?? 0}m</span>
+                                <span className="text-gray-700">/</span>
+                                <span className="text-yellow-400">{summary.conflict ?? 0}c</span>
+                                <span className="text-gray-700">/</span>
+                                <span className="text-red-400">{summary.missing ?? 0}x</span>
+                              </span>
+                            )}
+                            <button
+                              onClick={() => deleteSavedRun(r.id)}
+                              className="text-gray-600 hover:text-red-400 text-[10px] shrink-0"
+                              title="Delete"
+                            >
+                              ✕
+                            </button>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )}
+                  {savedMsg && (
+                    <p className={`text-[11px] mt-2 ${savedMsg.startsWith("Error") ? "text-red-400" : "text-green-400"}`}>
+                      {savedMsg}
+                    </p>
+                  )}
+                </div>
+              )}
+            </div>
+
             <div>
               <h2 className="text-sm font-semibold text-gray-300 mb-1">Paste a property list</h2>
               <p className="text-[11px] text-gray-500 mb-2">
@@ -324,7 +516,33 @@ export default function ValidationPage() {
             )}
 
             {compareResults && (
-              <CompareResultsView results={compareResults} />
+              <>
+                <div className="bg-gray-900/60 border border-gray-800 rounded-lg p-3 flex items-center gap-2 flex-wrap">
+                  <span className="text-[11px] text-gray-400 mr-1">
+                    Save this run as a reusable test set:
+                  </span>
+                  <input
+                    type="text"
+                    value={saveName}
+                    onChange={(e) => setSaveName(e.target.value)}
+                    placeholder={`e.g. "Pinellas condos · ${parsed?.length ?? 0} props"`}
+                    className="flex-1 min-w-[180px] bg-gray-950 border border-gray-800 rounded px-2 py-1 text-[11px] text-gray-200 focus:outline-none focus:border-blue-700 placeholder:text-gray-700"
+                  />
+                  <button
+                    onClick={saveCurrentRun}
+                    disabled={savingRun || !parsed || parsed.length === 0}
+                    className="bg-emerald-700 hover:bg-emerald-600 disabled:opacity-40 text-white text-[11px] px-3 py-1 rounded font-medium"
+                  >
+                    {savingRun ? "Saving..." : "Save run"}
+                  </button>
+                  {savedMsg && (
+                    <span className={`text-[11px] ${savedMsg.startsWith("Error") ? "text-red-400" : "text-green-400"}`}>
+                      {savedMsg}
+                    </span>
+                  )}
+                </div>
+                <CompareResultsView results={compareResults} />
+              </>
             )}
           </div>
         )}
