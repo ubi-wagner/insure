@@ -20,11 +20,26 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from database import get_db
 from database.models import Entity
 from utils.address import canon_variants, canonicalize_address
+
+
+def _fold_city(s: str | None) -> str:
+    """Lowercase + strip "." + collapse whitespace.
+
+    The matcher's pass-2 city fallback compares against an indexed
+    LOWER(characteristics->>'phy_city'), so we have to fold the input
+    the same way before the equality check. "St. Petersburg" and
+    "ST PETERSBURG" both fold to "st petersburg".
+    """
+    if not s:
+        return ""
+    out = s.lower().replace(".", " ")
+    return " ".join(out.split())
 
 router = APIRouter()
 
@@ -269,7 +284,7 @@ def find_match(
     target_number = target.get("number")
     target_canon_tokens = _street_name_tokens(target_canon)
     target_zip = (item.zip or "").strip()[:5]
-    target_city = (item.city or "").strip().lower()
+    target_city = _fold_city(item.city)
 
     debug: dict = {
         "parsed_canon": target_canon,
@@ -294,13 +309,15 @@ def find_match(
     )
 
     # ── Pass 1: PRIMARY ANCHOR — (zip5, house_number) ───────────
-    # Use ilike so "33162" matches both "33162" and "33162-2836"
-    # phy_zip values, because NAL files vary on whether they store
-    # the +4 suffix.
+    # LEFT(phy_zip, 5) instead of ILIKE so the composite index
+    # ix_entities_chars_zip5_number gets hit. NAL files vary on
+    # whether they store the +4 suffix; LEFT(..., 5) handles both
+    # "33162" and "33162-2836" with one indexed lookup.
     if target_zip and target_number:
+        zip5_expr = func.left(Entity.characteristics["phy_zip"].astext, 5)
         candidates = (
             base_q
-            .filter(Entity.characteristics["phy_zip"].astext.ilike(f"{target_zip}%"))
+            .filter(zip5_expr == target_zip)
             .filter(Entity.characteristics["street_number"].astext == target_number)
             .limit(50).all()
         )
@@ -318,12 +335,16 @@ def find_match(
             return best, score, debug
 
     # ── Pass 2: city + number (zip typo recovery) ──────────────
+    # Equality on LOWER(phy_city) (folded to remove dots / collapse
+    # spaces) so the ix_entities_chars_phy_city index is used. Loses
+    # the previous "city contains" flexibility, but the fold handles
+    # the common variants ("St. Petersburg" / "ST PETERSBURG" /
+    # "St Petersburg" all collapse to "st petersburg").
     if target_city and target_number:
+        city_expr = func.lower(Entity.characteristics["phy_city"].astext)
         candidates = (
             base_q
-            .filter(
-                Entity.characteristics["phy_city"].astext.ilike(f"%{target_city}%")
-            )
+            .filter(city_expr == target_city)
             .filter(Entity.characteristics["street_number"].astext == target_number)
             .limit(50).all()
         )
@@ -363,12 +384,17 @@ def find_match(
             .filter(Entity.characteristics["street_number"].astext == target_number)
             .limit(20)
         )
+        # Diagnostic-only: street_number is already filtered (and
+        # indexed), so the result set is small. Filter by 3-digit zip
+        # prefix in Python rather than adding another non-indexable
+        # SQL expression.
+        nearby = nearby_q.all()
         if target_zip:
-            nearby = nearby_q.filter(
-                Entity.characteristics["phy_zip"].astext.ilike(f"{target_zip[:3]}%")
-            ).all()
-        else:
-            nearby = nearby_q.all()
+            zip3 = target_zip[:3]
+            nearby = [
+                e for e in nearby
+                if str((e.characteristics or {}).get("phy_zip") or "")[:3] == zip3
+            ]
         debug["nearby_canons"] = sorted({
             (e.characteristics or {}).get("street_canon") or ""
             for e in nearby
@@ -446,14 +472,26 @@ def compare_fields(item: ValidationInput, ent: Optional[Entity]) -> dict[str, An
     db_year = _first_nonnull(
         chars, "dor_year_built", "dor_effective_year_built", "pa_year_built"
     )
-    # Stories: prefer the unified `stories` key (set by dbpr_building when
-    # the scrape works, name_parse otherwise), fall back through the legacy
-    # DBPR/DOR keys for entities seeded before name_parse landed.
+    # Stories: prefer aggregator's max-across-siblings, then the unified
+    # `stories` key (set by dbpr_building when the scrape works,
+    # name_parse otherwise), fall back through the legacy DBPR/DOR keys.
     db_stories = _first_nonnull(
-        chars, "stories", "dbpr_max_stories", "dor_max_stories"
+        chars, "stories_master", "stories", "dbpr_max_stories", "dor_max_stories"
     )
-    db_units = _first_nonnull(chars, "dor_num_units", "units_estimate", "units")
-    db_tiv = _first_nonnull(chars, "tiv_estimate", "dor_market_value")
+    # Units: prefer the aggregator's rolled-up count (sum of physical
+    # unit parcels under the master), then the canonical key (which the
+    # aggregator also overwrites on masters), then per-row fallbacks for
+    # unaggregated singletons.
+    db_units = _first_nonnull(
+        chars, "num_units_master", "dor_num_units", "units_estimate", "units"
+    )
+    # TIV: prefer the aggregator's sum of all linked unit parcels, then
+    # the canonical key, then DOR market value as a last resort.
+    db_tiv = _first_nonnull(
+        chars,
+        "tiv_estimate_master", "tiv_estimate",
+        "dor_market_value_master", "dor_market_value",
+    )
     db_iso = _dor_class_to_iso(chars.get("dor_construction_class"))
 
     fields = {
@@ -548,6 +586,13 @@ def compare_validation(req: CompareRequest, db: Session = Depends(get_db)):
                         "cream_tier": (ent.characteristics or {}).get("cream_tier"),
                         "phy_zip": (ent.characteristics or {}).get("phy_zip"),
                         "phy_city": (ent.characteristics or {}).get("phy_city"),
+                        # Aggregation context — lets the UI distinguish a
+                        # rolled-up master ("$9.9M / 56 units summed from
+                        # 56 linked parcels") from a lonely unit parcel.
+                        "is_aggregation_master": (ent.characteristics or {}).get("is_aggregation_master", False),
+                        "sibling_count": (ent.characteristics or {}).get("sibling_count", 0),
+                        "tiv_estimate_master": (ent.characteristics or {}).get("tiv_estimate_master"),
+                        "num_units_master": (ent.characteristics or {}).get("num_units_master"),
                     }
                     if ent
                     else None

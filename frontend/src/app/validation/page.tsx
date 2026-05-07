@@ -40,6 +40,10 @@ interface MatchEntity {
   heat_score: string | null;
   cream_score: number | null;
   cream_tier: string | null;
+  is_aggregation_master?: boolean;
+  sibling_count?: number;
+  tiv_estimate_master?: number | null;
+  num_units_master?: number | null;
 }
 
 type OverallStatus = "match" | "conflict" | "missing" | "no_data";
@@ -568,6 +572,17 @@ function ResultCard({ r }: { r: CompareResult }) {
             <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-800 text-gray-400">
               {r.match.pipeline_stage}
             </span>
+            {r.match.is_aggregation_master && (r.match.sibling_count ?? 0) > 0 && (
+              <span
+                className="text-[10px] px-1.5 py-0.5 rounded bg-teal-900/60 text-teal-200"
+                title={
+                  `Rolled-up master: TIV/units summed across ` +
+                  `${(r.match.sibling_count ?? 0) + 1} linked parcels.`
+                }
+              >
+                rollup ×{(r.match.sibling_count ?? 0) + 1}
+              </span>
+            )}
             {r.match.county && (
               <span className="text-[10px] text-gray-500">{r.match.county}</span>
             )}

@@ -101,6 +101,11 @@ export default function OpsCenter() {
   const [resetting, setResetting] = useState(false);
   const [qualifierRunning, setQualifierRunning] = useState(false);
   const [aggregatorRunning, setAggregatorRunning] = useState(false);
+  const [indexBuilding, setIndexBuilding] = useState(false);
+  const [indexStatus, setIndexStatus] = useState<{
+    indexes: { name: string; exists: boolean }[];
+    all_present: boolean;
+  } | null>(null);
 
   // Pipeline run-state — polled while any stage is running so the user
   // sees per-county progress instead of a frozen "Seeding..." button.
@@ -261,6 +266,57 @@ export default function OpsCenter() {
     setAggregatorRunning(false);
   }
 
+  const fetchIndexStatus = useCallback(async () => {
+    try {
+      const res = await fetch("/api/proxy/admin/indexes/status");
+      const d = await res.json().catch(() => null);
+      if (d?.indexes) setIndexStatus(d);
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    fetchIndexStatus();
+    // Re-poll while a build is in progress so the pill updates as
+    // CONCURRENTLY indexes finish one by one.
+    const id = indexBuilding ? setInterval(fetchIndexStatus, 3000) : null;
+    return () => { if (id) clearInterval(id); };
+  }, [isAdmin, fetchIndexStatus, indexBuilding]);
+
+  async function buildIndexes() {
+    setIndexBuilding(true);
+    setActionMsg(null);
+    try {
+      const res = await fetch("/api/proxy/admin/indexes/build", { method: "POST" });
+      const d = await res.json().catch(() => ({ error: res.statusText }));
+      if (d.error) {
+        setActionMsg(`Error: ${d.error}`);
+        setIndexBuilding(false);
+      } else {
+        setActionMsg(
+          `Building ${d.indexes?.length ?? 0} JSONB indexes in the background — ` +
+          `safe to keep using the app. Pill below shows progress.`
+        );
+        // Stop the polling spinner once all indexes are present.
+        const watch = setInterval(async () => {
+          const r = await fetch("/api/proxy/admin/indexes/status");
+          const s = await r.json().catch(() => null);
+          if (s) {
+            setIndexStatus(s);
+            if (s.all_present) {
+              clearInterval(watch);
+              setIndexBuilding(false);
+              setActionMsg("All JSONB indexes built. Validation and lead-list queries should now be fast.");
+            }
+          }
+        }, 3000);
+      }
+    } catch (err) {
+      setActionMsg(`Error: ${err}`);
+      setIndexBuilding(false);
+    }
+  }
+
   /* ── Helpers ── */
   function fmtNum(n: number | null | undefined): string {
     if (n == null) return "—";
@@ -305,12 +361,37 @@ export default function OpsCenter() {
           <div className="bg-gray-900 border border-gray-800 rounded-lg p-4 space-y-3">
             <div className="flex items-center justify-between">
               <h2 className="text-sm font-semibold text-gray-300">Pipeline Run</h2>
-              {!confirmReset ? (
-                <button onClick={() => setConfirmReset(true)}
-                  className="bg-red-900/50 hover:bg-red-900 border border-red-800 text-red-300 text-[11px] px-3 py-1 rounded">
-                  Reset DB
-                </button>
-              ) : (
+              <div className="flex items-center gap-2">
+                {indexStatus && (
+                  <button
+                    onClick={buildIndexes}
+                    disabled={indexBuilding || indexStatus.all_present}
+                    title={
+                      indexStatus.all_present
+                        ? "All JSONB lookup indexes are present."
+                        : "Create the JSONB lookup indexes the matcher and lead list need. Runs CONCURRENTLY — safe while aggregator is running."
+                    }
+                    className={`text-[11px] px-3 py-1 rounded border ${
+                      indexStatus.all_present
+                        ? "bg-green-900/30 text-green-400 border-green-900 cursor-default"
+                        : indexBuilding
+                          ? "bg-blue-900/40 text-blue-300 border-blue-800"
+                          : "bg-blue-900/40 hover:bg-blue-900 text-blue-300 border-blue-800"
+                    }`}
+                  >
+                    {indexStatus.all_present
+                      ? `Indexes ✓ (${indexStatus.indexes.length}/${indexStatus.indexes.length})`
+                      : indexBuilding
+                        ? `Building… ${indexStatus.indexes.filter(i => i.exists).length}/${indexStatus.indexes.length}`
+                        : `Build Indexes (${indexStatus.indexes.filter(i => i.exists).length}/${indexStatus.indexes.length})`}
+                  </button>
+                )}
+                {!confirmReset ? (
+                  <button onClick={() => setConfirmReset(true)}
+                    className="bg-red-900/50 hover:bg-red-900 border border-red-800 text-red-300 text-[11px] px-3 py-1 rounded">
+                    Reset DB
+                  </button>
+                ) : (
                 <div className="flex items-center gap-1.5 bg-red-950 border border-red-700 rounded px-3 py-1">
                   <span className="text-red-300 text-[11px]">Wipe all data?</span>
                   <button onClick={resetDatabase} disabled={resetting}
@@ -320,6 +401,7 @@ export default function OpsCenter() {
                   <button onClick={() => setConfirmReset(false)} className="text-gray-400 text-[11px] px-2">No</button>
                 </div>
               )}
+              </div>
             </div>
 
             <PipelineStageRow

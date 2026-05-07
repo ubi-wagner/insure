@@ -291,6 +291,113 @@ def run_aggregator_endpoint(
     return run_aggregator(db, county=county)
 
 
+# JSONB lookup indexes — created on demand by the Ops dashboard. The
+# same definitions live in alembic migration j0e1f2g3h4i5; this
+# endpoint is the manual escape hatch for a live DB that hasn't been
+# redeployed yet, or when a previous index build was interrupted.
+_JSONB_INDEXES = [
+    (
+        "ix_entities_chars_zip5_number",
+        "(LEFT(characteristics->>'phy_zip', 5), (characteristics->>'street_number')) "
+        "WHERE parent_id IS NULL",
+    ),
+    (
+        "ix_entities_chars_street_canon",
+        "((characteristics->>'street_canon')) WHERE parent_id IS NULL",
+    ),
+    (
+        "ix_entities_chars_phy_city",
+        "(LOWER(characteristics->>'phy_city')) WHERE parent_id IS NULL",
+    ),
+    (
+        "ix_entities_chars_use_code",
+        "((characteristics->>'dor_use_code'))",
+    ),
+    (
+        "ix_entities_chars_cream_tier",
+        "((characteristics->>'cream_tier'))",
+    ),
+    (
+        "ix_entities_chars_cream_score",
+        "(((characteristics->>'cream_score')::int)) "
+        "WHERE characteristics->>'cream_score' IS NOT NULL",
+    ),
+    (
+        "ix_entities_pipeline_parent",
+        "(pipeline_stage, parent_id)",
+    ),
+]
+
+
+@router.get("/api/admin/indexes/status")
+def index_status():
+    """List which of the JSONB lookup indexes already exist on the
+    entities table. Drives the Ops dashboard's "Build Indexes" button."""
+    from database import engine
+    names = [name for name, _ in _JSONB_INDEXES]
+    with engine.connect() as conn:
+        rows = conn.execute(
+            sa.text(
+                "SELECT indexname FROM pg_indexes "
+                "WHERE schemaname='public' AND tablename='entities' "
+                "AND indexname = ANY(:names)"
+            ),
+            {"names": names},
+        ).fetchall()
+    existing = {r[0] for r in rows}
+    return {
+        "indexes": [
+            {"name": n, "exists": n in existing} for n, _ in _JSONB_INDEXES
+        ],
+        "all_present": all(n in existing for n in names),
+    }
+
+
+def _build_indexes_background() -> None:
+    """Run CREATE INDEX CONCURRENTLY for each JSONB lookup index.
+
+    CONCURRENTLY means no ACCESS EXCLUSIVE lock — safe to run while
+    the aggregator is mid-flight. Each statement runs on its own
+    connection in autocommit mode because CONCURRENTLY can't be used
+    inside a transaction.
+    """
+    from database import engine
+
+    for name, body in _JSONB_INDEXES:
+        sql = f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {name} ON entities {body}"
+        try:
+            with engine.connect() as conn:
+                conn.execution_options(isolation_level="AUTOCOMMIT").execute(sa.text(sql))
+            logger.info(f"Index ready: {name}")
+            emit(
+                EventType.DB_OPERATION,
+                f"index built: {name}",
+                EventStatus.SUCCESS,
+            )
+        except Exception as e:
+            logger.error(f"Failed to build index {name}: {e}")
+            emit(
+                EventType.DB_OPERATION,
+                f"index build failed: {name}",
+                EventStatus.ERROR,
+                detail=str(e)[:300],
+            )
+
+
+@router.post("/api/admin/indexes/build")
+def build_indexes():
+    """Kick off a background CREATE INDEX CONCURRENTLY for every
+    JSONB lookup index the matcher and lead list need. Idempotent:
+    skips indexes that already exist. Safe to run while the
+    aggregator is processing."""
+    threading.Thread(target=_build_indexes_background, daemon=True).start()
+    return {
+        "started": True,
+        "indexes": [n for n, _ in _JSONB_INDEXES],
+        "message": "Building indexes in the background. Check /api/admin/indexes/status for progress.",
+    }
+
+
 @router.post("/api/admin/download-cadastral")
 def download_cadastral():
     """Download commercial parcels from FL ArcGIS Cadastral FeatureServer.
