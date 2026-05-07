@@ -277,7 +277,7 @@ def _rollup_master(master: Entity, group: list[Entity]) -> dict:
     jv_sum = 0
     have_any_jv = False
     have_any_tiv = False
-    units_seen: list[int] = []
+    units_sum = 0           # sum of dor_num_units across the group
     stories_seen: list[int] = []
 
     for e in group:
@@ -292,18 +292,40 @@ def _rollup_master(master: Entity, group: list[Entity]) -> dict:
             have_any_jv = True
         u = _to_int(ec.get("dor_num_units")) or _to_int(ec.get("units_estimate"))
         if u is not None:
-            units_seen.append(u)
+            units_sum += u
         s = _to_int(ec.get("stories")) or _to_int(ec.get("dbpr_max_stories"))
         if s is not None:
             stories_seen.append(s)
 
-    # Unit count = max(NAL master count, count of physical sibling rows)
-    sibling_unit_count = len([
-        e for e in group
+    # Unit count picking, in preference order:
+    #   1. Count of unit-parcel rows in the group. Each DOR_UC=004
+    #      row is one physical condo unit; this is what Jason quotes
+    #      ("56 units") and what the validator should compare against.
+    #   2. Sum of dor_num_units across the group, MINUS the master's
+    #      own count if the master is a common-elements parcel that
+    #      already records the building total. (Without this we'd
+    #      double-count: master says 56 + 56 unit rows each saying 1
+    #      = 112.)
+    #   3. NAL master's own num_units field.
+    #   4. Group size as a final fallback.
+    sibling_unit_count = sum(
+        1 for e in group
         if (e.characteristics or {}).get("is_condo_unit_parcel")
-    ])
-    nal_master_units = max(units_seen) if units_seen else 0
-    units_master = max(nal_master_units, sibling_unit_count, len(group))
+    )
+    nal_master_units = _to_int((master.characteristics or {}).get("dor_num_units")) or 0
+
+    if sibling_unit_count > 0:
+        units_master = sibling_unit_count
+    elif units_sum > 0:
+        # Subtract the master's count to avoid double-counting when
+        # the master row is a common-elements parcel that already
+        # records the building total.
+        deduped_sum = units_sum - nal_master_units if nal_master_units else units_sum
+        units_master = max(deduped_sum, nal_master_units)
+    elif nal_master_units > 0:
+        units_master = nal_master_units
+    else:
+        units_master = max(len(group) - 1, 0) or len(group)
 
     stories_master = max(stories_seen) if stories_seen else None
 

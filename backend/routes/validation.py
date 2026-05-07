@@ -472,14 +472,26 @@ def compare_fields(item: ValidationInput, ent: Optional[Entity]) -> dict[str, An
     db_year = _first_nonnull(
         chars, "dor_year_built", "dor_effective_year_built", "pa_year_built"
     )
-    # Stories: prefer the unified `stories` key (set by dbpr_building when
-    # the scrape works, name_parse otherwise), fall back through the legacy
-    # DBPR/DOR keys for entities seeded before name_parse landed.
+    # Stories: prefer aggregator's max-across-siblings, then the unified
+    # `stories` key (set by dbpr_building when the scrape works,
+    # name_parse otherwise), fall back through the legacy DBPR/DOR keys.
     db_stories = _first_nonnull(
-        chars, "stories", "dbpr_max_stories", "dor_max_stories"
+        chars, "stories_master", "stories", "dbpr_max_stories", "dor_max_stories"
     )
-    db_units = _first_nonnull(chars, "dor_num_units", "units_estimate", "units")
-    db_tiv = _first_nonnull(chars, "tiv_estimate", "dor_market_value")
+    # Units: prefer the aggregator's rolled-up count (sum of physical
+    # unit parcels under the master), then the canonical key (which the
+    # aggregator also overwrites on masters), then per-row fallbacks for
+    # unaggregated singletons.
+    db_units = _first_nonnull(
+        chars, "num_units_master", "dor_num_units", "units_estimate", "units"
+    )
+    # TIV: prefer the aggregator's sum of all linked unit parcels, then
+    # the canonical key, then DOR market value as a last resort.
+    db_tiv = _first_nonnull(
+        chars,
+        "tiv_estimate_master", "tiv_estimate",
+        "dor_market_value_master", "dor_market_value",
+    )
     db_iso = _dor_class_to_iso(chars.get("dor_construction_class"))
 
     fields = {
@@ -574,6 +586,13 @@ def compare_validation(req: CompareRequest, db: Session = Depends(get_db)):
                         "cream_tier": (ent.characteristics or {}).get("cream_tier"),
                         "phy_zip": (ent.characteristics or {}).get("phy_zip"),
                         "phy_city": (ent.characteristics or {}).get("phy_city"),
+                        # Aggregation context — lets the UI distinguish a
+                        # rolled-up master ("$9.9M / 56 units summed from
+                        # 56 linked parcels") from a lonely unit parcel.
+                        "is_aggregation_master": (ent.characteristics or {}).get("is_aggregation_master", False),
+                        "sibling_count": (ent.characteristics or {}).get("sibling_count", 0),
+                        "tiv_estimate_master": (ent.characteristics or {}).get("tiv_estimate_master"),
+                        "num_units_master": (ent.characteristics or {}).get("num_units_master"),
                     }
                     if ent
                     else None
