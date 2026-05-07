@@ -136,6 +136,21 @@ async def lifespan(app: FastAPI):
         except Exception as e2:
             logger.error(f"Failed to start enrichment worker fallback: {e2}")
 
+    # Lazy JSONB index build. CREATE INDEX CONCURRENTLY against an
+    # 8M-row table runs 20-40 minutes total for the seven indexes the
+    # matcher and lead list need; doing it inside the migration would
+    # blow past Railway's 5-minute healthcheck. Run it in a daemon
+    # thread instead — the app starts immediately, indexes appear one
+    # by one in the background. Idempotent (CREATE IF NOT EXISTS).
+    try:
+        from routes.admin import _build_indexes_background
+        threading.Thread(
+            target=_build_indexes_background, daemon=True, name="jsonb-index-build"
+        ).start()
+        logger.info("JSONB index build kicked off in background")
+    except Exception as e:
+        logger.warning(f"Failed to kick off JSONB index build: {e}")
+
     # Start heartbeat thread for api/database/ai_analyzer services
     def _heartbeat_loop():
         import time
