@@ -3,6 +3,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import UserMenu from "@/components/UserMenu";
+import EntityDetailModal from "@/components/EntityDetailModal";
+
+const MAX_MODALS = 10;
 
 type TabName = "compare" | "events";
 
@@ -105,6 +108,34 @@ Saltaire 301 1st Street S, St. Petersburg FL 33701, ISO 6, TIV $180,000,000, bui
 
 export default function ValidationPage() {
   const [tab, setTab] = useState<TabName>("compare");
+
+  // Modal stack — clicking a matched entity (or one of its linked
+  // parcels) opens an EntityDetailModal here instead of navigating
+  // away. Mirrors the dashboard's max-10 stack so closing a sibling
+  // falls back to the master, not "the previous browser page".
+  const [openModals, setOpenModals] = useState<number[]>([]);
+  const [activeModal, setActiveModal] = useState<number | null>(null);
+
+  const openEntityModal = useCallback((id: number) => {
+    setOpenModals((prev) => {
+      if (prev.includes(id)) {
+        setActiveModal(id);
+        return prev;
+      }
+      let next = [...prev, id];
+      if (next.length > MAX_MODALS) next = next.slice(1);
+      setActiveModal(id);
+      return next;
+    });
+  }, []);
+
+  const closeEntityModal = useCallback((id: number) => {
+    setOpenModals((prev) => {
+      const next = prev.filter((m) => m !== id);
+      setActiveModal((cur) => (cur === id ? (next[next.length - 1] ?? null) : cur));
+      return next;
+    });
+  }, []);
 
   // Bulk compare state
   const [pasteText, setPasteText] = useState<string>("");
@@ -541,7 +572,7 @@ export default function ValidationPage() {
                     </span>
                   )}
                 </div>
-                <CompareResultsView results={compareResults} />
+                <CompareResultsView results={compareResults} onOpenEntity={openEntityModal} />
               </>
             )}
           </div>
@@ -639,6 +670,57 @@ export default function ValidationPage() {
           </div>
         )}
       </div>
+
+      {/* Modal stack — drilling into a matched entity or a linked
+          parcel opens a frame here instead of a new browser tab.
+          Closing falls back to the previously active frame. */}
+      {openModals.length > 0 && (
+        <div
+          className="fixed inset-0 bg-black/40 z-40 transition-opacity duration-300"
+          onClick={() => { if (activeModal != null) closeEntityModal(activeModal); }}
+        />
+      )}
+      {openModals.map((id, idx) => (
+        <EntityDetailModal
+          key={id}
+          entityId={id}
+          isActive={activeModal === id}
+          stackIndex={idx}
+          totalOpen={openModals.length}
+          onActivate={() => setActiveModal(id)}
+          onClose={() => closeEntityModal(id)}
+          onOpenEntity={openEntityModal}
+        />
+      ))}
+      {openModals.length > 0 && (
+        <div className="fixed bottom-0 left-0 right-0 bg-gray-900/95 backdrop-blur-sm border-t border-gray-800 flex items-center px-2 py-1.5 z-[60] gap-1 overflow-x-auto">
+          {openModals.map((id) => (
+            <button
+              key={id}
+              onClick={() => setActiveModal(id)}
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-[11px] shrink-0 max-w-[180px] transition-colors ${
+                activeModal === id
+                  ? "bg-blue-900/60 text-blue-300 border border-blue-600 shadow-sm shadow-blue-900/30"
+                  : "bg-gray-800/80 text-gray-500 border border-gray-700 hover:text-gray-300 hover:border-gray-600"
+              }`}
+            >
+              <span className="truncate">#{id}</span>
+              <span
+                onClick={(e) => { e.stopPropagation(); closeEntityModal(id); }}
+                className="text-gray-600 hover:text-red-400 ml-0.5 text-sm leading-none"
+              >&times;</span>
+            </button>
+          ))}
+          {openModals.length > 1 && (
+            <button
+              onClick={() => { setOpenModals([]); setActiveModal(null); }}
+              className="text-gray-600 hover:text-red-400 text-[10px] px-2 py-1 shrink-0 ml-auto"
+            >
+              Close all
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -750,9 +832,11 @@ function unitSuffixFromAddress(addr: string | null): string {
 function SiblingsPanel({
   masterId,
   expectedCount,
+  onOpenEntity,
 }: {
   masterId: number;
   expectedCount: number;
+  onOpenEntity?: (id: number) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [data, setData] = useState<SiblingsResponse | null>(null);
@@ -807,14 +891,24 @@ function SiblingsPanel({
                 {data.siblings.map((s) => (
                   <tr key={s.id} className="border-t border-gray-900 hover:bg-gray-900">
                     <td className="px-2 py-0.5">
-                      <Link
-                        href={`/lead/${s.id}`}
-                        target="_blank"
-                        className="text-blue-400 hover:text-blue-300"
-                        title={s.address ?? `#${s.id}`}
-                      >
-                        {unitSuffixFromAddress(s.address) || `#${s.id}`}
-                      </Link>
+                      {onOpenEntity ? (
+                        <button
+                          onClick={() => onOpenEntity(s.id)}
+                          className="text-blue-400 hover:text-blue-300 underline"
+                          title={s.address ?? `#${s.id}`}
+                        >
+                          {unitSuffixFromAddress(s.address) || `#${s.id}`}
+                        </button>
+                      ) : (
+                        <Link
+                          href={`/lead/${s.id}`}
+                          target="_blank"
+                          className="text-blue-400 hover:text-blue-300"
+                          title={s.address ?? `#${s.id}`}
+                        >
+                          {unitSuffixFromAddress(s.address) || `#${s.id}`}
+                        </Link>
+                      )}
                     </td>
                     <td className="px-2 py-0.5 text-gray-300 truncate max-w-[160px]" title={s.owner_name ?? ""}>
                       {s.owner_name ?? "—"}
@@ -839,7 +933,13 @@ function SiblingsPanel({
   );
 }
 
-function CompareResultsView({ results }: { results: CompareResponse }) {
+function CompareResultsView({
+  results,
+  onOpenEntity,
+}: {
+  results: CompareResponse;
+  onOpenEntity?: (id: number) => void;
+}) {
   const counts = results.counts ?? {};
   return (
     <div>
@@ -857,7 +957,7 @@ function CompareResultsView({ results }: { results: CompareResponse }) {
 
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
         {results.results.map((r, i) => (
-          <ResultCard key={i} r={r} />
+          <ResultCard key={i} r={r} onOpenEntity={onOpenEntity} />
         ))}
       </div>
     </div>
@@ -872,7 +972,13 @@ function CountPill({ label, count, status }: { label: string; count: number; sta
   );
 }
 
-function ResultCard({ r }: { r: CompareResult }) {
+function ResultCard({
+  r,
+  onOpenEntity,
+}: {
+  r: CompareResult;
+  onOpenEntity?: (id: number) => void;
+}) {
   const border = STATUS_BORDER[r.status];
   const pill = STATUS_PILL[r.status];
   const label = STATUS_LABEL[r.status];
@@ -896,10 +1002,20 @@ function ResultCard({ r }: { r: CompareResult }) {
       {r.match ? (
         <div className="mb-2 pb-2 border-b border-gray-800">
           <div className="flex items-center justify-between gap-2">
-            <Link href={`/lead/${r.match.id}`} target="_blank"
-              className="text-[12px] font-medium text-blue-400 hover:text-blue-300 truncate">
-              {r.match.name}
-            </Link>
+            {onOpenEntity ? (
+              <button
+                onClick={() => onOpenEntity(r.match!.id)}
+                className="text-[12px] font-medium text-blue-400 hover:text-blue-300 truncate text-left underline"
+                title="Open in modal (closing returns here)"
+              >
+                {r.match.name}
+              </button>
+            ) : (
+              <Link href={`/lead/${r.match.id}`} target="_blank"
+                className="text-[12px] font-medium text-blue-400 hover:text-blue-300 truncate">
+                {r.match.name}
+              </Link>
+            )}
             <div className="flex items-center gap-1.5 shrink-0">
               {typeof r.match_score === "number" && (
                 <span
@@ -959,7 +1075,11 @@ function ResultCard({ r }: { r: CompareResult }) {
             <div className="text-[10px] text-gray-500 mt-1 truncate">{r.match.address}</div>
           )}
           {r.match.is_aggregation_master && (r.match.sibling_count ?? 0) > 0 && (
-            <SiblingsPanel masterId={r.match.id} expectedCount={r.match.sibling_count ?? 0} />
+            <SiblingsPanel
+              masterId={r.match.id}
+              expectedCount={r.match.sibling_count ?? 0}
+              onOpenEntity={onOpenEntity}
+            />
           )}
         </div>
       ) : (

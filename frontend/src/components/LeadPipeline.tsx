@@ -718,7 +718,17 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
             <div key={lead.id} id={`lead-card-${lead.id}`}
               onMouseEnter={() => onLeadHover?.(lead.id)}
               onMouseLeave={() => onLeadHover?.(null)}
-              className={`rounded-lg border overflow-hidden transition-colors ${
+              onClick={(e) => {
+                // Card-to-map linkage: clicking anywhere on the card body
+                // (not on a button / checkbox / link inside it) flies the
+                // map to this lead's marker and selects it. Buttons inside
+                // the card stop propagation so they don't double-fire.
+                if ((e.target as HTMLElement).closest("button, input, a")) return;
+                if (lead.latitude != null && lead.longitude != null) {
+                  onFlyTo?.(lead.latitude, lead.longitude, lead.id);
+                }
+              }}
+              className={`rounded-lg border overflow-hidden transition-colors cursor-pointer ${
                 isSelected ? "border-blue-500 bg-gray-900 ring-1 ring-blue-500/30" :
                 isChecked ? "border-cyan-700 bg-gray-900" :
                 "border-gray-800/50 bg-gray-900/60 hover:border-gray-700"
@@ -731,13 +741,7 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
                       onChange={() => toggleSelect(lead.id)}
                       className="w-3.5 h-3.5 rounded border-gray-600 bg-gray-800 shrink-0" />
                   )}
-                  <h3
-                    className="font-medium text-sm text-white truncate flex-1 cursor-pointer hover:text-blue-300"
-                    onClick={() => {
-                      if (lead.latitude != null && lead.longitude != null) {
-                        onFlyTo?.(lead.latitude, lead.longitude, lead.id);
-                      }
-                    }}>
+                  <h3 className="font-medium text-sm text-white truncate flex-1 hover:text-blue-300">
                     {lead.name}
                   </h3>
                   {marketValue && marketValue > 0 && (

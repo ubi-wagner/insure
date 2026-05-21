@@ -39,6 +39,10 @@ interface EntityDetailModalProps {
   totalOpen?: number;
   onActivate?: () => void;
   onFlyTo?: (lat: number, lng: number) => void;
+  /** Open another entity in the same modal stack (instead of new browser tab).
+   *  Used by the linked-parcels list to drill into a sibling without losing
+   *  the master modal — closing the sibling returns to it. */
+  onOpenEntity?: (id: number) => void;
 }
 
 /* ------------------------------------------------------------------ */
@@ -416,9 +420,11 @@ function siblingUnitLabel(addr: string | null, id: number): string {
 function ModalSiblingsPanel({
   masterId,
   siblingCount,
+  onOpenEntity,
 }: {
   masterId: number;
   siblingCount: number;
+  onOpenEntity?: (id: number) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [data, setData] = useState<SiblingsResponse | null>(null);
@@ -486,15 +492,25 @@ function ModalSiblingsPanel({
               {data.siblings.map((s) => (
                 <tr key={s.id} className="border-t border-teal-900/30 hover:bg-gray-900/60">
                   <td className="px-2 py-0.5">
-                    <a
-                      href={`/lead/${s.id}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-blue-400 hover:text-blue-300"
-                      title={s.address ?? `#${s.id}`}
-                    >
-                      {siblingUnitLabel(s.address, s.id)}
-                    </a>
+                    {onOpenEntity ? (
+                      <button
+                        onClick={() => onOpenEntity(s.id)}
+                        className="text-blue-400 hover:text-blue-300 underline"
+                        title={s.address ?? `#${s.id}`}
+                      >
+                        {siblingUnitLabel(s.address, s.id)}
+                      </button>
+                    ) : (
+                      <a
+                        href={`/lead/${s.id}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-blue-400 hover:text-blue-300"
+                        title={s.address ?? `#${s.id}`}
+                      >
+                        {siblingUnitLabel(s.address, s.id)}
+                      </a>
+                    )}
                   </td>
                   <td
                     className="px-2 py-0.5 text-gray-300 truncate max-w-[180px]"
@@ -533,6 +549,7 @@ export default function EntityDetailModal({
   totalOpen = 1,
   onActivate,
   onFlyTo,
+  onOpenEntity,
 }: EntityDetailModalProps) {
   const { displayName, role, canEdit } = useAuth();
   const [lead, setLead] = useState<LeadDetail | null>(null);
@@ -767,11 +784,22 @@ export default function EntityDetailModal({
                   <ModalSiblingsPanel
                     masterId={lead.id}
                     siblingCount={lead.children.length}
+                    onOpenEntity={onOpenEntity}
                   />
                 )}
                 {lead.parent_id != null && (
                   <p className="text-xs text-gray-400">
-                    Linked unit parcel under master <span className="text-blue-400 font-mono">#{lead.parent_id}</span>
+                    Linked unit parcel under master{" "}
+                    {onOpenEntity ? (
+                      <button
+                        onClick={() => onOpenEntity(lead.parent_id!)}
+                        className="text-blue-400 hover:text-blue-300 font-mono underline"
+                      >
+                        #{lead.parent_id}
+                      </button>
+                    ) : (
+                      <span className="text-blue-400 font-mono">#{lead.parent_id}</span>
+                    )}
                   </p>
                 )}
               </div>
