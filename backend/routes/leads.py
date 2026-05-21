@@ -601,15 +601,22 @@ def get_siblings(
         from agents.enrichers.sunbiz_bulk import (
             board_members_at_address, match_owner_to_board,
         )
+        from agents.enrichers.property_appraiser import build_pa_owner_search_url
         if master.address:
             board = board_members_at_address(master.address, associations_only=True)
     except Exception as e:
         logger.warning(f"Sunbiz board lookup failed for entity {entity_id}: {e}")
         match_owner_to_board = lambda *a, **kw: None  # noqa: E731
+        build_pa_owner_search_url = lambda *a, **kw: None  # noqa: E731
+
+    master_county = master.county
 
     def _sib(e: Entity) -> dict:
         c = e.characteristics or {}
         board_hit = match_owner_to_board(e.name, board) if board else None
+        # PA owner-search URL — same county as the master since
+        # condo siblings always share the master's parcel county.
+        pa_owner_url = build_pa_owner_search_url(master_county, e.name)
         return {
             "id": e.id,
             "address": e.address,
@@ -630,9 +637,18 @@ def get_siblings(
                     "role": board_hit.get("role"),
                     "corp_name": board_hit.get("corp_name"),
                     "matched_name": board_hit.get("name"),
+                    # Deep link to the county PA's "search by owner"
+                    # results page so the user can pull every property
+                    # this board member owns in the county (typically
+                    # surfaces a primary residence + the unit they own
+                    # in this building).
+                    "pa_owner_search_url": pa_owner_url,
                 }
                 if board_hit else None
             ),
+            # Also expose the PA search URL on every sibling, not just
+            # board members — useful for spot-checking any unit owner.
+            "pa_owner_search_url": pa_owner_url,
         }
 
     siblings_out = [_sib(e) for e in rows]

@@ -795,6 +795,7 @@ interface BoardMatch {
   role: string | null;
   corp_name: string | null;
   matched_name: string | null;
+  pa_owner_search_url: string | null;
 }
 
 interface SiblingRow {
@@ -810,6 +811,7 @@ interface SiblingRow {
   is_condo_unit_parcel: boolean;
   is_condo_master: boolean;
   board_match: BoardMatch | null;
+  pa_owner_search_url: string | null;
 }
 
 interface SiblingsResponse {
@@ -937,22 +939,35 @@ function SiblingsPanel({
                       )}
                     </td>
                     <td
-                      className="px-2 py-0.5 text-gray-300 truncate max-w-[180px]"
+                      className="px-2 py-0.5 text-gray-300 max-w-[220px]"
                       title={
                         s.board_match
                           ? `${s.owner_name ?? ""}\nBoard match: ${s.board_match.matched_name ?? ""}\n${s.board_match.corp_name ?? ""}`
                           : (s.owner_name ?? "")
                       }
                     >
-                      {s.board_match && (
-                        <span
-                          className="text-amber-300 mr-1"
-                          title={`${s.board_match.title ?? "Officer"} of ${s.board_match.corp_name ?? "association"}`}
-                        >
-                          ★ {s.board_match.title}
-                        </span>
-                      )}
-                      {s.owner_name ?? "—"}
+                      <div className="flex items-center gap-1 min-w-0">
+                        {s.board_match && (
+                          <span
+                            className="text-amber-300 shrink-0"
+                            title={`${s.board_match.title ?? "Officer"} of ${s.board_match.corp_name ?? "association"}`}
+                          >
+                            ★ {s.board_match.title}
+                          </span>
+                        )}
+                        <span className="truncate">{s.owner_name ?? "—"}</span>
+                        {s.pa_owner_search_url && s.owner_name && (
+                          <a
+                            href={s.pa_owner_search_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-blue-400 hover:text-blue-300 text-[9px] shrink-0 ml-1"
+                            title="Search this owner in the county Property Appraiser"
+                          >
+                            PA ↗
+                          </a>
+                        )}
+                      </div>
                     </td>
                     <td className="px-2 py-0.5 text-right text-gray-400">
                       {s.living_sqft ? s.living_sqft.toLocaleString() : "—"}

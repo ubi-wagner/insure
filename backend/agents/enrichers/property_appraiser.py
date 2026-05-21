@@ -30,6 +30,46 @@ from database.models import Entity
 
 logger = logging.getLogger(__name__)
 
+
+# Per-county owner-name search URL templates. Used to deep-link from
+# a board-member name → that county's PA "search by owner" results.
+# The placeholder is {owner}, already URL-quoted by the caller. None
+# means "we don't have a confirmed format for this county yet — fall
+# back to the info_url so the user can paste the name manually."
+#
+# These are best-guess patterns; update each one as you click through
+# the live portal and copy the address-bar URL.
+PA_OWNER_SEARCH_TEMPLATES: dict[str, str | None] = {
+    "Pinellas":     "https://www.pcpao.gov/quick-search?search-type=name&search={owner}",
+    "Hillsborough": "https://www.hcpafl.org/Property-Info/Property-Search#/search/name/{owner}",
+    "Lee":          "https://www.leepa.org/Search/PropertySearch.aspx?type=owner&name={owner}",
+    "Miami-Dade":   "https://www.miamidade.gov/Apps/PA/PropertySearch/#/?folioFlag=true&Search={owner}",
+    "Broward":      "https://bcpa.net/RecAddr.asp?URL_Search=Owner&Search={owner}",
+    "Palm Beach":   "https://pbcpao.gov/Property/Search?ownerName={owner}",
+    "Pasco":        "https://search.pascopa.com/#/owner/{owner}",
+    "Manatee":      "https://www.manateepao.gov/search/?searchType=owner&searchString={owner}",
+    "Sarasota":     "https://www.sc-pa.com/propertysearch?owner={owner}",
+    "Charlotte":    "https://www.ccappraiser.com/Search.aspx?owner={owner}",
+    "Collier":      "https://www.collierappraiser.com/main_search/RecordSearch.html?Owner={owner}",
+}
+
+
+def build_pa_owner_search_url(county: str | None, owner_name: str | None) -> str | None:
+    """Deep-link to the county PA's "search by owner name" results.
+
+    Returns None when the county isn't in our template table or no
+    owner name was supplied — caller can fall back to the county's
+    info_url so the user can type the name themselves.
+    """
+    if not county or not owner_name:
+        return None
+    template = PA_OWNER_SEARCH_TEMPLATES.get(county)
+    if not template:
+        return None
+    from urllib.parse import quote
+    return template.format(owner=quote(owner_name.upper(), safe=""))
+
+
 # County Property Appraiser GIS endpoints
 # These are ArcGIS REST services that support spatial queries
 COUNTY_GIS_ENDPOINTS: dict[str, dict] = {
