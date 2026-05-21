@@ -70,6 +70,42 @@ def build_pa_owner_search_url(county: str | None, owner_name: str | None) -> str
     return template.format(owner=quote(owner_name.upper(), safe=""))
 
 
+# Per-county parcel-detail deep-links. Pulled from each portal's
+# property-details URL pattern, with the parcel ID substituted at
+# {parcel}. These bypass the search step entirely — much faster than
+# name-based lookup when we already know the parcel.
+PA_PARCEL_URL_TEMPLATES: dict[str, str] = {
+    "Pinellas":     "https://www.pcpao.gov/property-details?parcel={parcel}",
+    "Hillsborough": "https://www.hcpafl.org/Property-Info/Property-Search#/folio/{parcel}",
+    "Lee":          "https://www.leepa.org/Display/DisplayParcel.aspx?FolioID={parcel}",
+    "Miami-Dade":   "https://www.miamidade.gov/Apps/PA/PropertySearch/#/?folio={parcel}",
+    "Broward":      "https://bcpa.net/RecInfo.asp?URL_Folio={parcel}",
+    "Palm Beach":   "https://pbcpao.gov/Property/Detail?parcelId={parcel}",
+    "Pasco":        "https://search.pascopa.com/#/parcel/{parcel}",
+    "Manatee":      "https://www.manateepao.gov/search/?searchType=parcel&searchString={parcel}",
+    "Sarasota":     "https://www.sc-pa.com/propertysearch?parcel={parcel}",
+    "Charlotte":    "https://www.ccappraiser.com/Property/Details?strapn={parcel}",
+    "Collier":      "https://www.collierappraiser.com/main_search/RecordDetail.html?Map=No&FolioNum={parcel}",
+}
+
+
+def build_pa_parcel_url(county: str | None, parcel_id: str | None) -> str | None:
+    """Deep-link to a specific parcel's detail page on the county PA.
+
+    Faster than the name-search URL when the parcel ID is known —
+    lands directly on the property-details view (PCPAO format:
+    https://www.pcpao.gov/property-details?parcel=09-31-17-95093-000-7040).
+    """
+    if not county or not parcel_id:
+        return None
+    template = PA_PARCEL_URL_TEMPLATES.get(county)
+    if not template:
+        return None
+    # Most portals accept the raw parcel ID with or without dashes;
+    # preserve whatever shape we got from NAL.
+    return template.format(parcel=str(parcel_id).strip().replace(" ", "+"))
+
+
 # County Property Appraiser GIS endpoints
 # These are ArcGIS REST services that support spatial queries
 COUNTY_GIS_ENDPOINTS: dict[str, dict] = {

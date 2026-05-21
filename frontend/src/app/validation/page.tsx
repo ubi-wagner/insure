@@ -812,6 +812,8 @@ interface SiblingRow {
   is_condo_master: boolean;
   board_match: BoardMatch | null;
   pa_owner_search_url: string | null;
+  pa_parcel_url: string | null;
+  dor_parcel_id: string | null;
 }
 
 interface SiblingsResponse {
@@ -918,7 +920,7 @@ function SiblingsPanel({
                       s.board_match ? "bg-amber-950/30" : ""
                     }`}
                   >
-                    <td className="px-2 py-0.5">
+                    <td className="px-2 py-0.5 whitespace-nowrap">
                       {onOpenEntity ? (
                         <button
                           onClick={() => onOpenEntity(s.id)}
@@ -936,6 +938,17 @@ function SiblingsPanel({
                         >
                           {unitSuffixFromAddress(s.address) || `#${s.id}`}
                         </Link>
+                      )}
+                      {s.pa_parcel_url && (
+                        <a
+                          href={s.pa_parcel_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-blue-400 hover:text-blue-300 text-[9px] ml-1"
+                          title={`Open parcel ${s.dor_parcel_id ?? ""} on county PA`}
+                        >
+                          PA ↗
+                        </a>
                       )}
                     </td>
                     <td
@@ -956,15 +969,15 @@ function SiblingsPanel({
                           </span>
                         )}
                         <span className="truncate">{s.owner_name ?? "—"}</span>
-                        {s.pa_owner_search_url && s.owner_name && (
+                        {s.board_match?.pa_owner_search_url && s.owner_name && (
                           <a
-                            href={s.pa_owner_search_url}
+                            href={s.board_match.pa_owner_search_url}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="text-blue-400 hover:text-blue-300 text-[9px] shrink-0 ml-1"
-                            title="Search this owner in the county Property Appraiser"
+                            className="text-amber-300 hover:text-amber-200 text-[9px] shrink-0 ml-1"
+                            title="Find every property in the county owned by this board member"
                           >
-                            PA ↗
+                            other ↗
                           </a>
                         )}
                       </div>

@@ -601,13 +601,16 @@ def get_siblings(
         from agents.enrichers.sunbiz_bulk import (
             board_members_at_address, match_owner_to_board,
         )
-        from agents.enrichers.property_appraiser import build_pa_owner_search_url
+        from agents.enrichers.property_appraiser import (
+            build_pa_owner_search_url, build_pa_parcel_url,
+        )
         if master.address:
             board = board_members_at_address(master.address, associations_only=True)
     except Exception as e:
         logger.warning(f"Sunbiz board lookup failed for entity {entity_id}: {e}")
         match_owner_to_board = lambda *a, **kw: None  # noqa: E731
         build_pa_owner_search_url = lambda *a, **kw: None  # noqa: E731
+        build_pa_parcel_url = lambda *a, **kw: None  # noqa: E731
 
     master_county = master.county
 
@@ -617,6 +620,10 @@ def get_siblings(
         # PA owner-search URL — same county as the master since
         # condo siblings always share the master's parcel county.
         pa_owner_url = build_pa_owner_search_url(master_county, e.name)
+        # PA parcel deep-link — lands directly on the property-details
+        # page when we know the parcel ID (the common case for any row
+        # seeded from NAL). Much faster than the search-by-name path.
+        pa_parcel_url = build_pa_parcel_url(master_county, c.get("dor_parcel_id"))
         return {
             "id": e.id,
             "address": e.address,
@@ -649,6 +656,9 @@ def get_siblings(
             # Also expose the PA search URL on every sibling, not just
             # board members — useful for spot-checking any unit owner.
             "pa_owner_search_url": pa_owner_url,
+            # Direct deep-link to this parcel's PA detail page.
+            "pa_parcel_url": pa_parcel_url,
+            "dor_parcel_id": c.get("dor_parcel_id"),
         }
 
     siblings_out = [_sib(e) for e in rows]
