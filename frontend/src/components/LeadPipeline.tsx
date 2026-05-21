@@ -268,8 +268,29 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
     is_shared: boolean;
     is_own: boolean;
     owner_display: string;
+    created_at?: string | null;
   }
   const [savedFilters, setSavedFilters] = useState<SavedFilterRow[]>([]);
+  // Curated visibility: user can X-out individual saved filters from
+  // the top bar when it gets cluttered, then bring them back via
+  // "Add existing". Persisted in localStorage so it survives refreshes.
+  const [hiddenSavedIds, setHiddenSavedIds] = useState<Set<number>>(() => {
+    if (typeof window === "undefined") return new Set();
+    try {
+      const raw = window.localStorage.getItem("insure_hidden_saved_filters");
+      if (raw) return new Set(JSON.parse(raw) as number[]);
+    } catch {}
+    return new Set();
+  });
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(
+      "insure_hidden_saved_filters",
+      JSON.stringify(Array.from(hiddenSavedIds))
+    );
+  }, [hiddenSavedIds]);
+  const [activeSavedId, setActiveSavedId] = useState<number | null>(null);
+  const [showAddSaved, setShowAddSaved] = useState(false);
 
   async function refreshSavedFilters() {
     try {
@@ -308,7 +329,13 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
     } catch {}
   }
 
+  // Set true for one render-cycle when loadSavedFilter() applies a
+  // saved snapshot, so the "clear activeSavedId on filter change"
+  // effect below doesn't immediately undo the highlight.
+  const loadingSavedRef = useRef(false);
+
   function loadSavedFilter(f: SavedFilterRow) {
+    loadingSavedRef.current = true;
     const d = f.filter_json || ({} as SavedFilterData);
     // Multi-value with single-value legacy fallback.
     setCounties(d.counties ?? (d.county ? [d.county] : []));
@@ -325,7 +352,22 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
     setMaxYear(d.maxYear ?? "");
     setMaxDistance(d.maxDistance ?? "");
     setConstruction(d.construction ?? "");
+    setActiveSavedId(f.id);
+    // Release the guard after this batch of setState flushes through.
+    setTimeout(() => { loadingSavedRef.current = false; }, 0);
   }
+
+  // Any manual edit drops the "active saved" highlight — the user
+  // is now diverging from the saved snapshot. The ref-guard above
+  // prevents this from firing when loadSavedFilter is the one
+  // changing the state.
+  useEffect(() => {
+    if (loadingSavedRef.current) return;
+    setActiveSavedId(null);
+  }, [
+    counties, useCodes, sortKey, minValue, maxValue, minUnits, minStories,
+    heatFilter, citizensOnly, creamTier, minYear, maxYear, maxDistance, construction,
+  ]);
 
   async function deleteSavedFilter(f: SavedFilterRow) {
     if (!f.is_own) return; // Can only delete your own
@@ -640,8 +682,193 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
 
   const totalPages = Math.ceil(total / PAGE_SIZE);
 
+  // Visible vs hidden saved-filter sets. Visible chips show in the
+  // top bar; hidden ones are X'd-out and recoverable via "Add existing".
+  const visibleSaved = savedFilters.filter((f) => !hiddenSavedIds.has(f.id));
+  const hiddenSaved = savedFilters.filter((f) => hiddenSavedIds.has(f.id));
+  const activeSaved = activeSavedId != null
+    ? savedFilters.find((f) => f.id === activeSavedId)
+    : null;
+
   return (
     <div className="flex flex-col h-full">
+      {/* ── Saved filter chips (top bar) ──
+          Persistent across stages so the user can flip from "Big
+          Coastal" to "Citizens Pinellas" in one click without opening
+          the filter panel. Each chip: name + date / OG badge + X.
+          X hides it (doesn't delete — restorable via "Add existing").
+          Clicking a chip applies the snapshot and highlights it; any
+          manual filter edit drops the highlight. */}
+      <div className="mb-2 bg-gray-950 border border-gray-800/60 rounded p-1.5">
+        <div className="flex items-center gap-1 flex-wrap">
+          {visibleSaved.length === 0 && hiddenSaved.length === 0 ? (
+            <span className="text-[10px] text-gray-600 italic px-1">
+              No saved filters yet — open Filters and click "Save filter".
+            </span>
+          ) : (
+            visibleSaved.map((f) => {
+              const isActive = activeSavedId === f.id;
+              const og = !f.is_own && f.is_shared;
+              const dateLabel = og
+                ? "OG"
+                : f.created_at
+                  ? new Date(f.created_at).toLocaleDateString(undefined, { month: "short", year: "2-digit" })
+                  : "";
+              return (
+                <span
+                  key={f.id}
+                  className={`inline-flex items-center gap-1 text-[10px] rounded border pl-2 pr-0.5 py-0.5 transition-colors ${
+                    isActive
+                      ? "bg-blue-900/60 text-blue-100 border-blue-500 shadow-sm shadow-blue-900/30"
+                      : "bg-gray-900 text-gray-300 border-gray-700 hover:border-gray-500"
+                  }`}
+                >
+                  <button
+                    type="button"
+                    onClick={() => loadSavedFilter(f)}
+                    title={f.is_own ? `Created ${f.created_at?.slice(0, 10) ?? ""}` : `Shared by ${f.owner_display}`}
+                    className="font-medium"
+                  >
+                    {f.name}
+                  </button>
+                  {dateLabel && (
+                    <span className={`text-[9px] px-1 rounded ${og ? "bg-amber-900/60 text-amber-200" : "text-gray-500"}`}>
+                      {dateLabel}
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setHiddenSavedIds((prev) => {
+                        const next = new Set(prev); next.add(f.id); return next;
+                      });
+                      if (activeSavedId === f.id) setActiveSavedId(null);
+                    }}
+                    title="Hide from this bar (you can bring it back via 'Add existing')"
+                    className="text-gray-600 hover:text-red-400 px-1 leading-none"
+                  >
+                    ×
+                  </button>
+                </span>
+              );
+            })
+          )}
+
+          {hiddenSaved.length > 0 && (
+            <div className="relative ml-auto">
+              <button
+                type="button"
+                onClick={() => setShowAddSaved((x) => !x)}
+                className="text-[10px] px-2 py-0.5 rounded border border-gray-700 bg-gray-900 text-gray-400 hover:text-gray-200 hover:border-gray-500"
+                title={`${hiddenSaved.length} hidden saved filter${hiddenSaved.length === 1 ? "" : "s"}`}
+              >
+                + Add existing ({hiddenSaved.length})
+              </button>
+              {showAddSaved && (
+                <div className="absolute right-0 z-40 mt-1 w-72 max-h-72 overflow-y-auto bg-gray-950 border border-gray-700 rounded shadow-xl p-1.5">
+                  <div className="text-[10px] text-gray-500 mb-1 px-1">
+                    Click to bring back into the top bar
+                  </div>
+                  <ul className="space-y-0.5">
+                    {hiddenSaved.map((f) => {
+                      const og = !f.is_own && f.is_shared;
+                      const date = og
+                        ? "OG"
+                        : f.created_at
+                          ? new Date(f.created_at).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "2-digit" })
+                          : "—";
+                      return (
+                        <li key={f.id} className="flex items-center gap-1 px-2 py-1 rounded text-[11px] hover:bg-gray-900">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setHiddenSavedIds((prev) => {
+                                const next = new Set(prev); next.delete(f.id); return next;
+                              });
+                              setShowAddSaved(false);
+                            }}
+                            title="Bring back into top bar"
+                            className="flex-1 text-left flex items-center gap-2 min-w-0"
+                          >
+                            <span className="flex-1 truncate text-gray-200">{f.name}</span>
+                            <span className={`text-[9px] shrink-0 ${og ? "text-amber-300" : "text-gray-500"}`}>
+                              {date}
+                            </span>
+                          </button>
+                          {f.is_own && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                deleteSavedFilter(f);
+                              }}
+                              title="Delete forever"
+                              className="shrink-0 text-gray-600 hover:text-red-400 px-1 leading-none"
+                            >
+                              🗑
+                            </button>
+                          )}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Two-line preview of the active saved filter's settings.
+            Only renders when a chip is clicked, so the bar stays
+            quiet most of the time. Field names on top, values
+            below, separated by | so visual alignment is enough —
+            no need to grid-align the values. */}
+        {activeSaved && (() => {
+          const d = activeSaved.filter_json || ({} as SavedFilterData);
+          const fields: { label: string; value: string | null }[] = [
+            { label: "County", value: (d.counties && d.counties.length > 0)
+                ? (d.counties.length <= 2 ? d.counties.join(", ") : `${d.counties[0]} +${d.counties.length - 1}`)
+                : (d.county ?? null) },
+            { label: "Use", value: (d.useCodes && d.useCodes.length > 0)
+                ? d.useCodes.join(",") : (d.useCode ?? null) },
+            { label: "Min $",     value: d.minValue ? `$${d.minValue}` : null },
+            { label: "Max $",     value: d.maxValue ? `$${d.maxValue}` : null },
+            { label: "Units ≥",   value: d.minUnits || null },
+            { label: "Stories ≥", value: d.minStories || null },
+            { label: "Year ≥",    value: d.minYear || null },
+            { label: "Year ≤",    value: d.maxYear || null },
+            { label: "Coast ≤mi", value: d.maxDistance || null },
+            { label: "Constr",    value: d.construction || null },
+            { label: "Heat",      value: d.heatFilter || null },
+            { label: "Tier",      value: d.creamTier || null },
+            { label: "Citizens",  value: d.citizensOnly ? "yes" : null },
+            { label: "Sort",      value: d.sortKey ?? null },
+          ].filter((x) => !!x.value);
+          if (fields.length === 0) {
+            return (
+              <div className="mt-1 px-1 text-[10px] text-gray-600 italic">
+                {activeSaved.name} — no narrowing filters set
+              </div>
+            );
+          }
+          return (
+            <div className="mt-1 px-1 font-mono text-[10px] overflow-x-auto">
+              <div className="flex gap-2 text-gray-500 whitespace-nowrap">
+                {fields.map((f, i) => (
+                  <span key={`l-${i}`}>{f.label}{i < fields.length - 1 && <span className="text-gray-700 ml-2">|</span>}</span>
+                ))}
+              </div>
+              <div className="flex gap-2 text-blue-300 whitespace-nowrap">
+                {fields.map((f, i) => (
+                  <span key={`v-${i}`}>{f.value}{i < fields.length - 1 && <span className="text-gray-700 ml-2">|</span>}</span>
+                ))}
+              </div>
+            </div>
+          );
+        })()}
+      </div>
+
       {/* Stage tabs */}
       <div className="flex gap-0.5 mb-2">
         {PIPELINE_STAGES.map((stage) => {
@@ -691,44 +918,16 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
         {/* Expandable filter panel */}
         {showFilters && (
           <div className="bg-gray-900 border border-gray-800 rounded-lg p-2.5 space-y-2">
-            {/* Saved filter presets (server-side) */}
-            <div className="flex items-start gap-1.5 pb-2 border-b border-gray-800/60">
-              <span className="text-[10px] text-gray-500 pt-1 shrink-0">Saved:</span>
-              <div className="flex-1 flex flex-wrap gap-1">
-                {savedFilters.length === 0 ? (
-                  <span className="text-[10px] text-gray-600 italic pt-1">none yet</span>
-                ) : (
-                  savedFilters.map((f) => {
-                    const styleOwn = "bg-blue-950/50 border-blue-800 text-blue-300";
-                    const styleShared = "bg-purple-950/50 border-purple-800 text-purple-300";
-                    const wrap = f.is_own ? styleOwn : styleShared;
-                    return (
-                      <span key={f.id}
-                        className={`inline-flex items-center gap-0.5 ${wrap} border rounded overflow-hidden text-[10px]`}>
-                        <button onClick={() => loadSavedFilter(f)}
-                          className="px-2 py-0.5 hover:bg-black/30"
-                          title={
-                            f.is_own
-                              ? `Load "${f.name}"${f.is_shared ? " (shared)" : ""}`
-                              : `Load "${f.name}" (shared by ${f.owner_display})`
-                          }>
-                          {f.name}{!f.is_own && <span className="ml-1 opacity-60">·{f.owner_display}</span>}
-                        </button>
-                        {f.is_own && (
-                          <button onClick={() => deleteSavedFilter(f)}
-                            className="px-1 py-0.5 opacity-60 hover:opacity-100 hover:bg-red-900/30 hover:text-red-400"
-                            title={`Delete "${f.name}"`}>
-                            ×
-                          </button>
-                        )}
-                      </span>
-                    );
-                  })
-                )}
-              </div>
+            {/* Save-current row only — saved-filter chips moved to
+                the top bar above the stage tabs, so this panel just
+                stays as the build-a-new-filter workspace. */}
+            <div className="flex items-center gap-2 pb-2 border-b border-gray-800/60">
+              <span className="text-[10px] text-gray-500 shrink-0">
+                Build a new filter set, then save it →
+              </span>
               <button onClick={saveCurrentFilter}
-                className="shrink-0 px-2 py-0.5 text-[10px] rounded bg-green-900/50 border border-green-800 text-green-300 hover:bg-green-900">
-                + Save
+                className="ml-auto shrink-0 px-2 py-0.5 text-[10px] rounded bg-green-900/50 border border-green-800 text-green-300 hover:bg-green-900">
+                + Save current
               </button>
             </div>
             <div className="flex gap-2">
