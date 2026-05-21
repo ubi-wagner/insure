@@ -12,6 +12,7 @@ interface Section {
 const SECTIONS: Section[] = [
   { id: "welcome", label: "Welcome" },
   { id: "login", label: "Logging In" },
+  { id: "pipeline-map", label: "Pipeline + Map Walkthrough" },
   { id: "dashboard", label: "The Dashboard" },
   { id: "finding-leads", label: "Finding the Best Leads" },
   { id: "lead-card", label: "Reading a Lead Card" },
@@ -106,6 +107,7 @@ function SectionShell() {
     <>
       <WelcomeSection />
       <LoginSection />
+      <PipelineMapWalkthroughSection />
       <DashboardSection />
       <FindingLeadsSection />
       <LeadCardSection />
@@ -222,10 +224,301 @@ function LoginSection() {
   );
 }
 
+function Ascii({ children }: { children: React.ReactNode }) {
+  return (
+    <pre className="bg-gray-900 border border-gray-800 rounded p-3 text-[10px] leading-snug text-gray-400 overflow-x-auto font-mono whitespace-pre">
+      {children}
+    </pre>
+  );
+}
+
+function HelpTable({ headers, rows }: { headers: string[]; rows: (React.ReactNode[])[] }) {
+  return (
+    <div className="overflow-x-auto my-3">
+      <table className="w-full text-xs border-collapse">
+        <thead>
+          <tr className="border-b border-gray-700">
+            {headers.map((h, i) => (
+              <th key={i} className="text-left px-2 py-1 text-gray-400 font-semibold">{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r, i) => (
+            <tr key={i} className="border-b border-gray-800/60">
+              {r.map((cell, j) => (
+                <td key={j} className="px-2 py-1 align-top text-gray-300">{cell}</td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function PipelineMapWalkthroughSection() {
+  return (
+    <section>
+      <H id="pipeline-map">3. Pipeline + Map Walkthrough</H>
+      <P>
+        A click-by-click guide for everything on the main dashboard. If
+        you only read one section of this guide, read this one.
+      </P>
+
+      <H3>3.1 The dashboard at a glance</H3>
+      <P>Two halves. Left: Leaflet map. Right: pipeline list.</P>
+      <Ascii>
+{` ┌──────────────────────────────────────────────────────────────────┐
+ │  Insure   Pipeline              Files  Ref  Ops  Validation  ?  │
+ ├──────────────────────────────────────────────────────────────────┤
+ │                                                                   │
+ │           MAP                  │           PIPELINE LIST          │
+ │        (left half)             │           (right side)           │
+ │                                │                                  │
+ │       ★    ★    ★              │  [Saved filter chips]            │
+ │           ★                    │  [Stage tabs]                    │
+ │      ★                         │  [Search · Sort · County]        │
+ │              ★    ★            │  ─────────────────────           │
+ │                                │  ┌─ Card                          │
+ │       ★                        │  │  building name                 │
+ │   ★                            │  │  address                       │
+ │         ★                      │  │  Owner: …                      │
+ │              ★                 │  │  ◎ MAP                         │
+ │                                │  └─ tags…                         │
+ └──────────────────────────────────────────────────────────────────┘`}
+      </Ascii>
+      <P>
+        On mobile, the <strong>Pipeline / Map</strong> tabs (top) toggle
+        between the two views.
+      </P>
+
+      <H3>3.2 The saved filter bar (very top)</H3>
+      <P>
+        First row you see. Carries every named filter set &mdash; yours
+        AND the OG / shared ones an admin set up.
+      </P>
+      <Ascii>
+{` ┌─────────────────────────────────────────────────────────────────┐
+ │ [Big Coastal · OG ×] [Citizens Hot · OG ×] [My Pinellas · May ×] │
+ │ [+ Add existing (3)]                                              │
+ └─────────────────────────────────────────────────────────────────┘`}
+      </Ascii>
+      <UL>
+        <li><strong>Click a chip</strong> &mdash; applies that saved filter set. The chip turns blue. A 2-line preview drops in below showing exactly what&apos;s active.</li>
+        <li><strong>× on a chip</strong> &mdash; hides it from the top bar. Doesn&apos;t delete. Survives refreshes (stored locally).</li>
+        <li><strong>+ Add existing (N)</strong> &mdash; popover of every hidden filter. Click name to bring it back. Trash icon (only on your own) deletes forever.</li>
+        <li><strong>OG badge (amber)</strong> &mdash; canned filter the admin team shared. Never goes away unless you hide it.</li>
+        <li>Your own filters show a month/year (e.g. <code className="bg-gray-900 px-1 rounded">May 26</code>).</li>
+      </UL>
+      <P>The 2-line preview when a chip is active:</P>
+      <Ascii>
+{` County     | Use     | Min $ | Stories ≥ | Heat
+ Pinellas+2 | 004,008 | $10M  | ≥7        | hot`}
+      </Ascii>
+      <P>
+        Field names on top, values below, separated by <code className="bg-gray-900 px-1 rounded">|</code>. No grid math &mdash; visual proximity is enough.
+      </P>
+
+      <H3>3.3 Search, Sort, Counties</H3>
+      <UL>
+        <li><strong>Search</strong> &mdash; matches name, address, and owner string.</li>
+        <li><strong>County picker</strong> &mdash; opens a chip grid of all 35 counties with <strong>All</strong> / <strong>None</strong> buttons. Click chips to toggle, Done to close. Closed pill reads <code className="bg-gray-900 px-1 rounded">Pinellas +3</code> when multi-selected.</li>
+        <li><strong>Sort</strong> &mdash; value, TIV, units, year built, cream score, etc.</li>
+        <li><strong>Filters (N)</strong> &mdash; count badge of active filters. Click to expand the full panel.</li>
+      </UL>
+
+      <H3>3.4 The filter panel (collapsed by default)</H3>
+      <P>
+        Click <strong>Filters</strong> to open. This is the workspace for
+        building a new filter set. Once you have it dialed in,{" "}
+        <strong>+ Save current</strong> at the top creates a new chip in
+        the top bar.
+      </P>
+      <UL>
+        <li><strong>Use Code chips</strong> &mdash; multi-select with <code className="bg-gray-900 px-1 rounded">all</code> / <code className="bg-gray-900 px-1 rounded">none</code>.</li>
+        <li><strong>Numeric ranges</strong> &mdash; blank = any. <code className="bg-gray-900 px-1 rounded">Coast ≤ miles</code> means within X miles of the FL coastline.</li>
+        <li><strong>Citizens Only</strong> &mdash; narrow to properties heuristically flagged as on Citizens Insurance (high-value swap targets).</li>
+      </UL>
+
+      <H3>3.5 Stage tabs</H3>
+      <Ascii>
+{` ┌──────────────────────────────────────────────────────────────┐
+ │ 5,966,570 987,365 1,176,723  0   0     0      0    0          │
+ │  TARGET    LEAD   VETTED  ANAL VAL OPP  CUST  ARCH            │
+ └──────────────────────────────────────────────────────────────┘`}
+      </Ascii>
+      <HelpTable
+        headers={["Stage", "Meaning"]}
+        rows={[
+          [<strong key="t">TARGET</strong>, "Every raw parcel from the FL tax roll, no filtering."],
+          [<strong key="l">LEAD</strong>, "Promoted by the qualifier — actionable property type + geocoded."],
+          [<strong key="v" className="text-teal-300">VETTED</strong>, "Aggregator-built building master. Each master ties N unit parcels together with rolled-up TIV, units, etc. This is where you live."],
+          [<strong key="a">ANALYZED</strong>, "Cream score + Sunbiz enrichment complete."],
+          [<strong key="vd">VALIDATED</strong>, "Zillow / VRBO cross-check complete."],
+          [<strong key="o">OPPORTUNITY</strong>, "You promoted it manually — active outreach."],
+          [<strong key="c">CUSTOMER</strong>, "Deal closed."],
+          [<strong key="ar">ARCHIVED</strong>, "Passed on / not interested. Each card has a Restore button."],
+        ]}
+      />
+      <P>Default tab is <strong>VETTED</strong> — that&apos;s the actionable building list.</P>
+
+      <H3>3.6 Reading a lead card</H3>
+      <Ascii>
+{` ┌─────────────────────────────────────────────────────────────┐
+ │ Echo Brickell Condominium Assoc          $44M       [hot]   │
+ │                                                              │
+ │ 1451 Brickell Ave, Miami, FL 33131                          │
+ │ Owner: 1451 BRICKELL CONDOMINIUM ASSOC INC                  │
+ │                                                              │
+ │ ┌──────────────────────────────────────────────────────────┐│
+ │ │                    ◎ MAP                                  ││
+ │ └──────────────────────────────────────────────────────────┘│
+ │                                                              │
+ │ [172 parcels] [Condo] [171 units] [Built 1980] [Pinellas]   │
+ │                                                              │
+ │ [Open]  [ → ANALYZED ]                                       │
+ └─────────────────────────────────────────────────────────────┘`}
+      </Ascii>
+      <P><strong>Color meanings &mdash; trust indicators:</strong></P>
+      <HelpTable
+        headers={["Element", "Green", "Orange", "Why it matters"]}
+        rows={[
+          ["Name",
+            "Auditor-confirmed (PA enricher OR DOR owner reads like an association)",
+            "Aggregator synthesized OR raw person name",
+            "Orange = verify the building name"],
+          ["Owner",
+            "County PA provided this string",
+            "DOR tax roll only — no auditor confirmation",
+            "Orange = DOR may show a trustee instead of decision-maker"],
+          ["Address", "Always neon cyan", "—", "Tax roll is authoritative for street addresses"],
+          ["Units count", "Always neon green", "—", "Building's total physical unit count after roll-up"],
+          ["TIV",
+            <span key="tiv">A <code className="bg-gray-900 px-1 rounded">*</code> means aggregator estimate; Zillow/VRBO firms it up at VALIDATED</span>,
+            "—", "Don't quote the * value as final"],
+        ]}
+      />
+      <P>
+        <strong>Heat pill (top-right):</strong> hot (≥35 pts) / warm (≥18) / cold (&lt;18).
+        This is data completeness, not conversion quality.
+      </P>
+      <P><strong>Actions row:</strong></P>
+      <UL>
+        <li><strong>Open</strong> &mdash; opens the slide-in detail modal.</li>
+        <li><strong>→ ANALYZED</strong> (or whatever&apos;s next) &mdash; promotes one stage forward. Button colour matches destination.</li>
+      </UL>
+
+      <H3>3.7 The map</H3>
+      <UL>
+        <li>Shows up to 1,000 markers for the current filter &mdash; not just the visible 50 cards.</li>
+        <li><strong>Click a card</strong> &rarr; map flies to it.</li>
+        <li><strong>Click the bold <code className="bg-gray-900 px-1 rounded">◎ MAP</code> line</strong> on a card &rarr; same thing, more deliberate.</li>
+        <li><strong>Click a marker</strong> &rarr; opens detail modal AND scrolls card into view.</li>
+        <li><strong>Hover a card</strong> &rarr; marker pulses on the map.</li>
+        <li><strong>Top-right of map</strong> &rarr; Street / Satellite / Hybrid toggle.</li>
+      </UL>
+
+      <H3>3.8 Opening a card (the detail modal)</H3>
+      <P>Click <strong>Open</strong> or a map marker. A panel slides in from the right. You can have up to 10 open at once &mdash; a tab bar at the bottom-left of the screen tracks them. Closing one falls back to the previously active one.</P>
+      <UL>
+        <li><strong>Stage dropdown</strong> below the name &mdash; set to any stage. Use this for one-off archiving.</li>
+        <li><strong>Pipeline stage chip</strong> reads green when ≥VETTED, gray earlier.</li>
+        <li><strong>Tabs across the section bar</strong> &mdash; Overview / Contacts / Engagements / Files / Provenance / Notes.</li>
+      </UL>
+
+      <H3>3.9 Linked parcels &amp; board members (the call list)</H3>
+      <P>
+        Inside the modal, the teal banner near the top says{" "}
+        <strong>VETTED master · N linked unit parcels</strong>. Click{" "}
+        <strong>▶</strong> to expand it.
+      </P>
+      <Ascii>
+{` ┌───────────────────────────────────────────────────────────────┐
+ │ VETTED master · 171 linked unit parcels · sum $343M           │
+ │ ★ 5 on board  (1451 BRICKELL CONDOMINIUM ASSOC INC)           │
+ │                                                                │
+ │ Unit  Owner                          Sqft   JV     TIV   PA    │
+ │ ─────────────────────────────────────────────────────────────  │
+ │ 102   ★ President  ANDERS, ROBERT   1890  $1.4M  $2.1M  PA↗   │
+ │ 405   ★ Treasurer  WALSH, MICHAEL   1890  $1.5M  $2.2M  PA↗   │
+ │ 502    MILLER, SARAH                1200  $980K  $1.4M  PA↗   │
+ │ 1001  ★ Vice Pres  TANG, LISA       2400  $2.3M  $3.3M  PA↗   │
+ └───────────────────────────────────────────────────────────────┘`}
+      </Ascii>
+      <UL>
+        <li><strong>Amber ★ row</strong> &mdash; this unit owner is on the association board. Title (President, Treasurer, etc.) comes from Sunbiz officers. <strong>These are the calls.</strong></li>
+        <li><strong>Unit number</strong> &mdash; click to open that unit&apos;s detail as another modal in the same stack.</li>
+        <li><strong>PA ↗</strong> &mdash; direct deep-link to the county PA&apos;s parcel page. No search step.</li>
+        <li><strong>other ↗</strong> (amber, only on board members) &mdash; opens the PA&apos;s search-by-owner-name results &mdash; every property that board member owns in the county.</li>
+      </UL>
+      <P>Below the linked-parcels table:</P>
+      <UL>
+        <li><strong>Master parcel (0001) banner</strong> &mdash; the association&apos;s actual common-elements parcel + a one-click PA deep-link.</li>
+        <li><strong>Sunbiz entities at this address</strong> &mdash; expandable list of every FL corporation registered at the building, with corp name + status + direct Sunbiz detail links.</li>
+      </UL>
+
+      <H3>3.10 Bulk actions</H3>
+      <P>
+        Click <strong>Select</strong> above the cards to enter select mode.
+        Tick individual cards, or use <strong>All (12,847)</strong> to
+        select every match across all pages.
+      </P>
+      <UL>
+        <li><strong>All (N)</strong> &mdash; if N ≤ 1000 the explicit IDs are selected; beyond that a sentinel routes the bulk action through the server&apos;s filter endpoint so the SQL UPDATE moves every match in one shot.</li>
+        <li><strong>→ ANALYZED (N)</strong> &mdash; promote everyone selected to the next stage. Colour matches destination.</li>
+        <li><strong>Archive (N)</strong> &mdash; hide them from normal views. Restorable from the ARCHIVED tab.</li>
+        <li>Manually un-tick any card &mdash; drops out of &ldquo;all selected&rdquo; mode.</li>
+      </UL>
+
+      <H3>3.11 Trust cheat sheet</H3>
+      <HelpTable
+        headers={["What you see", "What it tells you"]}
+        rows={[
+          [<span key="gg"><span className="text-green-300">Green name</span> + <span className="text-green-300">green owner</span></span>, "Both from county auditor. Highest confidence."],
+          [<span key="go"><span className="text-green-300">Green name</span> + <span className="text-orange-300">orange owner</span></span>, "Building name confirmed; owner string from DOR (may be trustee/LLC). Still high confidence on the building."],
+          [<span key="oo"><span className="text-orange-300">Orange name</span> + <span className="text-orange-300">orange owner</span></span>, "Aggregator-synthesized label, no auditor confirmation. Verify before calling."],
+          [<code key="star" className="bg-gray-900 px-1 rounded">*</code>, "TIV is an aggregator estimate. Firms up at VALIDATED."],
+          [<span key="amber" className="text-amber-300">★ President</span>, "Unit owner is on the board. Priority call."],
+          [<span key="tt" className="text-teal-300">rollup ×N</span>, "Card shows building total (TIV/units summed across N parcels)."],
+          [<span key="uo" className="text-amber-300">unit parcel only</span>, "Matched a single unit, not the building. Year/ISO trustworthy; TIV/units not."],
+          ["Heat = hot", "≥35 data-completeness points."],
+          [<strong key="plat" className="text-purple-300">Cream tier = platinum (90+)</strong>, "High-value conversion opportunity. Call first."],
+        ]}
+      />
+
+      <H3>3.12 Typical daily flow</H3>
+      <OL>
+        <li>Log in &rarr; lands on VETTED.</li>
+        <li>Click your &ldquo;Platinum Coastal&rdquo; chip in the top bar.</li>
+        <li>Sort by Cream score: high.</li>
+        <li>Look at the map &mdash; where are the dots clustered?</li>
+        <li>Open the top card. Expand linked parcels. Find the amber ★ rows.</li>
+        <li>Click <code className="bg-gray-900 px-1 rounded">other ↗</code> on the President &mdash; see what else she owns in the county.</li>
+        <li>Click <code className="bg-gray-900 px-1 rounded">open on county PA ↗</code> on the master parcel for building data.</li>
+        <li>Click <strong>Sunbiz entities at this address</strong> &mdash; get the association corp name.</li>
+        <li>Add a contact, log an engagement, promote to OPPORTUNITY.</li>
+        <li>Next card.</li>
+      </OL>
+
+      <H3>3.13 If something looks wrong</H3>
+      <HelpTable
+        headers={["Symptom", "Likely cause", "Fix"]}
+        rows={[
+          ["\"Miles from coast\" filter returns nothing", "Distance not backfilled on legacy rows", "Ask Eric to run Backfill ocean dist in Ops"],
+          ["Master shows synthesized name", "0001 relabel hasn't run since aggregation", "Ask Eric to run Relabel 0001 names in Ops"],
+          ["Map shows no markers", "Filter is narrow / zero matches", "Look at the green X total counter"],
+          ["Card list slow to load", "Indexes still building", "Wait 30 min after deploy, or ask Eric to click Build Indexes"],
+        ]}
+      />
+    </section>
+  );
+}
+
 function DashboardSection() {
   return (
     <section>
-      <H id="dashboard">3. The Dashboard</H>
+      <H id="dashboard">4. The Dashboard</H>
       <P>The main screen has two halves:</P>
       <H3>Left side: the map</H3>
       <UL>
@@ -254,7 +547,7 @@ function DashboardSection() {
 function FindingLeadsSection() {
   return (
     <section>
-      <H id="finding-leads">4. Finding the Best Leads</H>
+      <H id="finding-leads">5. Finding the Best Leads</H>
       <P>
         The default sort is <strong>&ldquo;Best Opportunity&rdquo;</strong> &mdash; it puts
         the highest-value leads at the top based on the cream score (explained
@@ -287,7 +580,7 @@ function FindingLeadsSection() {
 function LeadCardSection() {
   return (
     <section>
-      <H id="lead-card">5. Reading a Lead Card</H>
+      <H id="lead-card">6. Reading a Lead Card</H>
       <P>
         When you click a lead, a detail panel slides out from the right edge of the
         screen. It has three tabs at the top:
@@ -327,7 +620,7 @@ function LeadCardSection() {
 function DataTagsSection() {
   return (
     <section>
-      <H id="data-tags">6. Data Quality Tags</H>
+      <H id="data-tags">7. Data Quality Tags</H>
       <P>
         Every field on a lead card has a small colored badge next to it. This tells you
         where the data came from and how much to trust it:
@@ -384,7 +677,7 @@ function DataTagsSection() {
 function ValidatingSection() {
   return (
     <section>
-      <H id="validating">7. Validating a Lead</H>
+      <H id="validating">8. Validating a Lead</H>
       <P>
         Before you call an association, spend 30 seconds walking through the card
         to sanity-check the data. Here&apos;s a quick validation checklist:
@@ -442,7 +735,7 @@ function ValidatingSection() {
 function FixingDataSection() {
   return (
     <section>
-      <H id="fixing-data">8. Fixing Wrong Data</H>
+      <H id="fixing-data">9. Fixing Wrong Data</H>
       <P>
         If you spot wrong data on a card, here&apos;s what to do depending on the
         type of error:
@@ -486,7 +779,7 @@ function FixingDataSection() {
 function ContactsSection() {
   return (
     <section>
-      <H id="contacts">9. Adding Contacts</H>
+      <H id="contacts">10. Adding Contacts</H>
       <P>Contacts are the humans you actually call or email at an association.</P>
       <H3>To add a contact manually:</H3>
       <OL>
@@ -514,7 +807,7 @@ function ContactsSection() {
 function PipelineSection() {
   return (
     <section>
-      <H id="pipeline">10. Moving Through the Pipeline</H>
+      <H id="pipeline">11. Moving Through the Pipeline</H>
       <P>Every lead sits in exactly one of eight stages. The first five are
       deterministic gated transitions driven by background workers; the
       last three are user-driven CRM:</P>
@@ -550,7 +843,7 @@ function PipelineSection() {
 function OutreachSection() {
   return (
     <section>
-      <H id="outreach">11. Recording Outreach</H>
+      <H id="outreach">12. Recording Outreach</H>
       <P>
         Every time you email, call, or meet with an association, record it as an
         engagement. This keeps the team (including yourself two weeks from now)
@@ -579,7 +872,7 @@ function OutreachSection() {
 function UploadsSection() {
   return (
     <section>
-      <H id="uploads">12. Uploading Documents</H>
+      <H id="uploads">13. Uploading Documents</H>
       <P>
         When you have a policy dec page, a broker report, an inspection, or any
         other document about a lead, upload it so the system can extract the
@@ -617,7 +910,7 @@ function UploadsSection() {
 function CreamScoreSection() {
   return (
     <section>
-      <H id="cream-score">13. Cream Score Explained</H>
+      <H id="cream-score">14. Cream Score Explained</H>
       <P>
         The cream score (0-100) ranks how good a lead is for commercial property
         insurance conversion. It is <strong>not</strong> the same as the heat
@@ -663,7 +956,7 @@ function CreamScoreSection() {
 function OpsSection() {
   return (
     <section>
-      <H id="ops">14. The Ops Page</H>
+      <H id="ops">15. The Ops Page</H>
       <P>
         The Ops page (link in the header) is the behind-the-scenes view for
         admins and power users. You usually won&apos;t need it, but here&apos;s
@@ -698,7 +991,7 @@ function OpsSection() {
 function FaqSection() {
   return (
     <section>
-      <H id="faq">15. Common Questions</H>
+      <H id="faq">16. Common Questions</H>
 
       <H3>&ldquo;Why does this lead show use type &lsquo;Code 003&rsquo;?&rdquo;</H3>
       <P>
@@ -760,7 +1053,7 @@ function FaqSection() {
 function GlossarySection() {
   return (
     <section>
-      <H id="glossary">16. Glossary</H>
+      <H id="glossary">17. Glossary</H>
       <dl className="space-y-2 text-xs">
         <div><dt className="text-white font-semibold">TIV</dt><dd className="text-gray-400 ml-4">Total Insured Value &mdash; the full replacement cost of the building. Usually 1.2-1.5x the DOR market value.</dd></div>
         <div><dt className="text-white font-semibold">SFHA</dt><dd className="text-gray-400 ml-4">Special Flood Hazard Area &mdash; a FEMA-designated zone where flood insurance is federally required for any mortgaged property.</dd></div>
@@ -788,7 +1081,7 @@ function GlossarySection() {
 function TroubleshootingSection() {
   return (
     <section>
-      <H id="troubleshooting">17. Troubleshooting</H>
+      <H id="troubleshooting">18. Troubleshooting</H>
 
       <H3>&ldquo;I can&apos;t log in&rdquo;</H3>
       <OL>
