@@ -437,6 +437,22 @@ def _build_detail_url(doc_number: str) -> str:
     )
 
 
+def build_search_url(corp_name: str) -> str:
+    """Construct a Sunbiz ByName SearchResults URL for a corp name.
+
+    Same query-string shape as ``_build_detail_url`` and the URLs the
+    portal itself emits when you submit https://search.sunbiz.org/
+    Inquiry/CorporationSearch/ByName. ``urllib.parse.quote`` handles
+    apostrophes, ampersands, parens, and the other characters that
+    show up in real Florida corp names ("O'CONNOR & ASSOC LLC").
+    """
+    from urllib.parse import quote
+    return (
+        "https://search.sunbiz.org/Inquiry/CorporationSearch/SearchResults"
+        f"?inquirytype=EntityName&searchNameOrder={quote(corp_name.upper(), safe='')}"
+    )
+
+
 # ─── Enricher ───
 
 @register_enricher("sunbiz_bulk", requires=[])

@@ -2121,7 +2121,9 @@ def sunbiz_by_address(
     user can copy it into the portal's ByName search, plus a direct
     detail-page URL when available.
     """
-    from agents.enrichers.sunbiz_bulk import lookup_by_address, _build_detail_url
+    from agents.enrichers.sunbiz_bulk import (
+        lookup_by_address, _build_detail_url, build_search_url,
+    )
 
     matches = lookup_by_address(address)[:limit]
     return {
@@ -2141,9 +2143,7 @@ def sunbiz_by_address(
                     if m.get("document_number") else None
                 ),
                 "sunbiz_search_url": (
-                    "https://search.sunbiz.org/Inquiry/CorporationSearch/SearchResults?"
-                    "inquirytype=EntityName&searchNameOrder=" +
-                    (m.get("corp_name") or "").upper().replace(" ", "%20")
+                    build_search_url(m.get("corp_name"))
                     if m.get("corp_name") else None
                 ),
             }
