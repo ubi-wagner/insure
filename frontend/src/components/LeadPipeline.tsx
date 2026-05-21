@@ -124,7 +124,11 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
   const [stageCounts, setStageCounts] = useState<Record<string, number>>({});
 
   // Filters
-  const [activeStage, setActiveStage] = useState("TARGET");
+  // Default to VETTED — that's the building-master stage Jason actually
+  // works against. Landing on TARGET (5.9M unfiltered parcels) made
+  // login take 10-30 seconds because the count query has to scan the
+  // whole table. VETTED is ~150K rows = sub-second with the indexes.
+  const [activeStage, setActiveStage] = useState("VETTED");
   const [search, setSearch] = useState("");
   const [county, setCounty] = useState(initialCounty ?? "");
   const [sortKey, setSortKey] = useState("value-desc");

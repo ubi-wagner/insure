@@ -316,8 +316,25 @@ def list_leads(
     if max_premium is not None:
         query = query.filter(_jsonb_float("premium") <= max_premium)
 
-    # Get total before pagination
-    total = query.count()
+    # Get total before pagination. When the user is on an unfiltered
+    # stage view (the common case after login), reuse the cached
+    # per-stage count instead of running a fresh COUNT(*) over millions
+    # of rows. Filters present → fall back to the exact count.
+    has_narrowing_filters = any([
+        search, county, carrier, min_tiv, max_tiv, min_premium, max_premium,
+        min_value, max_value, min_stories, min_units, min_year, max_year,
+        max_distance_miles, use_code, heat, on_citizens, cream_tier,
+        min_cream, construction,
+    ])
+    if status_filter and not has_narrowing_filters:
+        try:
+            from routes.admin import _stage_counts_cached
+            cached = _stage_counts_cached(db).get(status_filter)
+            total = cached if cached is not None else query.count()
+        except Exception:
+            total = query.count()
+    else:
+        total = query.count()
 
     # Sorting (SQL)
     is_desc = sort_dir == "desc"
