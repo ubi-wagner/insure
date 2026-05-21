@@ -312,14 +312,30 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
         setLeads(data.results ?? []);
         setTotal(data.total ?? 0);
 
-        // Send map data
-        onLeadsLoaded?.(data.results
-          .filter((l): l is Lead & { latitude: number; longitude: number } => l.latitude != null && l.longitude != null)
-          .map((l, i) => ({
-            id: l.id, name: l.name, latitude: l.latitude,
-            longitude: l.longitude, heat_score: l.heat_score || "cold",
-            status: l.status, listIndex: i + 1,
-          })));
+        // ── Map markers ──
+        // Card list is paginated 50 at a time, but the user wants
+        // the map to show EVERY unit matching the current filter as
+        // a marker — not just the visible page. Fire a second wider
+        // query (capped at 1000 to keep the payload sane on
+        // 150K-row VETTED views) and push that to the map. Filters
+        // and sort are identical so markers stay aligned with the
+        // list view.
+        const mapParams = new URLSearchParams(params);
+        mapParams.set("limit", "1000");
+        mapParams.set("offset", "0");
+        fetch(`/api/proxy/leads?${mapParams}`)
+          .then((r) => (r.ok ? r.json() : null))
+          .then((d: ApiResponse | null) => {
+            if (!d?.results) return;
+            onLeadsLoaded?.(d.results
+              .filter((l): l is Lead & { latitude: number; longitude: number } => l.latitude != null && l.longitude != null)
+              .map((l, i) => ({
+                id: l.id, name: l.name, latitude: l.latitude,
+                longitude: l.longitude, heat_score: l.heat_score || "cold",
+                status: l.status, listIndex: i + 1,
+              })));
+          })
+          .catch(() => {/* non-critical; cards still render */});
       } else {
         setFetchError(`Failed (${res.status})`);
       }
@@ -777,7 +793,9 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
             </button>
           </>
         )}
-        <span className="text-[10px] text-gray-600 ml-auto">{total.toLocaleString()} total</span>
+        <span className="text-[11px] font-mono font-semibold text-green-400 ml-auto" title="Total matching the current filter">
+          {total.toLocaleString()} total
+        </span>
       </div>
 
       {bulkMsg && (
@@ -809,30 +827,50 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
             <div key={lead.id} id={`lead-card-${lead.id}`}
               onMouseEnter={() => onLeadHover?.(lead.id)}
               onMouseLeave={() => onLeadHover?.(null)}
-              onClick={(e) => {
-                // Card-to-map linkage: clicking anywhere on the card body
-                // (not on a button / checkbox / link inside it) flies the
-                // map to this lead's marker and selects it. Buttons inside
-                // the card stop propagation so they don't double-fire.
-                if ((e.target as HTMLElement).closest("button, input, a")) return;
-                if (lead.latitude != null && lead.longitude != null) {
-                  onFlyTo?.(lead.latitude, lead.longitude, lead.id);
-                }
-              }}
-              className={`rounded-lg border overflow-hidden transition-colors cursor-pointer ${
+              className={`rounded-lg border overflow-hidden transition-colors ${
                 isSelected ? "border-blue-500 bg-gray-900 ring-1 ring-blue-500/30" :
                 isChecked ? "border-cyan-700 bg-gray-900" :
                 "border-gray-800/50 bg-gray-900/60 hover:border-gray-700"
               }`}>
               <div className="px-3 py-2">
-                {/* Header row */}
-                <div className="flex items-center gap-2 mb-0.5">
+                {(() => {
+                  // Provenance: is the building name "auditor-confirmed"?
+                  // The PA enricher writes pa_owner; the aggregator writes
+                  // dor_owner_personal whenever it had to SYNTHESIZE the
+                  // master name because the DOR owner was a person, not
+                  // an association. So:
+                  //   green  = pa_owner set, or DOR owner already reads
+                  //            like an association (CONDO / ASSN / etc.)
+                  //   orange = aggregator-synthesized OR raw person name
+                  const _pa_owner = (chars.pa_owner ?? "") as string;
+                  const _sunbiz_corp = (chars.sunbiz_corp_name ?? "") as string;
+                  const _personal_override = (chars.dor_owner_personal ?? "") as string;
+                  const _name_str = lead.name || "";
+                  const _looks_assn = /\b(CONDO|CONDOMINIUM|ASSOCIATION|ASSN|ASSOC|HOA|HOMEOWNERS|MASTER|OWNERS)\b/i.test(_name_str);
+                  const nameFromAuditor = !!_pa_owner || !!_sunbiz_corp || (
+                    !_personal_override && _looks_assn
+                  );
+                  const ownerStr = _pa_owner || (chars.dor_owner as string) || _personal_override || "";
+                  const ownerFromAuditor = !!_pa_owner;
+                  return (
+                <>
+                {/* Header: name + value pill + heat */}
+                <div className="flex items-center gap-2 mb-1">
                   {canEdit && selectMode && (
                     <input type="checkbox" checked={isChecked}
                       onChange={() => toggleSelect(lead.id)}
                       className="w-3.5 h-3.5 rounded border-gray-600 bg-gray-800 shrink-0" />
                   )}
-                  <h3 className="font-medium text-sm text-white truncate flex-1 hover:text-blue-300">
+                  <h3
+                    className={`font-semibold text-sm truncate flex-1 ${
+                      nameFromAuditor ? "text-green-300" : "text-orange-300"
+                    }`}
+                    title={
+                      nameFromAuditor
+                        ? "Name confirmed from PA / Sunbiz auditor data"
+                        : "Name synthesized by aggregator or pulled from raw DOR owner (no auditor confirmation)"
+                    }
+                  >
                     {lead.name}
                   </h3>
                   {marketValue && marketValue > 0 && (
@@ -851,8 +889,41 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
                   )}
                 </div>
 
-                {/* Address */}
-                <p className="text-gray-500 text-[11px] truncate">{lead.address}</p>
+                {/* Address — neon blue */}
+                <p
+                  className="text-cyan-300 text-[12px] font-medium truncate"
+                  title={lead.address}
+                >
+                  {lead.address}
+                </p>
+
+                {/* Owner — green if from PA, orange if just DOR */}
+                {ownerStr && (
+                  <p
+                    className={`text-[10px] truncate mt-0.5 ${
+                      ownerFromAuditor ? "text-green-400" : "text-orange-400"
+                    }`}
+                    title={
+                      ownerFromAuditor
+                        ? `Owner from county PA: ${ownerStr}`
+                        : `Owner from DOR (no PA confirmation): ${ownerStr}`
+                    }
+                  >
+                    <span className="text-gray-600">Owner: </span>
+                    {ownerStr}
+                  </p>
+                )}
+
+                {/* Click-to-MAP line — bold neon, dedicated trigger */}
+                {lead.latitude != null && lead.longitude != null && (
+                  <button
+                    onClick={() => onFlyTo?.(lead.latitude!, lead.longitude!, lead.id)}
+                    title="Fly the map to this property"
+                    className="mt-1.5 w-full text-center bg-gradient-to-r from-cyan-900/40 via-cyan-700/40 to-cyan-900/40 hover:from-cyan-700/60 hover:via-cyan-500/60 hover:to-cyan-700/60 border border-cyan-700/40 hover:border-cyan-400 rounded text-cyan-200 hover:text-cyan-100 text-[11px] font-bold tracking-widest py-0.5 transition-colors"
+                  >
+                    ◎ MAP
+                  </button>
+                )}
 
                 {/* Tags */}
                 <div className="flex items-center gap-1 mt-1.5 flex-wrap">
@@ -868,7 +939,12 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
                     <span className="text-[10px] px-1 rounded bg-gray-800 text-gray-400">{String(chars.dor_use_description)}</span>
                   )}
                   {!!chars.dor_num_units && Number(chars.dor_num_units) > 0 && (
-                    <span className="text-[10px] px-1 rounded bg-gray-800 text-gray-500">{String(chars.dor_num_units)} units</span>
+                    <span
+                      className="text-[10px] px-1.5 rounded bg-green-900/50 text-green-300 font-semibold"
+                      title={`${chars.dor_num_units} units`}
+                    >
+                      {String(chars.dor_num_units)} units
+                    </span>
                   )}
                   {!!chars.dor_year_built && (
                     <span className="text-[10px] px-1 rounded bg-gray-800 text-gray-600">Built {String(chars.dor_year_built)}</span>
@@ -887,6 +963,8 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
                   )}
                   <span className="text-gray-700 text-[10px] ml-auto">{lead.county}</span>
                 </div>
+                </>
+                );})()}
 
                 {/* Enrichment status — visible on every stage that runs
                     enrichers (VETTED through CUSTOMER). LEAD/TARGET don't
@@ -931,13 +1009,9 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
                     </button>
                   )}
 
-                  {/* Map button */}
-                  {lead.latitude != null && lead.longitude != null && (
-                    <button onClick={() => onFlyTo?.(lead.latitude!, lead.longitude!, lead.id)}
-                      className="bg-gray-800 hover:bg-gray-700 text-gray-500 text-xs py-1.5 px-2 rounded" title="Fly to on map">
-                      Map
-                    </button>
-                  )}
+                  {/* Map button removed — replaced by the bold "◎ MAP"
+                      line at the top of the card body. Same handler,
+                      more prominent click target. */}
 
                   {/* Per-card archive removed — too easy to click by
                       accident. Archive still available via bulk
