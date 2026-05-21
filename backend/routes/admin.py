@@ -378,6 +378,15 @@ _JSONB_INDEXES = [
         "ix_entities_pipeline_parent",
         "(pipeline_stage, parent_id)",
     ),
+    (
+        # Speeds up the "within X miles of coast" filter (was a full
+        # JSONB scan; now hits a partial expression index). Cast to
+        # float so the index can be range-scanned.
+        "ix_entities_chars_ocean_dist",
+        "(((characteristics->>'distance_to_ocean_miles')::float)) "
+        "WHERE characteristics->>'distance_to_ocean_miles' IS NOT NULL "
+        "AND parent_id IS NULL",
+    ),
 ]
 
 
@@ -1104,31 +1113,85 @@ def prune_services(stale_only: bool = Query(False, description="Only prune servi
     return {"success": True, "pruned": count}
 
 
-@router.post("/api/admin/backfill-ocean-distance")
-def backfill_ocean_distance(db: Session = Depends(get_db)):
-    """Compute distance_to_ocean_miles for every geocoded entity that's
-    missing it. Useful after shipping the geo utility to enrich existing
-    LEADs without a full reseed."""
+_OCEAN_BACKFILL_STATE: dict = {
+    "running": False, "updated": 0, "scanned": 0, "total": 0,
+    "started_at": None, "finished_at": None, "error": None,
+}
+
+
+def _backfill_ocean_distance_worker() -> None:
+    """Background worker: stream the entities table in chunks and write
+    distance_to_ocean_miles wherever it's missing. Chunked + committed
+    every 5000 rows so progress is durable and the connection doesn't
+    sit on a 6M-row cursor for half an hour."""
     from utils.geo import distance_to_ocean_miles
 
-    entities = db.query(Entity).filter(
-        Entity.latitude.isnot(None),
-        Entity.longitude.isnot(None),
-    ).all()
+    state = _OCEAN_BACKFILL_STATE
+    state.update({
+        "running": True, "updated": 0, "scanned": 0,
+        "started_at": datetime.utcnow().isoformat(), "finished_at": None,
+        "error": None,
+    })
+    db = SessionLocal()
+    try:
+        total = db.query(Entity).filter(
+            Entity.latitude.isnot(None), Entity.longitude.isnot(None),
+        ).count()
+        state["total"] = total
 
-    updated = 0
-    for entity in entities:
-        chars = dict(entity.characteristics or {})
-        if "distance_to_ocean_miles" in chars:
-            continue
-        d = distance_to_ocean_miles(entity.latitude, entity.longitude)
-        if d is not None:
-            chars["distance_to_ocean_miles"] = d
-            entity.characteristics = chars
-            updated += 1
+        BATCH = 5000
+        offset = 0
+        while True:
+            rows = (
+                db.query(Entity)
+                .filter(Entity.latitude.isnot(None), Entity.longitude.isnot(None))
+                .order_by(Entity.id)
+                .offset(offset).limit(BATCH).all()
+            )
+            if not rows:
+                break
+            for entity in rows:
+                state["scanned"] += 1
+                chars = entity.characteristics or {}
+                if "distance_to_ocean_miles" in chars:
+                    continue
+                d = distance_to_ocean_miles(entity.latitude, entity.longitude)
+                if d is None:
+                    continue
+                new_chars = dict(chars)
+                new_chars["distance_to_ocean_miles"] = d
+                entity.characteristics = new_chars
+                state["updated"] += 1
+            db.commit()
+            db.expunge_all()
+            offset += BATCH
+    except Exception as e:
+        state["error"] = str(e)[:300]
+        logger.error(f"Ocean-distance backfill failed: {e}")
+    finally:
+        db.close()
+        state["running"] = False
+        state["finished_at"] = datetime.utcnow().isoformat()
 
-    db.commit()
-    return {"success": True, "updated": updated, "total_geocoded": len(entities)}
+
+@router.post("/api/admin/backfill-ocean-distance")
+def backfill_ocean_distance():
+    """Kick off a background job that populates distance_to_ocean_miles
+    on every geocoded entity that's missing it. Non-blocking; the
+    response returns immediately and progress is available via
+    GET /api/admin/backfill-ocean-distance/status."""
+    if _OCEAN_BACKFILL_STATE.get("running"):
+        return {
+            "started": False, "already_running": True,
+            "status": dict(_OCEAN_BACKFILL_STATE),
+        }
+    threading.Thread(target=_backfill_ocean_distance_worker, daemon=True).start()
+    return {"started": True, "status": dict(_OCEAN_BACKFILL_STATE)}
+
+
+@router.get("/api/admin/backfill-ocean-distance/status")
+def backfill_ocean_distance_status():
+    return dict(_OCEAN_BACKFILL_STATE)
 
 
 @router.post("/api/admin/extract-dor-zips")

@@ -257,13 +257,17 @@ def list_leads(
         year_col = _best_year_col()
         query = query.filter(or_(year_col.is_(None), year_col <= max_year))
 
-    # Distance from ocean filter — entities without this field
-    # (pre-geocoded or geocoded before the geo utility shipped) are NOT
-    # excluded; they pass through and the user can backfill via
-    # POST /api/admin/backfill-ocean-distance.
+    # Distance from ocean filter — STRICT. If the user asked for
+    # "within X miles" they meant it, so entities without a recorded
+    # distance are excluded (rather than passing through silently and
+    # making the filter look broken). To populate distance on legacy
+    # rows in one shot, hit POST /api/admin/backfill-ocean-distance.
     if max_distance_miles is not None:
         dist_col = _jsonb_float("distance_to_ocean_miles")
-        query = query.filter(or_(dist_col.is_(None), dist_col <= max_distance_miles))
+        query = query.filter(
+            dist_col.isnot(None),
+            dist_col <= max_distance_miles,
+        )
 
     # Construction class filter (SQL)
     # Null-tolerant: entities without a DOR construction class (very common
