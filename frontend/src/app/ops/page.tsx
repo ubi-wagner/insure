@@ -107,6 +107,106 @@ export default function OpsCenter() {
     all_present: boolean;
   } | null>(null);
 
+  // Surgical master-name relabel from 0001-suffix siblings.
+  const [relabelRunning, setRelabelRunning] = useState(false);
+  const [relabelStatus, setRelabelStatus] = useState<{
+    running: boolean; scanned: number; updated: number; total: number;
+    started_at: string | null; finished_at: string | null;
+    error: string | null; dry_run?: boolean;
+  } | null>(null);
+
+  // Ocean-distance backfill (populates miles-from-coast on every
+  // geocoded entity missing it so the distance filter actually works).
+  const [oceanRunning, setOceanRunning] = useState(false);
+  const [oceanStatus, setOceanStatus] = useState<{
+    running: boolean; scanned: number; updated: number; total: number;
+    started_at: string | null; finished_at: string | null;
+    error: string | null;
+  } | null>(null);
+
+  const fetchOceanStatus = useCallback(async () => {
+    try {
+      const res = await fetch("/api/proxy/admin/backfill-ocean-distance/status");
+      if (!res.ok) return;
+      const d = await res.json().catch(() => null);
+      if (d) {
+        setOceanStatus(d);
+        if (!d.running) setOceanRunning(false);
+      }
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    fetchOceanStatus();
+    const id = oceanRunning ? setInterval(fetchOceanStatus, 3000) : null;
+    return () => { if (id) clearInterval(id); };
+  }, [isAdmin, fetchOceanStatus, oceanRunning]);
+
+  async function backfillOceanDistance() {
+    setOceanRunning(true);
+    setActionMsg(null);
+    try {
+      const res = await fetch("/api/proxy/admin/backfill-ocean-distance", { method: "POST" });
+      const d = await res.json().catch(() => ({ error: res.statusText }));
+      if (d.error) {
+        setActionMsg(`Error: ${d.error}`);
+        setOceanRunning(false);
+      } else if (d.already_running) {
+        setActionMsg("Ocean distance backfill already running.");
+      } else {
+        setActionMsg("Ocean distance backfill started — populates miles-from-coast on every geocoded entity missing it.");
+      }
+    } catch (err) {
+      setActionMsg(`Error: ${err}`);
+      setOceanRunning(false);
+    }
+  }
+
+  const fetchRelabelStatus = useCallback(async () => {
+    try {
+      const res = await fetch("/api/proxy/admin/relabel-masters-from-0001/status");
+      if (!res.ok) return;
+      const d = await res.json().catch(() => null);
+      if (d) {
+        setRelabelStatus(d);
+        if (!d.running) setRelabelRunning(false);
+      }
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    fetchRelabelStatus();
+    const id = relabelRunning ? setInterval(fetchRelabelStatus, 3000) : null;
+    return () => { if (id) clearInterval(id); };
+  }, [isAdmin, fetchRelabelStatus, relabelRunning]);
+
+  async function relabelMastersFromZero001(dryRun: boolean) {
+    setRelabelRunning(true);
+    setActionMsg(null);
+    try {
+      const url = `/api/proxy/admin/relabel-masters-from-0001${dryRun ? "?dry_run=true" : ""}`;
+      const res = await fetch(url, { method: "POST" });
+      const d = await res.json().catch(() => ({ error: res.statusText }));
+      if (d.error) {
+        setActionMsg(`Error: ${d.error}`);
+        setRelabelRunning(false);
+      } else if (d.already_running) {
+        setActionMsg("Relabel already running — see status below.");
+      } else {
+        setActionMsg(
+          dryRun
+            ? "Dry-run started — counts only, no writes. Watch the pill for progress."
+            : "Relabel started — applying 0001-sibling names to synthesized masters."
+        );
+      }
+    } catch (err) {
+      setActionMsg(`Error: ${err}`);
+      setRelabelRunning(false);
+    }
+  }
+
   // Pipeline run-state — polled while any stage is running so the user
   // sees per-county progress instead of a frozen "Seeding..." button.
   interface StageState {
@@ -386,6 +486,42 @@ export default function OpsCenter() {
                         : `Build Indexes (${indexStatus.indexes.filter(i => i.exists).length}/${indexStatus.indexes.length})`}
                   </button>
                 )}
+                {/* Surgical 0001-relabel — copies the association name
+                    from each master's 0001 sibling onto the master. */}
+                <button
+                  onClick={() => relabelMastersFromZero001(false)}
+                  disabled={relabelRunning}
+                  title="Copy the 0001 sibling's name (typically the actual association corp) onto every VETTED master whose name still looks synthesized / personal."
+                  className={`text-[11px] px-3 py-1 rounded border ${
+                    relabelRunning
+                      ? "bg-amber-900/40 text-amber-300 border-amber-800"
+                      : "bg-amber-900/40 hover:bg-amber-900 text-amber-300 border-amber-800"
+                  }`}
+                >
+                  {relabelRunning && relabelStatus
+                    ? `Relabeling… ${relabelStatus.updated.toLocaleString()} fixed / ${relabelStatus.scanned.toLocaleString()} scanned`
+                    : relabelStatus?.finished_at
+                      ? `Relabel ✓ (${relabelStatus.updated.toLocaleString()} fixed)`
+                      : "Relabel 0001 names"}
+                </button>
+                {/* Ocean distance backfill — required for the
+                    miles-from-coast filter to actually narrow anything. */}
+                <button
+                  onClick={backfillOceanDistance}
+                  disabled={oceanRunning}
+                  title="Populate distance_to_ocean_miles on every geocoded entity that's missing it. Required for the miles-from-coast filter to work on legacy rows."
+                  className={`text-[11px] px-3 py-1 rounded border ${
+                    oceanRunning
+                      ? "bg-sky-900/40 text-sky-300 border-sky-800"
+                      : "bg-sky-900/40 hover:bg-sky-900 text-sky-300 border-sky-800"
+                  }`}
+                >
+                  {oceanRunning && oceanStatus
+                    ? `Ocean dist… ${oceanStatus.updated.toLocaleString()} / ${oceanStatus.total.toLocaleString()}`
+                    : oceanStatus?.finished_at
+                      ? `Ocean ✓ (${oceanStatus.updated.toLocaleString()} backfilled)`
+                      : "Backfill ocean dist"}
+                </button>
                 {!confirmReset ? (
                   <button onClick={() => setConfirmReset(true)}
                     className="bg-red-900/50 hover:bg-red-900 border border-red-800 text-red-300 text-[11px] px-3 py-1 rounded">

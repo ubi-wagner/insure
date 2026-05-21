@@ -378,6 +378,15 @@ _JSONB_INDEXES = [
         "ix_entities_pipeline_parent",
         "(pipeline_stage, parent_id)",
     ),
+    (
+        # Speeds up the "within X miles of coast" filter (was a full
+        # JSONB scan; now hits a partial expression index). Cast to
+        # float so the index can be range-scanned.
+        "ix_entities_chars_ocean_dist",
+        "(((characteristics->>'distance_to_ocean_miles')::float)) "
+        "WHERE characteristics->>'distance_to_ocean_miles' IS NOT NULL "
+        "AND parent_id IS NULL",
+    ),
 ]
 
 
@@ -1104,31 +1113,248 @@ def prune_services(stale_only: bool = Query(False, description="Only prune servi
     return {"success": True, "pruned": count}
 
 
-@router.post("/api/admin/backfill-ocean-distance")
-def backfill_ocean_distance(db: Session = Depends(get_db)):
-    """Compute distance_to_ocean_miles for every geocoded entity that's
-    missing it. Useful after shipping the geo utility to enrich existing
-    LEADs without a full reseed."""
+_OCEAN_BACKFILL_STATE: dict = {
+    "running": False, "updated": 0, "scanned": 0, "total": 0,
+    "started_at": None, "finished_at": None, "error": None,
+}
+
+
+def _backfill_ocean_distance_worker() -> None:
+    """Background worker: stream the entities table in chunks and write
+    distance_to_ocean_miles wherever it's missing. Chunked + committed
+    every 5000 rows so progress is durable and the connection doesn't
+    sit on a 6M-row cursor for half an hour."""
     from utils.geo import distance_to_ocean_miles
 
-    entities = db.query(Entity).filter(
-        Entity.latitude.isnot(None),
-        Entity.longitude.isnot(None),
-    ).all()
+    state = _OCEAN_BACKFILL_STATE
+    state.update({
+        "running": True, "updated": 0, "scanned": 0,
+        "started_at": datetime.utcnow().isoformat(), "finished_at": None,
+        "error": None,
+    })
+    db = SessionLocal()
+    try:
+        total = db.query(Entity).filter(
+            Entity.latitude.isnot(None), Entity.longitude.isnot(None),
+        ).count()
+        state["total"] = total
 
-    updated = 0
-    for entity in entities:
-        chars = dict(entity.characteristics or {})
-        if "distance_to_ocean_miles" in chars:
-            continue
-        d = distance_to_ocean_miles(entity.latitude, entity.longitude)
-        if d is not None:
-            chars["distance_to_ocean_miles"] = d
-            entity.characteristics = chars
-            updated += 1
+        BATCH = 5000
+        offset = 0
+        while True:
+            rows = (
+                db.query(Entity)
+                .filter(Entity.latitude.isnot(None), Entity.longitude.isnot(None))
+                .order_by(Entity.id)
+                .offset(offset).limit(BATCH).all()
+            )
+            if not rows:
+                break
+            for entity in rows:
+                state["scanned"] += 1
+                chars = entity.characteristics or {}
+                if "distance_to_ocean_miles" in chars:
+                    continue
+                d = distance_to_ocean_miles(entity.latitude, entity.longitude)
+                if d is None:
+                    continue
+                new_chars = dict(chars)
+                new_chars["distance_to_ocean_miles"] = d
+                entity.characteristics = new_chars
+                state["updated"] += 1
+            db.commit()
+            db.expunge_all()
+            offset += BATCH
+    except Exception as e:
+        state["error"] = str(e)[:300]
+        logger.error(f"Ocean-distance backfill failed: {e}")
+    finally:
+        db.close()
+        state["running"] = False
+        state["finished_at"] = datetime.utcnow().isoformat()
 
-    db.commit()
-    return {"success": True, "updated": updated, "total_geocoded": len(entities)}
+
+@router.post("/api/admin/backfill-ocean-distance")
+def backfill_ocean_distance():
+    """Kick off a background job that populates distance_to_ocean_miles
+    on every geocoded entity that's missing it. Non-blocking; the
+    response returns immediately and progress is available via
+    GET /api/admin/backfill-ocean-distance/status."""
+    if _OCEAN_BACKFILL_STATE.get("running"):
+        return {
+            "started": False, "already_running": True,
+            "status": dict(_OCEAN_BACKFILL_STATE),
+        }
+    threading.Thread(target=_backfill_ocean_distance_worker, daemon=True).start()
+    return {"started": True, "status": dict(_OCEAN_BACKFILL_STATE)}
+
+
+@router.get("/api/admin/backfill-ocean-distance/status")
+def backfill_ocean_distance_status():
+    return dict(_OCEAN_BACKFILL_STATE)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Surgical master-name relabel from 0001 sibling
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+_RELABEL_STATE: dict = {
+    "running": False, "scanned": 0, "updated": 0, "total": 0,
+    "started_at": None, "finished_at": None, "error": None,
+}
+
+# Same keyword set the aggregator uses to detect an association-looking
+# name. Centralised here for the surgical relabel path.
+_ASSN_NAME_REGEX = re.compile(
+    r"\b(CONDO|CONDOMINIUM|ASSOCIATION|ASSOC|ASSN|HOA|"
+    r"HOMEOWNERS|HOME OWNER|HOMEOWNER|OWNERS ASSOC|"
+    r"COOPERATIVE|CO[-\s]?OP|MASTER ASSOC)\b",
+    re.IGNORECASE,
+)
+
+
+def _relabel_masters_worker(dry_run: bool) -> None:
+    """For every VETTED aggregation master whose name doesn't look like
+    an association, walk its sibling chain for a 0001-suffix parcel
+    whose name DOES look like one — and copy that name over. Preserves
+    the original master name in ``dor_owner_personal`` so the contact
+    list and audit trail keep it.
+
+    Idempotent: skips masters that already have an association-shaped
+    name. Chunked + committed every 1000 rows so progress is durable.
+    """
+    state = _RELABEL_STATE
+    state.update({
+        "running": True, "scanned": 0, "updated": 0,
+        "started_at": datetime.utcnow().isoformat(), "finished_at": None,
+        "error": None, "dry_run": dry_run,
+    })
+    db = SessionLocal()
+    try:
+        # Count first so the UI can show progress.
+        total = (
+            db.query(Entity)
+            .filter(
+                Entity.pipeline_stage == "VETTED",
+                Entity.parent_id.is_(None),
+            )
+            .count()
+        )
+        state["total"] = total
+
+        BATCH = 1000
+        offset = 0
+        while True:
+            masters = (
+                db.query(Entity)
+                .filter(
+                    Entity.pipeline_stage == "VETTED",
+                    Entity.parent_id.is_(None),
+                )
+                .order_by(Entity.id)
+                .offset(offset).limit(BATCH).all()
+            )
+            if not masters:
+                break
+
+            for master in masters:
+                state["scanned"] += 1
+                if master.name and _ASSN_NAME_REGEX.search(master.name):
+                    continue  # already association-shaped
+
+                # Walk this master's sibling chain for a 0001 parcel
+                # whose owner reads like an association.
+                siblings = (
+                    db.query(Entity)
+                    .filter(Entity.parent_id == master.id)
+                    .all()
+                )
+                candidate = None
+                for s in siblings:
+                    pid = (s.characteristics or {}).get("dor_parcel_id") or ""
+                    if not pid.endswith("0001"):
+                        continue
+                    if s.name and _ASSN_NAME_REGEX.search(s.name):
+                        candidate = s
+                        break
+
+                # Fallback: any 0001 sibling, even without keywords —
+                # the parcel id is the strong signal. (Optional;
+                # commented out by default to keep this conservative.)
+                # if not candidate:
+                #     for s in siblings:
+                #         pid = (s.characteristics or {}).get("dor_parcel_id") or ""
+                #         if pid.endswith("0001"):
+                #             candidate = s
+                #             break
+
+                if not candidate:
+                    continue
+
+                if not dry_run:
+                    chars = dict(master.characteristics or {})
+                    # Preserve whatever was there (synthesized label or
+                    # raw person name) for audit + future contact use.
+                    chars.setdefault("dor_owner_personal", master.name)
+                    chars["name_source"] = "relabel_from_0001"
+                    chars["name_source_doc"] = (
+                        candidate.characteristics or {}
+                    ).get("dor_parcel_id")
+                    master.characteristics = chars
+                    master.name = candidate.name
+                state["updated"] += 1
+
+            if not dry_run:
+                db.commit()
+            db.expunge_all()
+            offset += BATCH
+
+    except Exception as e:
+        state["error"] = str(e)[:300]
+        logger.error(f"Master-name relabel failed: {e}")
+        try:
+            db.rollback()
+        except Exception:
+            pass
+    finally:
+        db.close()
+        state["running"] = False
+        state["finished_at"] = datetime.utcnow().isoformat()
+
+
+@router.post("/api/admin/relabel-masters-from-0001")
+def relabel_masters_from_0001(
+    dry_run: bool = Query(False, description="Count only — don't write"),
+):
+    """Surgical fix for synthesized / personal-name VETTED masters.
+
+    For every VETTED master whose name doesn't already look like an
+    association, finds the 0001-suffix sibling parcel and copies that
+    row's name (typically the actual condo association corporation
+    name) onto the master. Idempotent — re-running only touches masters
+    that still don't have an association-shaped name.
+
+    Pass ``?dry_run=true`` to see how many rows would change without
+    writing anything. Progress at GET
+    /api/admin/relabel-masters-from-0001/status.
+    """
+    if _RELABEL_STATE.get("running"):
+        return {
+            "started": False, "already_running": True,
+            "status": dict(_RELABEL_STATE),
+        }
+    threading.Thread(
+        target=_relabel_masters_worker,
+        args=(dry_run,),
+        daemon=True,
+    ).start()
+    return {"started": True, "dry_run": dry_run, "status": dict(_RELABEL_STATE)}
+
+
+@router.get("/api/admin/relabel-masters-from-0001/status")
+def relabel_masters_status():
+    return dict(_RELABEL_STATE)
 
 
 @router.post("/api/admin/extract-dor-zips")

@@ -176,17 +176,30 @@ def list_leads(
             )
         )
 
-    # County filter (SQL)
+    # County filter (SQL) — accepts a single county OR a comma-separated
+    # list ("Pinellas,Hillsborough,Lee") so the user can multi-select.
+    # ILIKE on the first element keeps the legacy "partial match" UX;
+    # the multi-select path uses exact-match IN() which is faster +
+    # unambiguous.
     if county:
-        query = query.filter(Entity.county.ilike(f"%{county}%"))
+        counties_list = [c.strip() for c in county.split(",") if c.strip()]
+        if len(counties_list) == 1:
+            query = query.filter(Entity.county.ilike(f"%{counties_list[0]}%"))
+        elif counties_list:
+            query = query.filter(Entity.county.in_(counties_list))
 
     # Heat score filter (SQL)
     if heat:
         query = query.filter(Entity.heat_score == heat)
 
-    # DOR use code filter
+    # DOR use code filter — comma-separated → IN(). Single value still
+    # works as before.
     if use_code:
-        query = query.filter(Entity.characteristics["dor_use_code"].astext == use_code)
+        codes_list = [c.strip() for c in use_code.split(",") if c.strip()]
+        if len(codes_list) == 1:
+            query = query.filter(Entity.characteristics["dor_use_code"].astext == codes_list[0])
+        elif codes_list:
+            query = query.filter(Entity.characteristics["dor_use_code"].astext.in_(codes_list))
 
     # Citizens insurance filter
     if on_citizens is True:
@@ -257,13 +270,17 @@ def list_leads(
         year_col = _best_year_col()
         query = query.filter(or_(year_col.is_(None), year_col <= max_year))
 
-    # Distance from ocean filter — entities without this field
-    # (pre-geocoded or geocoded before the geo utility shipped) are NOT
-    # excluded; they pass through and the user can backfill via
-    # POST /api/admin/backfill-ocean-distance.
+    # Distance from ocean filter — STRICT. If the user asked for
+    # "within X miles" they meant it, so entities without a recorded
+    # distance are excluded (rather than passing through silently and
+    # making the filter look broken). To populate distance on legacy
+    # rows in one shot, hit POST /api/admin/backfill-ocean-distance.
     if max_distance_miles is not None:
         dist_col = _jsonb_float("distance_to_ocean_miles")
-        query = query.filter(or_(dist_col.is_(None), dist_col <= max_distance_miles))
+        query = query.filter(
+            dist_col.isnot(None),
+            dist_col <= max_distance_miles,
+        )
 
     # Construction class filter (SQL)
     # Null-tolerant: entities without a DOR construction class (very common
@@ -446,7 +463,11 @@ def bulk_stage_change(req: BulkStageRequest, db: Session = Depends(get_db)):
         if req.filter_stage:
             query = query.filter(Entity.pipeline_stage == req.filter_stage)
         if req.filter_county:
-            query = query.filter(Entity.county.ilike(f"%{req.filter_county}%"))
+            counties_list = [c.strip() for c in req.filter_county.split(",") if c.strip()]
+            if len(counties_list) == 1:
+                query = query.filter(Entity.county.ilike(f"%{counties_list[0]}%"))
+            elif counties_list:
+                query = query.filter(Entity.county.in_(counties_list))
         if req.filter_min_value is not None:
             query = query.filter(_jsonb_int("dor_market_value") >= req.filter_min_value)
         if req.filter_max_value is not None:
@@ -456,7 +477,11 @@ def bulk_stage_change(req: BulkStageRequest, db: Session = Depends(get_db)):
         if req.filter_min_units is not None:
             query = query.filter(_jsonb_int("dor_num_units") >= req.filter_min_units)
         if req.filter_use_code:
-            query = query.filter(Entity.characteristics["dor_use_code"].astext == req.filter_use_code)
+            codes_list = [c.strip() for c in req.filter_use_code.split(",") if c.strip()]
+            if len(codes_list) == 1:
+                query = query.filter(Entity.characteristics["dor_use_code"].astext == codes_list[0])
+            elif codes_list:
+                query = query.filter(Entity.characteristics["dor_use_code"].astext.in_(codes_list))
 
     count = 0
     for entity in query.all():
