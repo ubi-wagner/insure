@@ -375,6 +375,122 @@ function DataSection({ title, children }: { title: string; children?: React.Reac
   );
 }
 
+/* ----- Sunbiz lookup by address ----------------------------------
+ * The bulk Sunbiz extract is reverse-indexed on canonical street key
+ * server-side, so any property in our DB can ask "which Florida
+ * corporations are registered at this address?" — typically the condo
+ * association plus any LLCs holding individual units. Useful when the
+ * DOR-owner-name match missed (owner is a trustee, not the assn).
+ */
+
+interface SunbizAddressMatch {
+  corp_name: string | null;
+  document_number: string | null;
+  status: string | null;
+  filing_type: string | null;
+  filing_date: string | null;
+  principal_address: string | null;
+  mailing_address: string | null;
+  sunbiz_url: string | null;
+  sunbiz_search_url: string | null;
+}
+
+function SunbizByAddressPanel({ address }: { address: string }) {
+  const [open, setOpen] = useState(false);
+  const [data, setData] = useState<{ match_count: number; matches: SunbizAddressMatch[] } | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open || data || loading) return;
+    setLoading(true);
+    fetch(`/api/proxy/sunbiz/by-address?address=${encodeURIComponent(address)}`)
+      .then(async (r) => {
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(j?.detail ?? `HTTP ${r.status}`);
+        return j as { match_count: number; matches: SunbizAddressMatch[] };
+      })
+      .then(setData)
+      .catch((e) => setError(String(e)))
+      .finally(() => setLoading(false));
+  }, [open, data, loading, address]);
+
+  return (
+    <details
+      className="mt-1"
+      open={open}
+      onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)}
+    >
+      <summary className="cursor-pointer text-[11px] text-purple-300 hover:text-purple-200 select-none py-0.5">
+        {open ? "▼" : "▶"} Sunbiz entities at this address
+        {data ? ` (${data.match_count})` : ""}
+      </summary>
+      {open && (
+        <div className="mt-1 ml-3 max-h-72 overflow-y-auto">
+          {loading && <div className="text-[10px] text-gray-500">Loading…</div>}
+          {error && <div className="text-[10px] text-red-400">{error}</div>}
+          {data && data.matches.length === 0 && (
+            <div className="text-[10px] text-gray-500">
+              No Sunbiz records found at this canonical address.
+            </div>
+          )}
+          {data && data.matches.length > 0 && (
+            <ul className="space-y-1">
+              {data.matches.map((m, i) => (
+                <li
+                  key={`${m.document_number ?? i}-${i}`}
+                  className="text-[11px] border-l-2 border-purple-900 pl-2 py-0.5"
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="text-gray-200 font-medium truncate flex-1" title={m.corp_name ?? ""}>
+                      {m.corp_name ?? "—"}
+                    </span>
+                    {m.status && (
+                      <span
+                        className={`text-[9px] px-1 py-px rounded shrink-0 ${
+                          m.status.toUpperCase().startsWith("A")
+                            ? "bg-green-900/60 text-green-300"
+                            : "bg-gray-800 text-gray-500"
+                        }`}
+                      >
+                        {m.status}
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2 text-[9px] text-gray-500 font-mono">
+                    {m.document_number && <span>#{m.document_number}</span>}
+                    {m.filing_date && <span>· {m.filing_date}</span>}
+                    {m.sunbiz_url && (
+                      <a
+                        href={m.sunbiz_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="ml-auto text-blue-400 hover:text-blue-300"
+                      >
+                        detail ↗
+                      </a>
+                    )}
+                    {m.sunbiz_search_url && !m.sunbiz_url && (
+                      <a
+                        href={m.sunbiz_search_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="ml-auto text-blue-400 hover:text-blue-300"
+                      >
+                        search ↗
+                      </a>
+                    )}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+    </details>
+  );
+}
+
 /* ----- Linked-parcels panel for VETTED masters ------------------- */
 
 interface SiblingRow {
@@ -898,6 +1014,9 @@ export default function EntityDetailModal({
                 value={(chars.sunbiz_detail_url || chars.sunbiz_search_url) ? "View on Sunbiz" : null}
                 href={String(chars.sunbiz_detail_url || chars.sunbiz_search_url || "")}
               />
+              {lead.address && (
+                <SunbizByAddressPanel address={lead.address} />
+              )}
             </DataSection>
 
             {/* Citizens Insurance */}

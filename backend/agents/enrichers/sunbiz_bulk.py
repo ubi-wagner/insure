@@ -42,6 +42,12 @@ CACHE_TTL = 3600 * 6
 
 # In-memory cache
 _cache: dict[str, list[dict]] | None = None
+# Secondary index — canonical street key (utils.address.canon_key) →
+# list of matching Sunbiz records. Built lazily alongside _cache so the
+# address-lookup endpoint (and the future address-fallback path inside
+# enrich_sunbiz_bulk) can find "what entities are registered at this
+# building" in O(1).
+_address_cache: dict[str, list[dict]] | None = None
 _cache_time: float = 0
 
 
@@ -257,15 +263,87 @@ def _load_csv() -> dict[str, list[dict]]:
 
 def _get_cache() -> dict[str, list[dict]]:
     """Get the cached Sunbiz data, reloading if stale."""
-    global _cache, _cache_time
+    global _cache, _address_cache, _cache_time
     now = datetime.now(timezone.utc).timestamp()
 
     if _cache is not None and (now - _cache_time) < CACHE_TTL:
         return _cache
 
     _cache = _load_csv()
+    _address_cache = _build_address_index(_cache)
     _cache_time = now
     return _cache
+
+
+def _get_address_cache() -> dict[str, list[dict]]:
+    """Address-keyed Sunbiz index. Triggers full cache rebuild if cold."""
+    global _address_cache
+    if _address_cache is None:
+        _get_cache()  # populates both
+    return _address_cache or {}
+
+
+def _build_address_index(by_name: dict[str, list[dict]]) -> dict[str, list[dict]]:
+    """Re-index the Sunbiz records by canonical street key.
+
+    Every record's principal_address + mailing_address are canonicalized
+    via utils.address.canon_key (same algorithm the seeder / matcher
+    use) so a property's street_canon matches the same string here.
+    Multiple corps at the same building (typical for condo associations,
+    LLCs holding individual units, etc.) all bucket under the same key.
+    """
+    from utils.address import canon_key
+
+    out: dict[str, list[dict]] = {}
+    seen_ids: dict[str, set[str]] = {}
+    total = 0
+    for records in by_name.values():
+        for rec in records:
+            doc_num = (rec.get("document_number") or "").strip()
+            for field in ("principal_address", "mailing_address"):
+                addr = (rec.get(field) or "").strip()
+                if not addr:
+                    continue
+                key = canon_key(addr)
+                if not key:
+                    continue
+                # De-duplicate: same record under both principal + mailing
+                # at the same canon shouldn't appear twice.
+                bucket_seen = seen_ids.setdefault(key, set())
+                if doc_num and doc_num in bucket_seen:
+                    continue
+                if doc_num:
+                    bucket_seen.add(doc_num)
+                out.setdefault(key, []).append(rec)
+                total += 1
+    logger.info(
+        f"Sunbiz address index built: {total:,} records under "
+        f"{len(out):,} unique canonical addresses"
+    )
+    return out
+
+
+def lookup_by_address(addr: str) -> list[dict]:
+    """Find Sunbiz entities registered at the given street address.
+
+    Returns the raw record dicts (corp_name, document_number, status,
+    principal/mailing addresses, officers) sorted with active filings
+    first. Empty list if no canon match. Designed for the on-demand UI
+    lookup — answers "which entity name should I search Sunbiz for at
+    this property?" without scraping the portal.
+    """
+    from utils.address import canon_key
+
+    key = canon_key(addr)
+    if not key:
+        return []
+    matches = list(_get_address_cache().get(key, []))
+    # Active filings first, then by corp_name for stable order.
+    matches.sort(key=lambda r: (
+        0 if (r.get("status") or "").upper().startswith("A") else 1,
+        (r.get("corp_name") or "").upper(),
+    ))
+    return matches
 
 
 # ─── Matching ───

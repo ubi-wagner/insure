@@ -2099,3 +2099,54 @@ def rename_file(path: str = Query(...), new_name: str = Query(...)):
     new_path = os.path.join(parent, new_name)
     os.rename(safe_path, new_path)
     return {"success": True, "path": os.path.relpath(new_path, FILE_STORE_ROOT)}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Sunbiz address lookup
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@router.get("/api/sunbiz/by-address")
+def sunbiz_by_address(
+    address: str = Query(..., min_length=4, description="Full street address"),
+    limit: int = Query(20, ge=1, le=100),
+):
+    """Find Florida corporate entities registered at a given street
+    address via the Sunbiz bulk extract address index.
+
+    Sunbiz's public portal (search.sunbiz.org) only offers ByName /
+    ByOfficer / ByFEI / ByDocumentNumber — no ByAddress search. We
+    side-step that by pre-indexing the quarterly bulk extract on the
+    canonical street key. Returns the corp_name for each match so the
+    user can copy it into the portal's ByName search, plus a direct
+    detail-page URL when available.
+    """
+    from agents.enrichers.sunbiz_bulk import lookup_by_address, _build_detail_url
+
+    matches = lookup_by_address(address)[:limit]
+    return {
+        "address": address,
+        "match_count": len(matches),
+        "matches": [
+            {
+                "corp_name": m.get("corp_name"),
+                "document_number": m.get("document_number"),
+                "status": m.get("status"),
+                "filing_type": m.get("filing_type"),
+                "filing_date": m.get("filing_date"),
+                "principal_address": m.get("principal_address"),
+                "mailing_address": m.get("mailing_address"),
+                "sunbiz_url": (
+                    _build_detail_url(m.get("document_number"))
+                    if m.get("document_number") else None
+                ),
+                "sunbiz_search_url": (
+                    "https://search.sunbiz.org/Inquiry/CorporationSearch/SearchResults?"
+                    "inquirytype=EntityName&searchNameOrder=" +
+                    (m.get("corp_name") or "").upper().replace(" ", "%20")
+                    if m.get("corp_name") else None
+                ),
+            }
+            for m in matches
+        ],
+    }
