@@ -572,18 +572,30 @@ def _build_detail_url(doc_number: str) -> str:
 
 
 def build_search_url(corp_name: str) -> str:
-    """Construct a Sunbiz ByName SearchResults URL for a corp name.
+    """Construct the live Sunbiz ByName SearchResults URL for a corp.
 
-    Same query-string shape as ``_build_detail_url`` and the URLs the
-    portal itself emits when you submit https://search.sunbiz.org/
-    Inquiry/CorporationSearch/ByName. ``urllib.parse.quote`` handles
-    apostrophes, ampersands, parens, and the other characters that
-    show up in real Florida corp names ("O'CONNOR & ASSOC LLC").
+    Real format (observed in the portal's address bar — not the
+    legacy ?inquirytype query string):
+
+        https://search.sunbiz.org/Inquiry/CorporationSearch/
+            SearchResults/EntityName/<lowercase-original-as-path>/Page1
+            ?searchNameOrder=<UPPERCASE-ALNUM-ONLY>
+
+    The path segment is the user's original casing+spacing URL-encoded
+    (so spaces become %20); the searchNameOrder query is the
+    alphabetical sort key — Sunbiz's index removes spaces and
+    non-alphanumerics and uppercases everything. Example:
+
+        "Echo Brickell Assoc"
+            → /SearchResults/EntityName/echo%20brickell%20assoc/Page1
+              ?searchNameOrder=ECHOBRICKELLASSOC
     """
     from urllib.parse import quote
+    name_path = quote(corp_name.lower(), safe="")
+    name_order = re.sub(r"[^A-Z0-9]", "", corp_name.upper())
     return (
         "https://search.sunbiz.org/Inquiry/CorporationSearch/SearchResults"
-        f"?inquirytype=EntityName&searchNameOrder={quote(corp_name.upper(), safe='')}"
+        f"/EntityName/{name_path}/Page1?searchNameOrder={name_order}"
     )
 
 
