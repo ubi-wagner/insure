@@ -852,15 +852,15 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
                     </button>
                   )}
 
-                  {/* Archive */}
-                  {canEdit && activeStage !== "CUSTOMER" && activeStage !== "ARCHIVED" && (
-                    <button onClick={() => handleAction(lead.id, "ARCHIVED")}
-                      disabled={actionId === lead.id}
-                      className="bg-gray-800 hover:bg-gray-700 disabled:opacity-50 text-gray-600 text-xs py-1.5 px-2 rounded"
-                      title="Archive">&times;</button>
-                  )}
+                  {/* Per-card archive removed — too easy to click by
+                      accident. Archive still available via bulk
+                      action (select cards → "Archive (N)") or via the
+                      Stage dropdown inside the entity detail modal. */}
 
-                  {/* Restore from archive */}
+                  {/* Restore from archive — only shown on the ARCHIVED
+                      tab. Moves the entity back to TARGET so the
+                      qualifier/aggregator can re-evaluate it from
+                      scratch. */}
                   {canEdit && activeStage === "ARCHIVED" && (
                     <button onClick={() => handleAction(lead.id, "TARGET")}
                       disabled={actionId === lead.id}
