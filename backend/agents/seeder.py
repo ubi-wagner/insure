@@ -98,6 +98,18 @@ DOR_COUNTIES = {
 # the TARGET pool.
 SKIP_USE_CODES: set[str] = set()
 
+# Parcel-ID suffixes that identify the common-elements / association
+# master row inside a condo's NAL filing. PCPAO and most FL counties
+# use "0001" (e.g. 09-31-17-95093-000-0001 is the master, anything
+# else under that 09-31-17-95093-000- prefix is a unit). Some older
+# filings use "0000"/"9999"/"99999". Both seeder and aggregator
+# import this so the heuristic stays in one place.
+MASTER_PARCEL_SUFFIXES: tuple[str, ...] = (
+    "0001",
+    "0000",
+    "9999", "99990", "99999",
+)
+
 # Target DOR use codes for insurance leads
 TARGET_USE_CODES = {
     "003": "Multi-Family (small)",
@@ -426,9 +438,7 @@ def seed_county(county_no: str, db: Session, min_value: int | None = None) -> di
                         "CONDO", "CONDOMINIUM", "ASSN", "ASSOCIATION",
                         "ASSOC", "HOMEOWNERS", "OWNERS ASSOC",
                     ])
-                    or (parcel_id_early and parcel_id_early.endswith(
-                        ("9999", "99990", "99999", "0000")
-                    ))
+                    or (parcel_id_early and parcel_id_early.endswith(MASTER_PARCEL_SUFFIXES))
                 )
                 # A row is a per-unit condo parcel when it's DOR_UC=004,
                 # not a master, and has at most one residential unit. The

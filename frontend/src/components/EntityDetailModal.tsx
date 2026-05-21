@@ -39,6 +39,10 @@ interface EntityDetailModalProps {
   totalOpen?: number;
   onActivate?: () => void;
   onFlyTo?: (lat: number, lng: number) => void;
+  /** Open another entity in the same modal stack (instead of new browser tab).
+   *  Used by the linked-parcels list to drill into a sibling without losing
+   *  the master modal — closing the sibling returns to it. */
+  onOpenEntity?: (id: number) => void;
 }
 
 /* ------------------------------------------------------------------ */
@@ -371,7 +375,131 @@ function DataSection({ title, children }: { title: string; children?: React.Reac
   );
 }
 
+/* ----- Sunbiz lookup by address ----------------------------------
+ * The bulk Sunbiz extract is reverse-indexed on canonical street key
+ * server-side, so any property in our DB can ask "which Florida
+ * corporations are registered at this address?" — typically the condo
+ * association plus any LLCs holding individual units. Useful when the
+ * DOR-owner-name match missed (owner is a trustee, not the assn).
+ */
+
+interface SunbizAddressMatch {
+  corp_name: string | null;
+  document_number: string | null;
+  status: string | null;
+  filing_type: string | null;
+  filing_date: string | null;
+  principal_address: string | null;
+  mailing_address: string | null;
+  sunbiz_url: string | null;
+  sunbiz_search_url: string | null;
+}
+
+function SunbizByAddressPanel({ address }: { address: string }) {
+  const [open, setOpen] = useState(false);
+  const [data, setData] = useState<{ match_count: number; matches: SunbizAddressMatch[] } | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open || data || loading) return;
+    setLoading(true);
+    fetch(`/api/proxy/sunbiz/by-address?address=${encodeURIComponent(address)}`)
+      .then(async (r) => {
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(j?.detail ?? `HTTP ${r.status}`);
+        return j as { match_count: number; matches: SunbizAddressMatch[] };
+      })
+      .then(setData)
+      .catch((e) => setError(String(e)))
+      .finally(() => setLoading(false));
+  }, [open, data, loading, address]);
+
+  return (
+    <details
+      className="mt-1"
+      open={open}
+      onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)}
+    >
+      <summary className="cursor-pointer text-[11px] text-purple-300 hover:text-purple-200 select-none py-0.5">
+        {open ? "▼" : "▶"} Sunbiz entities at this address
+        {data ? ` (${data.match_count})` : ""}
+      </summary>
+      {open && (
+        <div className="mt-1 ml-3 max-h-72 overflow-y-auto">
+          {loading && <div className="text-[10px] text-gray-500">Loading…</div>}
+          {error && <div className="text-[10px] text-red-400">{error}</div>}
+          {data && data.matches.length === 0 && (
+            <div className="text-[10px] text-gray-500">
+              No Sunbiz records found at this canonical address.
+            </div>
+          )}
+          {data && data.matches.length > 0 && (
+            <ul className="space-y-1">
+              {data.matches.map((m, i) => (
+                <li
+                  key={`${m.document_number ?? i}-${i}`}
+                  className="text-[11px] border-l-2 border-purple-900 pl-2 py-0.5"
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="text-gray-200 font-medium truncate flex-1" title={m.corp_name ?? ""}>
+                      {m.corp_name ?? "—"}
+                    </span>
+                    {m.status && (
+                      <span
+                        className={`text-[9px] px-1 py-px rounded shrink-0 ${
+                          m.status.toUpperCase().startsWith("A")
+                            ? "bg-green-900/60 text-green-300"
+                            : "bg-gray-800 text-gray-500"
+                        }`}
+                      >
+                        {m.status}
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2 text-[9px] text-gray-500 font-mono">
+                    {m.document_number && <span>#{m.document_number}</span>}
+                    {m.filing_date && <span>· {m.filing_date}</span>}
+                    {m.sunbiz_url && (
+                      <a
+                        href={m.sunbiz_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="ml-auto text-blue-400 hover:text-blue-300"
+                      >
+                        detail ↗
+                      </a>
+                    )}
+                    {m.sunbiz_search_url && !m.sunbiz_url && (
+                      <a
+                        href={m.sunbiz_search_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="ml-auto text-blue-400 hover:text-blue-300"
+                      >
+                        search ↗
+                      </a>
+                    )}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+    </details>
+  );
+}
+
 /* ----- Linked-parcels panel for VETTED masters ------------------- */
+
+interface BoardMatch {
+  title: string | null;
+  role: string | null;
+  corp_name: string | null;
+  matched_name: string | null;
+  pa_owner_search_url: string | null;
+}
 
 interface SiblingRow {
   id: number;
@@ -385,6 +513,20 @@ interface SiblingRow {
   dor_market_value: number | null;
   is_condo_unit_parcel: boolean;
   is_condo_master: boolean;
+  board_match: BoardMatch | null;
+  pa_owner_search_url: string | null;
+  pa_parcel_url: string | null;
+  dor_parcel_id: string | null;
+}
+
+interface MasterParcel {
+  id: number;
+  name: string | null;
+  owner_name: string | null;
+  address: string | null;
+  parcel_id: string | null;
+  pa_parcel_url: string | null;
+  is_aggregation_master: boolean;
 }
 
 interface SiblingsResponse {
@@ -392,6 +534,9 @@ interface SiblingsResponse {
   master_name: string;
   is_aggregation_master: boolean;
   sibling_count: number;
+  board_member_count?: number;
+  board_associations?: string[];
+  master_parcel?: MasterParcel | null;
   siblings: SiblingRow[];
 }
 
@@ -416,9 +561,11 @@ function siblingUnitLabel(addr: string | null, id: number): string {
 function ModalSiblingsPanel({
   masterId,
   siblingCount,
+  onOpenEntity,
 }: {
   masterId: number;
   siblingCount: number;
+  onOpenEntity?: (id: number) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [data, setData] = useState<SiblingsResponse | null>(null);
@@ -451,7 +598,7 @@ function ModalSiblingsPanel({
       open={open}
       onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)}
     >
-      <summary className="cursor-pointer flex items-center gap-2 text-xs select-none">
+      <summary className="cursor-pointer flex items-center gap-2 text-xs select-none flex-wrap">
         <span className="text-teal-300 font-semibold">VETTED master</span>
         <span className="text-gray-400">
           {siblingCount} linked unit parcel{siblingCount === 1 ? "" : "s"}
@@ -461,6 +608,17 @@ function ModalSiblingsPanel({
             sum {siblingsMoney(tivSum)}
           </span>
         )}
+        {data && (data.board_member_count ?? 0) > 0 && (
+          <span
+            className="text-[10px] px-1.5 py-0.5 rounded bg-amber-900/60 text-amber-200 font-mono"
+            title={
+              (data.board_associations ?? []).join(" · ") ||
+              "Unit owners matched to association officers / registered agent"
+            }
+          >
+            ★ {data.board_member_count} on board
+          </span>
+        )}
         <span className="text-gray-600 text-[10px] ml-auto">
           {open ? "▼" : "▶"}
         </span>
@@ -468,6 +626,30 @@ function ModalSiblingsPanel({
       <div className="mt-2 max-h-72 overflow-y-auto border-t border-teal-900/60 pt-2">
         {loading && <div className="text-[11px] text-gray-500">Loading…</div>}
         {error && <div className="text-[11px] text-red-400">{error}</div>}
+        {data?.master_parcel && (
+          <div className="mb-2 px-2 py-1 bg-teal-950/40 border border-teal-900 rounded text-[11px]">
+            <div className="text-teal-300 font-semibold text-[10px] uppercase tracking-wider">
+              Master parcel (0001)
+            </div>
+            <div className="flex items-center gap-2 flex-wrap mt-0.5">
+              <span className="text-gray-200">{data.master_parcel.name ?? "—"}</span>
+              <span className="text-gray-500 font-mono text-[10px]">
+                {data.master_parcel.parcel_id ?? ""}
+              </span>
+              {data.master_parcel.pa_parcel_url && (
+                <a
+                  href={data.master_parcel.pa_parcel_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-blue-400 hover:text-blue-300 text-[10px] ml-auto"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  open on county PA ↗
+                </a>
+              )}
+            </div>
+          </div>
+        )}
         {data && data.siblings.length === 0 && (
           <div className="text-[11px] text-gray-500">No linked parcels recorded.</div>
         )}
@@ -484,23 +666,76 @@ function ModalSiblingsPanel({
             </thead>
             <tbody>
               {data.siblings.map((s) => (
-                <tr key={s.id} className="border-t border-teal-900/30 hover:bg-gray-900/60">
-                  <td className="px-2 py-0.5">
-                    <a
-                      href={`/lead/${s.id}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-blue-400 hover:text-blue-300"
-                      title={s.address ?? `#${s.id}`}
-                    >
-                      {siblingUnitLabel(s.address, s.id)}
-                    </a>
+                <tr
+                  key={s.id}
+                  className={`border-t border-teal-900/30 hover:bg-gray-900/60 ${
+                    s.board_match ? "bg-amber-950/30" : ""
+                  }`}
+                >
+                  <td className="px-2 py-0.5 whitespace-nowrap">
+                    {onOpenEntity ? (
+                      <button
+                        onClick={() => onOpenEntity(s.id)}
+                        className="text-blue-400 hover:text-blue-300 underline"
+                        title={s.address ?? `#${s.id}`}
+                      >
+                        {siblingUnitLabel(s.address, s.id)}
+                      </button>
+                    ) : (
+                      <a
+                        href={`/lead/${s.id}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-blue-400 hover:text-blue-300"
+                        title={s.address ?? `#${s.id}`}
+                      >
+                        {siblingUnitLabel(s.address, s.id)}
+                      </a>
+                    )}
+                    {s.pa_parcel_url && (
+                      <a
+                        href={s.pa_parcel_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-blue-400 hover:text-blue-300 text-[9px] ml-1"
+                        title={`Open parcel ${s.dor_parcel_id ?? ""} on county PA`}
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        PA ↗
+                      </a>
+                    )}
                   </td>
                   <td
-                    className="px-2 py-0.5 text-gray-300 truncate max-w-[180px]"
-                    title={s.owner_name ?? ""}
+                    className="px-2 py-0.5 text-gray-300 max-w-[260px]"
+                    title={
+                      s.board_match
+                        ? `${s.owner_name ?? ""}\nBoard match: ${s.board_match.matched_name ?? ""}\n${s.board_match.corp_name ?? ""}`
+                        : (s.owner_name ?? "")
+                    }
                   >
-                    {s.owner_name ?? "—"}
+                    <div className="flex items-center gap-1 min-w-0">
+                      {s.board_match && (
+                        <span
+                          className="text-amber-300 shrink-0"
+                          title={`${s.board_match.title ?? "Officer"} of ${s.board_match.corp_name ?? "association"}`}
+                        >
+                          ★ {s.board_match.title}
+                        </span>
+                      )}
+                      <span className="truncate">{s.owner_name ?? "—"}</span>
+                      {s.board_match?.pa_owner_search_url && s.owner_name && (
+                        <a
+                          href={s.board_match.pa_owner_search_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-amber-300 hover:text-amber-200 text-[9px] shrink-0 ml-1"
+                          title="Find every property in the county owned by this board member"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          other ↗
+                        </a>
+                      )}
+                    </div>
                   </td>
                   <td className="px-2 py-0.5 text-right text-gray-400">
                     {s.living_sqft ? s.living_sqft.toLocaleString() : "—"}
@@ -533,6 +768,7 @@ export default function EntityDetailModal({
   totalOpen = 1,
   onActivate,
   onFlyTo,
+  onOpenEntity,
 }: EntityDetailModalProps) {
   const { displayName, role, canEdit } = useAuth();
   const [lead, setLead] = useState<LeadDetail | null>(null);
@@ -767,11 +1003,22 @@ export default function EntityDetailModal({
                   <ModalSiblingsPanel
                     masterId={lead.id}
                     siblingCount={lead.children.length}
+                    onOpenEntity={onOpenEntity}
                   />
                 )}
                 {lead.parent_id != null && (
                   <p className="text-xs text-gray-400">
-                    Linked unit parcel under master <span className="text-blue-400 font-mono">#{lead.parent_id}</span>
+                    Linked unit parcel under master{" "}
+                    {onOpenEntity ? (
+                      <button
+                        onClick={() => onOpenEntity(lead.parent_id!)}
+                        className="text-blue-400 hover:text-blue-300 font-mono underline"
+                      >
+                        #{lead.parent_id}
+                      </button>
+                    ) : (
+                      <span className="text-blue-400 font-mono">#{lead.parent_id}</span>
+                    )}
                   </p>
                 )}
               </div>
@@ -870,6 +1117,9 @@ export default function EntityDetailModal({
                 value={(chars.sunbiz_detail_url || chars.sunbiz_search_url) ? "View on Sunbiz" : null}
                 href={String(chars.sunbiz_detail_url || chars.sunbiz_search_url || "")}
               />
+              {lead.address && (
+                <SunbizByAddressPanel address={lead.address} />
+              )}
             </DataSection>
 
             {/* Citizens Insurance */}

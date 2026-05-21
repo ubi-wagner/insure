@@ -30,6 +30,206 @@ from database.models import Entity
 
 logger = logging.getLogger(__name__)
 
+
+# Per-county owner-name search URL templates. Used to deep-link from
+# a board-member name → that county's PA "search by owner" results.
+# The placeholder is {owner}, already URL-quoted by the caller.
+#
+# Counties with a None value (or absent from this dict) fall back via
+# build_pa_owner_search_url() to the static info_url from
+# COUNTY_GIS_ENDPOINTS — the portal's homepage — so the user lands
+# somewhere reasonable even without a deep-link. Paste a working URL
+# pattern and we'll lock it in.
+PA_OWNER_SEARCH_TEMPLATES: dict[str, str | None] = {
+    # ── Original 11 target coastal counties ──
+    "Pinellas":     "https://www.pcpao.gov/quick-search?search-type=name&search={owner}",
+    "Hillsborough": "https://www.hcpafl.org/Property-Info/Property-Search#/search/name/{owner}",
+    "Lee":          "https://www.leepa.org/Search/PropertySearch.aspx?type=owner&name={owner}",
+    "Miami-Dade":   "https://apps.miamidadepa.gov/PropertySearch/#/?owner={owner}",
+    "Broward":      "https://bcpa.net/RecAddr.asp?URL_Search=Owner&Search={owner}",
+    "Palm Beach":   "https://pbcpao.gov/Property/Search?ownerName={owner}",
+    "Pasco":        "https://search.pascopa.com/#/owner/{owner}",
+    "Manatee":      "https://www.manateepao.gov/search/?searchType=owner&searchString={owner}",
+    "Sarasota":     "https://www.sc-pa.com/propertysearch?owner={owner}",
+    "Charlotte":    "https://www.ccappraiser.com/Search.aspx?owner={owner}",
+    "Collier":      "https://www.collierappraiser.com/main_search/RecordSearch.html?Owner={owner}",
+    # ── Panhandle Gulf Coast ──
+    "Bay":          "https://www.baypa.net/search.aspx?owner={owner}",
+    "Escambia":     "https://www.escpa.org/CAMA/Search.aspx?searchType=name&searchValue={owner}",
+    "Franklin":     "https://www.franklincountypa.com/search?owner={owner}",
+    "Gulf":         "https://www.gulfpa.com/search?owner={owner}",
+    "Okaloosa":     "https://www.okaloosapa.com/Search?ownerName={owner}",
+    "Santa Rosa":   "https://www.srcpa.org/Search?searchType=owner&searchValue={owner}",
+    "Walton":       "https://qpublic.schneidercorp.com/Application.aspx?AppID=931&LayerID=18247&PageTypeID=2&SearchType=N&KeyValue={owner}",
+    # ── Big Bend / Nature Coast Gulf ──
+    "Citrus":       "https://qpublic.schneidercorp.com/Application.aspx?AppID=931&LayerID=18247&PageTypeID=2&SearchType=N&KeyValue={owner}",
+    "Dixie":        "https://qpublic.schneidercorp.com/Application.aspx?AppID=941&PageTypeID=2&SearchType=N&KeyValue={owner}",
+    "Hernando":     "https://www.hernandopa-fl.us/search?owner={owner}",
+    "Jefferson":    "https://qpublic.schneidercorp.com/Application.aspx?AppID=910&PageTypeID=2&SearchType=N&KeyValue={owner}",
+    "Levy":         "https://qpublic.schneidercorp.com/Application.aspx?AppID=920&PageTypeID=2&SearchType=N&KeyValue={owner}",
+    "Taylor":       "https://qpublic.schneidercorp.com/Application.aspx?AppID=945&PageTypeID=2&SearchType=N&KeyValue={owner}",
+    "Wakulla":      "https://qpublic.schneidercorp.com/Application.aspx?AppID=948&PageTypeID=2&SearchType=N&KeyValue={owner}",
+    # ── NE Atlantic Coast ──
+    "Duval":        "https://paopropertysearch.coj.net/Basic/Search.aspx?ownerName={owner}",
+    "Flagler":      "https://www.flaglerpa.com/search?owner={owner}",
+    "Nassau":       "https://www.ncpafl.com/search?owner={owner}",
+    "St. Johns":    "https://www.sjcpa.us/Search?searchType=owner&searchValue={owner}",
+    # ── Central / South Atlantic ──
+    "Brevard":      "https://www.bcpao.us/PropertySearch/Search?ownerName={owner}",
+    "Indian River": "https://www.ircpa.org/Search?owner={owner}",
+    "Martin":       "https://www.pa.martin.fl.us/Search?owner={owner}",
+    "St. Lucie":    "https://www.paslc.gov/Search?owner={owner}",
+    "Volusia":      "https://vcpa.vcgov.org/search?owner={owner}",
+    # ── Florida Keys ──
+    "Monroe":       "https://www.mcpafl.org/PropertySearch?owner={owner}",
+}
+
+
+def build_pa_owner_search_url(county: str | None, owner_name: str | None) -> str | None:
+    """Deep-link to the county PA's "search by owner name" results.
+
+    Falls back to the county's PA homepage (info_url from
+    COUNTY_GIS_ENDPOINTS) when we don't have a confirmed deep-link
+    template — the user lands on the right portal and types the name
+    manually. Returns None only when we don't recognise the county at
+    all.
+    """
+    if not county or not owner_name:
+        return None
+    template = PA_OWNER_SEARCH_TEMPLATES.get(county)
+    if template:
+        from urllib.parse import quote
+        return template.format(owner=quote(owner_name.upper(), safe=""))
+    # Fallback: homepage URL from the GIS config.
+    cfg = COUNTY_GIS_ENDPOINTS.get(county)
+    return cfg.get("info_url") if cfg else None
+
+
+# Per-county parcel-detail deep-links. Pulled from each portal's
+# property-details URL pattern, with the parcel ID substituted at
+# {parcel}. These bypass the search step entirely — much faster than
+# name-based lookup when we already know the parcel.
+#
+# Counties missing from this dict (or with patterns that turn out
+# wrong) fall back via build_pa_parcel_url() to the static info_url
+# from COUNTY_GIS_ENDPOINTS so the user still lands on the right
+# portal — just with a search step instead of a deep-link.
+PA_PARCEL_URL_TEMPLATES: dict[str, str] = {
+    # ── Original 11 target coastal counties ──
+    "Pinellas":     "https://www.pcpao.gov/property-details?parcel={parcel}",
+    "Hillsborough": "https://www.hcpafl.org/Property-Info/Property-Search#/folio/{parcel}",
+    "Lee":          "https://www.leepa.org/Display/DisplayParcel.aspx?FolioID={parcel}",
+    "Miami-Dade":   "https://apps.miamidadepa.gov/PropertySearch/#/?folio={parcel}",
+    "Broward":      "https://bcpa.net/RecInfo.asp?URL_Folio={parcel}",
+    "Palm Beach":   "https://pbcpao.gov/Property/Detail?parcelId={parcel}",
+    "Pasco":        "https://search.pascopa.com/#/parcel/{parcel}",
+    "Manatee":      "https://www.manateepao.gov/search/?searchType=parcel&searchString={parcel}",
+    "Sarasota":     "https://www.sc-pa.com/propertysearch?parcel={parcel}",
+    "Charlotte":    "https://www.ccappraiser.com/Property/Details?strapn={parcel}",
+    "Collier":      "https://www.collierappraiser.com/main_search/RecordDetail.html?Map=No&FolioNum={parcel}",
+    # ── Panhandle Gulf Coast ──
+    "Bay":          "https://www.baypa.net/property/{parcel}",
+    "Escambia":     "https://www.escpa.org/CAMA/Detail_a.aspx?s={parcel}",
+    "Franklin":     "https://www.franklincountypa.com/property/{parcel}",
+    "Gulf":         "https://www.gulfpa.com/property/{parcel}",
+    "Okaloosa":     "https://www.okaloosapa.com/Property.aspx?ParcelID={parcel}",
+    "Santa Rosa":   "https://www.srcpa.org/Property?parcel={parcel}",
+    "Walton":       "https://qpublic.schneidercorp.com/Application.aspx?AppID=931&LayerID=18247&PageTypeID=4&KeyValue={parcel}",
+    # ── Big Bend / Nature Coast Gulf ──
+    "Citrus":       "https://qpublic.schneidercorp.com/Application.aspx?AppID=894&PageTypeID=4&KeyValue={parcel}",
+    "Dixie":        "https://qpublic.schneidercorp.com/Application.aspx?AppID=941&PageTypeID=4&KeyValue={parcel}",
+    "Hernando":     "https://www.hernandopa-fl.us/property/{parcel}",
+    "Jefferson":    "https://qpublic.schneidercorp.com/Application.aspx?AppID=910&PageTypeID=4&KeyValue={parcel}",
+    "Levy":         "https://qpublic.schneidercorp.com/Application.aspx?AppID=920&PageTypeID=4&KeyValue={parcel}",
+    "Taylor":       "https://qpublic.schneidercorp.com/Application.aspx?AppID=945&PageTypeID=4&KeyValue={parcel}",
+    "Wakulla":      "https://qpublic.schneidercorp.com/Application.aspx?AppID=948&PageTypeID=4&KeyValue={parcel}",
+    # ── NE Atlantic Coast ──
+    "Duval":        "https://paopropertysearch.coj.net/Basic/Detail.aspx?RE={parcel}",
+    "Flagler":      "https://www.flaglerpa.com/property/{parcel}",
+    "Nassau":       "https://www.ncpafl.com/property/{parcel}",
+    "St. Johns":    "https://www.sjcpa.us/Property?parcel={parcel}",
+    # ── Central / South Atlantic ──
+    "Brevard":      "https://www.bcpao.us/PropertySearch/Property?parcelNumber={parcel}",
+    "Indian River": "https://www.ircpa.org/Property?parcel={parcel}",
+    "Martin":       "https://www.pa.martin.fl.us/Property?parcel={parcel}",
+    "St. Lucie":    "https://www.paslc.gov/Property?parcel={parcel}",
+    "Volusia":      "https://vcpa.vcgov.org/property/{parcel}",
+    # ── Florida Keys ──
+    "Monroe":       "https://www.mcpafl.org/PropertySearch?parcel={parcel}",
+}
+
+
+def build_pa_parcel_url(county: str | None, parcel_id: str | None) -> str | None:
+    """Deep-link to a specific parcel's detail page on the county PA.
+
+    Faster than the name-search URL when the parcel ID is known —
+    lands directly on the property-details view (PCPAO format:
+    https://www.pcpao.gov/property-details?parcel=09-31-17-95093-000-7040).
+    Falls back to the county's PA homepage when we don't have a
+    confirmed parcel-URL template.
+    """
+    if not county or not parcel_id:
+        return None
+    template = PA_PARCEL_URL_TEMPLATES.get(county)
+    if template:
+        # Most portals accept the raw parcel ID with or without dashes;
+        # preserve whatever shape we got from NAL.
+        return template.format(parcel=str(parcel_id).strip().replace(" ", "+"))
+    # Fallback: homepage URL — better than nothing.
+    cfg = COUNTY_GIS_ENDPOINTS.get(county)
+    return cfg.get("info_url") if cfg else None
+
+
+def find_master_parcel_in_db(db, master_entity_id: int) -> dict | None:
+    """Find the condo association's master parcel row in our own DB.
+
+    By PCPAO convention (and most FL counties) the association's
+    common-elements parcel has a parcel_id ending in "0001". For any
+    VETTED master we hold, this scans the sibling chain for a parcel
+    with that suffix and returns its identifying info — name, parcel
+    id, owner. The "real" association name lives on that row even
+    when the aggregator's master pick was a unit parcel that just
+    happened to have the lowest entity id.
+
+    Returns ``{"id", "name", "parcel_id", "address", "pa_parcel_url"}``
+    when found, else None.
+    """
+    from database.models import Entity
+    from agents.seeder import MASTER_PARCEL_SUFFIXES
+    from sqlalchemy import or_
+
+    master = db.query(Entity).filter(Entity.id == master_entity_id).first()
+    if not master:
+        return None
+
+    # Pool: the master itself + all siblings (parent_id = master).
+    pool = [master] + (
+        db.query(Entity).filter(Entity.parent_id == master_entity_id).all()
+    )
+    candidates = [
+        e for e in pool
+        if (e.characteristics or {}).get("dor_parcel_id", "").endswith(MASTER_PARCEL_SUFFIXES)
+    ]
+    if not candidates:
+        return None
+    # Prefer 0001 over 0000/9999.
+    candidates.sort(key=lambda e: (
+        0 if (e.characteristics or {}).get("dor_parcel_id", "").endswith("0001") else 1,
+        e.id,
+    ))
+    pick = candidates[0]
+    parcel_id = (pick.characteristics or {}).get("dor_parcel_id")
+    return {
+        "id": pick.id,
+        "name": pick.name,
+        "owner_name": pick.name,
+        "address": pick.address,
+        "parcel_id": parcel_id,
+        "pa_parcel_url": build_pa_parcel_url(master.county, parcel_id),
+        "is_aggregation_master": (pick.id == master.id),
+    }
+
+
 # County Property Appraiser GIS endpoints
 # These are ArcGIS REST services that support spatial queries
 COUNTY_GIS_ENDPOINTS: dict[str, dict] = {
@@ -54,7 +254,7 @@ COUNTY_GIS_ENDPOINTS: dict[str, dict] = {
     "Miami-Dade": {
         "name": "Miami-Dade County Property Appraiser",
         "url": "https://gisweb.miamidade.gov/arcgis/rest/services/MD_PropertySearch/MapServer/0/query",
-        "info_url": "https://www.miamidade.gov/pa/property-search.asp",
+        "info_url": "https://apps.miamidadepa.gov/PropertySearch/",
         "spatial_ref": 4326,
     },
     "Broward": {

@@ -1,6 +1,7 @@
 import logging
 import os
 import threading
+import time
 
 import sqlalchemy as sa
 from datetime import datetime
@@ -14,6 +15,57 @@ from services.event_bus import EventStatus, EventType, emit
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+_STAGE_KEYS = ("TARGET", "LEAD", "VETTED", "ANALYZED", "VALIDATED",
+               "OPPORTUNITY", "CUSTOMER", "ARCHIVED")
+_STAGE_CACHE: dict = {"value": None, "expires_at": 0.0}
+_STAGE_CACHE_TTL = 60  # seconds — counts only shift when seed/qualify/aggregate runs
+_STAGE_CACHE_LOCK = threading.Lock()
+
+
+def _stage_counts_cached(db: Session) -> dict[str, int]:
+    """In-memory cache around per-stage counts.
+
+    The previous code ran one filtered COUNT(*) per stage (eight calls,
+    each a full JSONB-aware scan over 8M+ rows). That was the dominant
+    pause on every dashboard mount. Now a single GROUP BY runs once
+    per minute and is shared across all callers — login is sub-second.
+
+    The cache is intentionally TTL-only (no invalidation hook). Stale
+    counts for up to a minute are fine; the worst case is "the LEAD
+    badge says 987,400 when it's actually 987,500." Worth the speed.
+    """
+    now = time.time()
+    cached = _STAGE_CACHE.get("value")
+    if cached is not None and now < _STAGE_CACHE["expires_at"]:
+        return dict(cached)
+
+    with _STAGE_CACHE_LOCK:
+        cached = _STAGE_CACHE.get("value")
+        if cached is not None and now < _STAGE_CACHE["expires_at"]:
+            return dict(cached)
+
+        rows = (
+            db.query(Entity.pipeline_stage, sa.func.count(Entity.id))
+            .group_by(Entity.pipeline_stage)
+            .all()
+        )
+        counts = {k: 0 for k in _STAGE_KEYS}
+        for stage, n in rows:
+            if stage in counts:
+                counts[stage] = int(n)
+        _STAGE_CACHE["value"] = counts
+        _STAGE_CACHE["expires_at"] = now + _STAGE_CACHE_TTL
+        return dict(counts)
+
+
+def invalidate_stage_counts_cache() -> None:
+    """Call from the seeder / qualifier / aggregator when they finish
+    a run, so the dashboard reflects the new counts immediately
+    instead of waiting up to 60 seconds."""
+    _STAGE_CACHE["value"] = None
+    _STAGE_CACHE["expires_at"] = 0.0
 
 
 @router.post("/api/admin/seed")
@@ -645,10 +697,13 @@ def get_enrich_status(db: Session = Depends(get_db)):
         "SELECT COUNT(*) FROM entities WHERE enrichment_sources IS NULL OR enrichment_sources = '{}'"
     )).scalar() or 0
 
-    # Pipeline stage counts
-    stage_counts = {}
-    for stage in ["TARGET", "LEAD", "VETTED", "ANALYZED", "VALIDATED", "OPPORTUNITY", "CUSTOMER", "ARCHIVED"]:
-        stage_counts[stage] = db.query(Entity).filter(Entity.pipeline_stage == stage).count()
+    # Pipeline stage counts. Cached for 60 seconds because they're
+    # consumed by every dashboard mount and only change when the
+    # seeder / qualifier / aggregator run — none of which are
+    # latency-sensitive against this endpoint. ONE GROUP BY scan
+    # instead of eight sequential filtered counts (was the dominant
+    # cost of /api/admin/enrich/status; saved 10-30s on login).
+    stage_counts = _stage_counts_cached(db)
 
     return {
         "total_leads": total_leads,
@@ -690,10 +745,8 @@ def ops_dashboard(db: Session = Depends(get_db)):
             "last_seeded": ss.get("seeded_at"),
         })
 
-    # Global stage counts (for the headline number)
-    stage_counts = {}
-    for stage in ["TARGET", "LEAD", "VETTED", "ANALYZED", "VALIDATED", "OPPORTUNITY", "CUSTOMER", "ARCHIVED"]:
-        stage_counts[stage] = db.query(Entity).filter(Entity.pipeline_stage == stage).count()
+    # Global stage counts (for the headline number) — cached
+    stage_counts = _stage_counts_cached(db)
     total_active = sum(v for k, v in stage_counts.items() if k != "ARCHIVED")
 
     # Services
@@ -2046,3 +2099,54 @@ def rename_file(path: str = Query(...), new_name: str = Query(...)):
     new_path = os.path.join(parent, new_name)
     os.rename(safe_path, new_path)
     return {"success": True, "path": os.path.relpath(new_path, FILE_STORE_ROOT)}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Sunbiz address lookup
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@router.get("/api/sunbiz/by-address")
+def sunbiz_by_address(
+    address: str = Query(..., min_length=4, description="Full street address"),
+    limit: int = Query(20, ge=1, le=100),
+):
+    """Find Florida corporate entities registered at a given street
+    address via the Sunbiz bulk extract address index.
+
+    Sunbiz's public portal (search.sunbiz.org) only offers ByName /
+    ByOfficer / ByFEI / ByDocumentNumber — no ByAddress search. We
+    side-step that by pre-indexing the quarterly bulk extract on the
+    canonical street key. Returns the corp_name for each match so the
+    user can copy it into the portal's ByName search, plus a direct
+    detail-page URL when available.
+    """
+    from agents.enrichers.sunbiz_bulk import (
+        lookup_by_address, _build_detail_url, build_search_url,
+    )
+
+    matches = lookup_by_address(address)[:limit]
+    return {
+        "address": address,
+        "match_count": len(matches),
+        "matches": [
+            {
+                "corp_name": m.get("corp_name"),
+                "document_number": m.get("document_number"),
+                "status": m.get("status"),
+                "filing_type": m.get("filing_type"),
+                "filing_date": m.get("filing_date"),
+                "principal_address": m.get("principal_address"),
+                "mailing_address": m.get("mailing_address"),
+                "sunbiz_url": (
+                    _build_detail_url(m.get("document_number"))
+                    if m.get("document_number") else None
+                ),
+                "sunbiz_search_url": (
+                    build_search_url(m.get("corp_name"))
+                    if m.get("corp_name") else None
+                ),
+            }
+            for m in matches
+        ],
+    }

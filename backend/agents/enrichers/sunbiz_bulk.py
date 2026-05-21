@@ -42,6 +42,12 @@ CACHE_TTL = 3600 * 6
 
 # In-memory cache
 _cache: dict[str, list[dict]] | None = None
+# Secondary index — canonical street key (utils.address.canon_key) →
+# list of matching Sunbiz records. Built lazily alongside _cache so the
+# address-lookup endpoint (and the future address-fallback path inside
+# enrich_sunbiz_bulk) can find "what entities are registered at this
+# building" in O(1).
+_address_cache: dict[str, list[dict]] | None = None
 _cache_time: float = 0
 
 
@@ -257,15 +263,221 @@ def _load_csv() -> dict[str, list[dict]]:
 
 def _get_cache() -> dict[str, list[dict]]:
     """Get the cached Sunbiz data, reloading if stale."""
-    global _cache, _cache_time
+    global _cache, _address_cache, _cache_time
     now = datetime.now(timezone.utc).timestamp()
 
     if _cache is not None and (now - _cache_time) < CACHE_TTL:
         return _cache
 
     _cache = _load_csv()
+    _address_cache = _build_address_index(_cache)
     _cache_time = now
     return _cache
+
+
+def _get_address_cache() -> dict[str, list[dict]]:
+    """Address-keyed Sunbiz index. Triggers full cache rebuild if cold."""
+    global _address_cache
+    if _address_cache is None:
+        _get_cache()  # populates both
+    return _address_cache or {}
+
+
+def _build_address_index(by_name: dict[str, list[dict]]) -> dict[str, list[dict]]:
+    """Re-index the Sunbiz records by canonical street key.
+
+    Every record's principal_address + mailing_address are canonicalized
+    via utils.address.canon_key (same algorithm the seeder / matcher
+    use) so a property's street_canon matches the same string here.
+    Multiple corps at the same building (typical for condo associations,
+    LLCs holding individual units, etc.) all bucket under the same key.
+    """
+    from utils.address import canon_key
+
+    out: dict[str, list[dict]] = {}
+    seen_ids: dict[str, set[str]] = {}
+    total = 0
+    for records in by_name.values():
+        for rec in records:
+            doc_num = (rec.get("document_number") or "").strip()
+            for field in ("principal_address", "mailing_address"):
+                addr = (rec.get(field) or "").strip()
+                if not addr:
+                    continue
+                key = canon_key(addr)
+                if not key:
+                    continue
+                # De-duplicate: same record under both principal + mailing
+                # at the same canon shouldn't appear twice.
+                bucket_seen = seen_ids.setdefault(key, set())
+                if doc_num and doc_num in bucket_seen:
+                    continue
+                if doc_num:
+                    bucket_seen.add(doc_num)
+                out.setdefault(key, []).append(rec)
+                total += 1
+    logger.info(
+        f"Sunbiz address index built: {total:,} records under "
+        f"{len(out):,} unique canonical addresses"
+    )
+    return out
+
+
+def lookup_by_address(addr: str) -> list[dict]:
+    """Find Sunbiz entities registered at the given street address.
+
+    Returns the raw record dicts (corp_name, document_number, status,
+    principal/mailing addresses, officers) sorted with active filings
+    first. Empty list if no canon match. Designed for the on-demand UI
+    lookup — answers "which entity name should I search Sunbiz for at
+    this property?" without scraping the portal.
+    """
+    from utils.address import canon_key
+
+    key = canon_key(addr)
+    if not key:
+        return []
+    matches = list(_get_address_cache().get(key, []))
+    # Active filings first, then by corp_name for stable order.
+    matches.sort(key=lambda r: (
+        0 if (r.get("status") or "").upper().startswith("A") else 1,
+        (r.get("corp_name") or "").upper(),
+    ))
+    return matches
+
+
+# ─── Board cross-reference ───
+#
+# Given a building's address, identify which of its unit owners also
+# sit on the association board. The condo association (and any HOA /
+# co-op) is one of the Sunbiz records registered at the building's
+# address; that record carries up to six officer names + one
+# registered agent. Cross-matching those names against each unit
+# parcel's DOR owner name surfaces the board members — the actual
+# decision-makers Jason wants to call.
+
+_BOARD_ASSOCIATION_KEYWORDS = (
+    "CONDO", "CONDOMINIUM", "COOPERATIVE", "CO-OP", "COOP",
+    "HOA", "HOMEOWNER", "OWNERS ASSOCIATION", "OWNER ASSN",
+    "ASSOCIATION", "ASSN", "ASSOC", "MASTER ASSOC",
+)
+
+# Words that show up inside owner-name strings but don't identify a
+# person — strip before token comparison so "SMITH, JOHN A TRUSTEE"
+# matches "SMITH JOHN A".
+_NAME_NOISE_TOKENS = frozenset({
+    "ttee", "tte", "tre", "tr", "trs", "trustee", "trustees",
+    "trust", "trusts", "living", "revocable", "irrevocable",
+    "et", "ux", "al", "etux", "uxor", "estate", "of",
+    "jr", "sr", "ii", "iii", "iv",
+    "as", "and", "for", "the", "co", "llc", "inc",
+    "lp", "llp", "ltd", "tte",
+})
+
+
+def _is_association_name(corp_name: str | None) -> bool:
+    if not corp_name:
+        return False
+    upper = corp_name.upper()
+    return any(kw in upper for kw in _BOARD_ASSOCIATION_KEYWORDS)
+
+
+def _person_name_tokens(name: str | None) -> frozenset[str]:
+    """Tokenize a person's name down to comparable lowercase tokens.
+
+    Strips punctuation, drops trustee/role noise, drops 1-char tokens
+    (middle initials are too ambiguous as a sole match anchor).
+    Returns a frozenset so it can be cached / compared cheaply.
+    """
+    if not name:
+        return frozenset()
+    cleaned = re.sub(r"[^a-zA-Z\s]", " ", name).lower()
+    return frozenset(
+        t for t in cleaned.split()
+        if t and len(t) > 1 and t not in _NAME_NOISE_TOKENS
+    )
+
+
+def _names_match(owner_tokens: frozenset[str], principal_tokens: frozenset[str]) -> bool:
+    """True when owner and principal plausibly refer to the same person.
+
+    Require at least TWO shared non-noise tokens — typically the last
+    name + first name. One-token matches (e.g. just "smith") are
+    rejected because they generate too many false positives at large
+    condos. Trusts/LLCs don't share last+first with a person, so they
+    naturally fall out.
+    """
+    if not owner_tokens or not principal_tokens:
+        return False
+    return len(owner_tokens & principal_tokens) >= 2
+
+
+def extract_principals(rec: dict) -> list[dict]:
+    """Return every named person on a Sunbiz record — registered agent
+    + up to six officers — with role and title context for downstream
+    matching."""
+    out: list[dict] = []
+    ra = (rec.get("registered_agent") or "").strip()
+    if ra:
+        out.append({
+            "name": ra,
+            "role": "registered_agent",
+            "title": "Registered Agent",
+            "corp_name": rec.get("corp_name"),
+            "document_number": rec.get("document_number"),
+        })
+    for i in range(1, 7):
+        name = (rec.get(f"officer_{i}_name") or "").strip()
+        if not name:
+            continue
+        title = (
+            (rec.get(f"officer_{i}_title_label") or "").strip()
+            or (rec.get(f"officer_{i}_title") or "").strip()
+            or "Officer"
+        )
+        out.append({
+            "name": name,
+            "role": "officer",
+            "title": title,
+            "corp_name": rec.get("corp_name"),
+            "document_number": rec.get("document_number"),
+        })
+    return out
+
+
+def board_members_at_address(addr: str, associations_only: bool = True) -> list[dict]:
+    """Every officer/agent of every Sunbiz entity at this address.
+
+    When ``associations_only=True`` (default), filters to records whose
+    corp_name contains CONDO / HOA / ASSOCIATION / etc. — i.e. the
+    actual association board, not the holding LLCs of individual units.
+    Set False to also surface principals of unit-owning LLCs.
+    """
+    records = lookup_by_address(addr)
+    if associations_only:
+        records = [r for r in records if _is_association_name(r.get("corp_name"))]
+    out: list[dict] = []
+    for rec in records:
+        out.extend(extract_principals(rec))
+    return out
+
+
+def match_owner_to_board(
+    owner_name: str | None,
+    board: list[dict],
+) -> dict | None:
+    """If ``owner_name`` matches any board member's name, return that
+    board record with the match score; otherwise None. First strong
+    match wins (board is small — at most ~7 names per association)."""
+    if not owner_name or not board:
+        return None
+    owner_tokens = _person_name_tokens(owner_name)
+    if not owner_tokens:
+        return None
+    for member in board:
+        if _names_match(owner_tokens, _person_name_tokens(member.get("name"))):
+            return member
+    return None
 
 
 # ─── Matching ───
@@ -356,6 +568,34 @@ def _build_detail_url(doc_number: str) -> str:
     return (
         f"https://search.sunbiz.org/Inquiry/CorporationSearch/SearchResultDetail"
         f"?inquirytype=EntityName&directionType=Initial&searchNameOrder={doc_number}"
+    )
+
+
+def build_search_url(corp_name: str) -> str:
+    """Construct the live Sunbiz ByName SearchResults URL for a corp.
+
+    Real format (observed in the portal's address bar — not the
+    legacy ?inquirytype query string):
+
+        https://search.sunbiz.org/Inquiry/CorporationSearch/
+            SearchResults/EntityName/<lowercase-original-as-path>/Page1
+            ?searchNameOrder=<UPPERCASE-ALNUM-ONLY>
+
+    The path segment is the user's original casing+spacing URL-encoded
+    (so spaces become %20); the searchNameOrder query is the
+    alphabetical sort key — Sunbiz's index removes spaces and
+    non-alphanumerics and uppercases everything. Example:
+
+        "Echo Brickell Assoc"
+            → /SearchResults/EntityName/echo%20brickell%20assoc/Page1
+              ?searchNameOrder=ECHOBRICKELLASSOC
+    """
+    from urllib.parse import quote
+    name_path = quote(corp_name.lower(), safe="")
+    name_order = re.sub(r"[^A-Z0-9]", "", corp_name.upper())
+    return (
+        "https://search.sunbiz.org/Inquiry/CorporationSearch/SearchResults"
+        f"/EntityName/{name_path}/Page1?searchNameOrder={name_order}"
     )
 
 

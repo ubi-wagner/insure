@@ -18,7 +18,7 @@ interface LeadLocation {
   listIndex: number;
 }
 
-const MAX_MODALS = 5;
+const MAX_MODALS = 10;
 
 export default function DashboardPage() {
   return (
@@ -169,7 +169,10 @@ function Dashboard() {
         />
       )}
 
-      {/* Entity Detail Modals — stacked with visual offset, max 5 */}
+      {/* Entity Detail Modals — stacked with visual offset, max 10. Drilling
+          into a sibling parcel from inside a modal opens a NEW modal in the
+          same stack (not a new browser tab), so closing it falls back to
+          whichever modal was active before. */}
       {openModals.map((id, idx) => (
         <EntityDetailModal
           key={id}
@@ -179,6 +182,7 @@ function Dashboard() {
           totalOpen={openModals.length}
           onActivate={() => setActiveModal(id)}
           onClose={() => closeModal(id)}
+          onOpenEntity={openEntityModal}
           onFlyTo={(lat, lng) => {
             setFlyToTarget({ lat, lng });
             setSelectedLeadId(id);

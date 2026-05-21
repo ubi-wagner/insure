@@ -316,8 +316,25 @@ def list_leads(
     if max_premium is not None:
         query = query.filter(_jsonb_float("premium") <= max_premium)
 
-    # Get total before pagination
-    total = query.count()
+    # Get total before pagination. When the user is on an unfiltered
+    # stage view (the common case after login), reuse the cached
+    # per-stage count instead of running a fresh COUNT(*) over millions
+    # of rows. Filters present → fall back to the exact count.
+    has_narrowing_filters = any([
+        search, county, carrier, min_tiv, max_tiv, min_premium, max_premium,
+        min_value, max_value, min_stories, min_units, min_year, max_year,
+        max_distance_miles, use_code, heat, on_citizens, cream_tier,
+        min_cream, construction,
+    ])
+    if status_filter and not has_narrowing_filters:
+        try:
+            from routes.admin import _stage_counts_cached
+            cached = _stage_counts_cached(db).get(status_filter)
+            total = cached if cached is not None else query.count()
+        except Exception:
+            total = query.count()
+    else:
+        total = query.count()
 
     # Sorting (SQL)
     is_desc = sort_dir == "desc"
@@ -572,8 +589,42 @@ def get_siblings(
         .all()
     )
 
+    # Sunbiz board cross-reference: pull the officers + registered
+    # agent of any condo association / HOA registered at the master's
+    # street address, then flag each sibling whose owner name matches.
+    # Identifies the actual decision-makers within the building —
+    # board members hold the insurance vote, individual unit owners
+    # don't. Silently degrades to empty board list if the Sunbiz bulk
+    # extract isn't loaded.
+    board: list[dict] = []
+    try:
+        from agents.enrichers.sunbiz_bulk import (
+            board_members_at_address, match_owner_to_board,
+        )
+        from agents.enrichers.property_appraiser import (
+            build_pa_owner_search_url, build_pa_parcel_url,
+            find_master_parcel_in_db,
+        )
+        if master.address:
+            board = board_members_at_address(master.address, associations_only=True)
+    except Exception as e:
+        logger.warning(f"Sunbiz board lookup failed for entity {entity_id}: {e}")
+        match_owner_to_board = lambda *a, **kw: None  # noqa: E731
+        build_pa_owner_search_url = lambda *a, **kw: None  # noqa: E731
+        build_pa_parcel_url = lambda *a, **kw: None  # noqa: E731
+
+    master_county = master.county
+
     def _sib(e: Entity) -> dict:
         c = e.characteristics or {}
+        board_hit = match_owner_to_board(e.name, board) if board else None
+        # PA owner-search URL — same county as the master since
+        # condo siblings always share the master's parcel county.
+        pa_owner_url = build_pa_owner_search_url(master_county, e.name)
+        # PA parcel deep-link — lands directly on the property-details
+        # page when we know the parcel ID (the common case for any row
+        # seeded from NAL). Much faster than the search-by-name path.
+        pa_parcel_url = build_pa_parcel_url(master_county, c.get("dor_parcel_id"))
         return {
             "id": e.id,
             "address": e.address,
@@ -586,7 +637,43 @@ def get_siblings(
             "dor_market_value": c.get("dor_market_value"),
             "is_condo_unit_parcel": bool(c.get("is_condo_unit_parcel")),
             "is_condo_master": bool(c.get("is_condo_master")),
+            # board_match present → this unit owner sits on the
+            # association board. UI surfaces this as a star + title pill.
+            "board_match": (
+                {
+                    "title": board_hit.get("title"),
+                    "role": board_hit.get("role"),
+                    "corp_name": board_hit.get("corp_name"),
+                    "matched_name": board_hit.get("name"),
+                    # Deep link to the county PA's "search by owner"
+                    # results page so the user can pull every property
+                    # this board member owns in the county (typically
+                    # surfaces a primary residence + the unit they own
+                    # in this building).
+                    "pa_owner_search_url": pa_owner_url,
+                }
+                if board_hit else None
+            ),
+            # Also expose the PA search URL on every sibling, not just
+            # board members — useful for spot-checking any unit owner.
+            "pa_owner_search_url": pa_owner_url,
+            # Direct deep-link to this parcel's PA detail page.
+            "pa_parcel_url": pa_parcel_url,
+            "dor_parcel_id": c.get("dor_parcel_id"),
         }
+
+    siblings_out = [_sib(e) for e in rows]
+    board_match_count = sum(1 for s in siblings_out if s.get("board_match"))
+
+    # Master parcel = the parcel ID ending in 0001 (PCPAO convention)
+    # somewhere in the master+siblings chain. Carries the actual
+    # association name + the canonical parcel ID even when the
+    # aggregator's "master" pick happened to be a unit parcel.
+    master_parcel = None
+    try:
+        master_parcel = find_master_parcel_in_db(db, entity_id)
+    except Exception as e:
+        logger.warning(f"Master parcel lookup failed for entity {entity_id}: {e}")
 
     return {
         "master_id": master.id,
@@ -595,8 +682,15 @@ def get_siblings(
             (master.characteristics or {}).get("is_aggregation_master")
         ),
         "sibling_count": len(rows),
+        # Board summary so the UI can show "4 of 84 unit owners on the
+        # board" without re-scanning the sibling list.
+        "board_member_count": board_match_count,
+        "board_associations": sorted({
+            m.get("corp_name") for m in board if m.get("corp_name")
+        }),
+        "master_parcel": master_parcel,
         # Returned sum is for the rendered slice; matches the limit cap.
-        "siblings": [_sib(e) for e in rows],
+        "siblings": siblings_out,
     }
 
 

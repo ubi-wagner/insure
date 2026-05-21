@@ -124,7 +124,11 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
   const [stageCounts, setStageCounts] = useState<Record<string, number>>({});
 
   // Filters
-  const [activeStage, setActiveStage] = useState("TARGET");
+  // Default to VETTED — that's the building-master stage Jason actually
+  // works against. Landing on TARGET (5.9M unfiltered parcels) made
+  // login take 10-30 seconds because the count query has to scan the
+  // whole table. VETTED is ~150K rows = sub-second with the indexes.
+  const [activeStage, setActiveStage] = useState("VETTED");
   const [search, setSearch] = useState("");
   const [county, setCounty] = useState(initialCounty ?? "");
   const [sortKey, setSortKey] = useState("value-desc");
@@ -240,6 +244,12 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
 
   // Bulk select
   const [selected, setSelected] = useState<Set<number>>(new Set());
+  // "Select all" sentinel — true means every entity that matches the
+  // current filter is selected (count = total), without us having to
+  // materialise 150K ids in a Set. handleBulkAction routes through
+  // the filter-based bulk endpoint when this flag is true.
+  const [selectedAllFiltered, setSelectedAllFiltered] = useState(false);
+  const [selectingAll, setSelectingAll] = useState(false);
   const [selectMode, setSelectMode] = useState(false);
   const [bulkMsg, setBulkMsg] = useState<string | null>(null);
 
@@ -342,7 +352,12 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
   useEffect(() => { setPage(0); }, [activeStage, search, county, sortKey, minValue, maxValue, minUnits, minStories, useCode, heatFilter, citizensOnly, creamTier, minYear, maxYear, maxDistance, construction]);
 
   // Clear selection when stage changes
-  useEffect(() => { setSelected(new Set()); setSelectMode(false); setBulkMsg(null); }, [activeStage]);
+  useEffect(() => {
+    setSelected(new Set());
+    setSelectedAllFiltered(false);
+    setSelectMode(false);
+    setBulkMsg(null);
+  }, [activeStage]);
 
   async function handleAction(entityId: number, targetStage: string) {
     setActionId(entityId);
@@ -369,6 +384,16 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
 
   async function handleBulkAction(targetStage: string) {
     setBulkMsg(null);
+    // "Select all" sentinel: route through the filter-based bulk
+    // endpoint so every matching row (not just the page-1 50) gets
+    // moved in one SQL UPDATE. Same path as "Archive All Filtered".
+    if (selectedAllFiltered) {
+      await handleBulkFilterAction(targetStage);
+      setSelected(new Set());
+      setSelectedAllFiltered(false);
+      setSelectMode(false);
+      return;
+    }
     const ids = Array.from(selected);
     if (ids.length === 0) return;
 
@@ -382,6 +407,7 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
         const data = await res.json();
         setBulkMsg(`${data.changed ?? 0} moved to ${targetStage}`);
         setSelected(new Set());
+        setSelectedAllFiltered(false);
         setSelectMode(false);
         await fetchLeads();
         fetchStageCounts();
@@ -425,6 +451,9 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
   }
 
   function toggleSelect(id: number) {
+    // Manually unchecking any row drops out of the "all filtered"
+    // sentinel — the user is now curating a subset.
+    if (selectedAllFiltered) setSelectedAllFiltered(false);
     setSelected(prev => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id); else next.add(id);
@@ -432,8 +461,59 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
     });
   }
 
-  function selectAll() {
-    setSelected(new Set(leads.map(l => l.id)));
+  /** Select every entity matching the current filters, not just the
+   *  visible page. For small result sets (≤ 1000) we fetch the
+   *  explicit ids; above that we set a sentinel and route the bulk
+   *  action through the filter-based endpoint so PostgreSQL handles
+   *  the full set in a single UPDATE.
+   */
+  async function selectAll() {
+    if (selectingAll) return;
+    setSelectingAll(true);
+    setBulkMsg(null);
+    try {
+      // Cheap path: result set fits in one page-1000 request.
+      if (total > 0 && total <= 1000) {
+        const params = new URLSearchParams({
+          status_filter: activeStage,
+          sort_by: sortKey.split("-")[0],
+          sort_dir: sortKey.split("-")[1] || "desc",
+          limit: "1000",
+          offset: "0",
+        });
+        if (search) params.set("search", search);
+        if (county) params.set("county", county);
+        if (minValue) params.set("min_value", minValue);
+        if (maxValue) params.set("max_value", maxValue);
+        if (minUnits) params.set("min_units", minUnits);
+        if (minStories) params.set("min_stories", minStories);
+        if (useCode) params.set("use_code", useCode);
+        if (heatFilter) params.set("heat", heatFilter);
+        if (citizensOnly) params.set("on_citizens", "true");
+        if (creamTier) params.set("cream_tier", creamTier);
+        if (minYear) params.set("min_year", minYear);
+        if (maxYear) params.set("max_year", maxYear);
+        if (maxDistance) params.set("max_distance_miles", maxDistance);
+        if (construction) params.set("construction", construction);
+        const res = await fetch(`/api/proxy/leads?${params}`);
+        if (res.ok) {
+          const data = await res.json();
+          const ids = new Set<number>(
+            (data.results ?? []).map((l: { id: number }) => l.id)
+          );
+          setSelected(ids);
+          setSelectedAllFiltered(false);
+        }
+      } else {
+        // Big set — don't materialise 150K ids in the browser. Flag
+        // sentinel; handleBulkAction will route through the
+        // filter-based bulk endpoint instead.
+        setSelected(new Set());
+        setSelectedAllFiltered(true);
+      }
+    } finally {
+      setSelectingAll(false);
+    }
   }
 
   function fmt(val: number | null | unknown): string {
@@ -650,26 +730,37 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
       {/* Bulk actions bar */}
       <div className="flex items-center gap-1.5 mb-2">
         {canEdit && (
-          <button onClick={() => { setSelectMode(!selectMode); setSelected(new Set()); }}
+          <button onClick={() => {
+              setSelectMode(!selectMode);
+              setSelected(new Set());
+              setSelectedAllFiltered(false);
+            }}
             className={`text-[10px] px-2 py-1 rounded border ${selectMode ? "border-blue-600 bg-blue-950 text-blue-300" : "border-gray-800 bg-gray-900 text-gray-500"}`}>
-            {selectMode ? `${selected.size} selected` : "Select"}
+            {selectMode
+              ? (selectedAllFiltered
+                  ? `all ${total.toLocaleString()} selected`
+                  : `${selected.size} selected`)
+              : "Select"}
           </button>
         )}
         {canEdit && selectMode && (
           <>
-            <button onClick={selectAll} className="text-[10px] px-2 py-1 rounded border border-gray-800 bg-gray-900 text-gray-400">
-              All
+            <button onClick={selectAll}
+              disabled={selectingAll || total === 0}
+              title={`Select every ${activeStage.toLowerCase()} matching the current filters (${total.toLocaleString()})`}
+              className="text-[10px] px-2 py-1 rounded border border-gray-800 bg-gray-900 text-gray-400 disabled:opacity-40">
+              {selectingAll ? "…" : `All (${total.toLocaleString()})`}
             </button>
-            {selected.size > 0 && NEXT_STAGE[activeStage] && (
+            {(selected.size > 0 || selectedAllFiltered) && NEXT_STAGE[activeStage] && (
               <button onClick={() => handleBulkAction(NEXT_STAGE[activeStage]!)}
                 className="text-[10px] px-2 py-1 rounded bg-cyan-700 text-white font-medium">
-                &rarr; {NEXT_STAGE[activeStage]} ({selected.size})
+                &rarr; {NEXT_STAGE[activeStage]} ({selectedAllFiltered ? total.toLocaleString() : selected.size})
               </button>
             )}
-            {selected.size > 0 && activeStage !== "ARCHIVED" && (
+            {(selected.size > 0 || selectedAllFiltered) && activeStage !== "ARCHIVED" && (
               <button onClick={() => handleBulkAction("ARCHIVED")}
                 className="text-[10px] px-2 py-1 rounded bg-gray-700 text-gray-300 font-medium">
-                Archive ({selected.size})
+                Archive ({selectedAllFiltered ? total.toLocaleString() : selected.size})
               </button>
             )}
           </>
@@ -718,7 +809,17 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
             <div key={lead.id} id={`lead-card-${lead.id}`}
               onMouseEnter={() => onLeadHover?.(lead.id)}
               onMouseLeave={() => onLeadHover?.(null)}
-              className={`rounded-lg border overflow-hidden transition-colors ${
+              onClick={(e) => {
+                // Card-to-map linkage: clicking anywhere on the card body
+                // (not on a button / checkbox / link inside it) flies the
+                // map to this lead's marker and selects it. Buttons inside
+                // the card stop propagation so they don't double-fire.
+                if ((e.target as HTMLElement).closest("button, input, a")) return;
+                if (lead.latitude != null && lead.longitude != null) {
+                  onFlyTo?.(lead.latitude, lead.longitude, lead.id);
+                }
+              }}
+              className={`rounded-lg border overflow-hidden transition-colors cursor-pointer ${
                 isSelected ? "border-blue-500 bg-gray-900 ring-1 ring-blue-500/30" :
                 isChecked ? "border-cyan-700 bg-gray-900" :
                 "border-gray-800/50 bg-gray-900/60 hover:border-gray-700"
@@ -731,13 +832,7 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
                       onChange={() => toggleSelect(lead.id)}
                       className="w-3.5 h-3.5 rounded border-gray-600 bg-gray-800 shrink-0" />
                   )}
-                  <h3
-                    className="font-medium text-sm text-white truncate flex-1 cursor-pointer hover:text-blue-300"
-                    onClick={() => {
-                      if (lead.latitude != null && lead.longitude != null) {
-                        onFlyTo?.(lead.latitude, lead.longitude, lead.id);
-                      }
-                    }}>
+                  <h3 className="font-medium text-sm text-white truncate flex-1 hover:text-blue-300">
                     {lead.name}
                   </h3>
                   {marketValue && marketValue > 0 && (
@@ -844,15 +939,15 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
                     </button>
                   )}
 
-                  {/* Archive */}
-                  {canEdit && activeStage !== "CUSTOMER" && activeStage !== "ARCHIVED" && (
-                    <button onClick={() => handleAction(lead.id, "ARCHIVED")}
-                      disabled={actionId === lead.id}
-                      className="bg-gray-800 hover:bg-gray-700 disabled:opacity-50 text-gray-600 text-xs py-1.5 px-2 rounded"
-                      title="Archive">&times;</button>
-                  )}
+                  {/* Per-card archive removed — too easy to click by
+                      accident. Archive still available via bulk
+                      action (select cards → "Archive (N)") or via the
+                      Stage dropdown inside the entity detail modal. */}
 
-                  {/* Restore from archive */}
+                  {/* Restore from archive — only shown on the ARCHIVED
+                      tab. Moves the entity back to TARGET so the
+                      qualifier/aggregator can re-evaluate it from
+                      scratch. */}
                   {canEdit && activeStage === "ARCHIVED" && (
                     <button onClick={() => handleAction(lead.id, "TARGET")}
                       disabled={actionId === lead.id}
