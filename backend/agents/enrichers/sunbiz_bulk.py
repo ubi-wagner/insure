@@ -346,6 +346,140 @@ def lookup_by_address(addr: str) -> list[dict]:
     return matches
 
 
+# ─── Board cross-reference ───
+#
+# Given a building's address, identify which of its unit owners also
+# sit on the association board. The condo association (and any HOA /
+# co-op) is one of the Sunbiz records registered at the building's
+# address; that record carries up to six officer names + one
+# registered agent. Cross-matching those names against each unit
+# parcel's DOR owner name surfaces the board members — the actual
+# decision-makers Jason wants to call.
+
+_BOARD_ASSOCIATION_KEYWORDS = (
+    "CONDO", "CONDOMINIUM", "COOPERATIVE", "CO-OP", "COOP",
+    "HOA", "HOMEOWNER", "OWNERS ASSOCIATION", "OWNER ASSN",
+    "ASSOCIATION", "ASSN", "ASSOC", "MASTER ASSOC",
+)
+
+# Words that show up inside owner-name strings but don't identify a
+# person — strip before token comparison so "SMITH, JOHN A TRUSTEE"
+# matches "SMITH JOHN A".
+_NAME_NOISE_TOKENS = frozenset({
+    "ttee", "tte", "tre", "tr", "trs", "trustee", "trustees",
+    "trust", "trusts", "living", "revocable", "irrevocable",
+    "et", "ux", "al", "etux", "uxor", "estate", "of",
+    "jr", "sr", "ii", "iii", "iv",
+    "as", "and", "for", "the", "co", "llc", "inc",
+    "lp", "llp", "ltd", "tte",
+})
+
+
+def _is_association_name(corp_name: str | None) -> bool:
+    if not corp_name:
+        return False
+    upper = corp_name.upper()
+    return any(kw in upper for kw in _BOARD_ASSOCIATION_KEYWORDS)
+
+
+def _person_name_tokens(name: str | None) -> frozenset[str]:
+    """Tokenize a person's name down to comparable lowercase tokens.
+
+    Strips punctuation, drops trustee/role noise, drops 1-char tokens
+    (middle initials are too ambiguous as a sole match anchor).
+    Returns a frozenset so it can be cached / compared cheaply.
+    """
+    if not name:
+        return frozenset()
+    cleaned = re.sub(r"[^a-zA-Z\s]", " ", name).lower()
+    return frozenset(
+        t for t in cleaned.split()
+        if t and len(t) > 1 and t not in _NAME_NOISE_TOKENS
+    )
+
+
+def _names_match(owner_tokens: frozenset[str], principal_tokens: frozenset[str]) -> bool:
+    """True when owner and principal plausibly refer to the same person.
+
+    Require at least TWO shared non-noise tokens — typically the last
+    name + first name. One-token matches (e.g. just "smith") are
+    rejected because they generate too many false positives at large
+    condos. Trusts/LLCs don't share last+first with a person, so they
+    naturally fall out.
+    """
+    if not owner_tokens or not principal_tokens:
+        return False
+    return len(owner_tokens & principal_tokens) >= 2
+
+
+def extract_principals(rec: dict) -> list[dict]:
+    """Return every named person on a Sunbiz record — registered agent
+    + up to six officers — with role and title context for downstream
+    matching."""
+    out: list[dict] = []
+    ra = (rec.get("registered_agent") or "").strip()
+    if ra:
+        out.append({
+            "name": ra,
+            "role": "registered_agent",
+            "title": "Registered Agent",
+            "corp_name": rec.get("corp_name"),
+            "document_number": rec.get("document_number"),
+        })
+    for i in range(1, 7):
+        name = (rec.get(f"officer_{i}_name") or "").strip()
+        if not name:
+            continue
+        title = (
+            (rec.get(f"officer_{i}_title_label") or "").strip()
+            or (rec.get(f"officer_{i}_title") or "").strip()
+            or "Officer"
+        )
+        out.append({
+            "name": name,
+            "role": "officer",
+            "title": title,
+            "corp_name": rec.get("corp_name"),
+            "document_number": rec.get("document_number"),
+        })
+    return out
+
+
+def board_members_at_address(addr: str, associations_only: bool = True) -> list[dict]:
+    """Every officer/agent of every Sunbiz entity at this address.
+
+    When ``associations_only=True`` (default), filters to records whose
+    corp_name contains CONDO / HOA / ASSOCIATION / etc. — i.e. the
+    actual association board, not the holding LLCs of individual units.
+    Set False to also surface principals of unit-owning LLCs.
+    """
+    records = lookup_by_address(addr)
+    if associations_only:
+        records = [r for r in records if _is_association_name(r.get("corp_name"))]
+    out: list[dict] = []
+    for rec in records:
+        out.extend(extract_principals(rec))
+    return out
+
+
+def match_owner_to_board(
+    owner_name: str | None,
+    board: list[dict],
+) -> dict | None:
+    """If ``owner_name`` matches any board member's name, return that
+    board record with the match score; otherwise None. First strong
+    match wins (board is small — at most ~7 names per association)."""
+    if not owner_name or not board:
+        return None
+    owner_tokens = _person_name_tokens(owner_name)
+    if not owner_tokens:
+        return None
+    for member in board:
+        if _names_match(owner_tokens, _person_name_tokens(member.get("name"))):
+            return member
+    return None
+
+
 # ─── Matching ───
 
 def _match_name(search_name: str, index: dict[str, list[dict]]) -> dict | None:

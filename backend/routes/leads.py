@@ -589,8 +589,27 @@ def get_siblings(
         .all()
     )
 
+    # Sunbiz board cross-reference: pull the officers + registered
+    # agent of any condo association / HOA registered at the master's
+    # street address, then flag each sibling whose owner name matches.
+    # Identifies the actual decision-makers within the building —
+    # board members hold the insurance vote, individual unit owners
+    # don't. Silently degrades to empty board list if the Sunbiz bulk
+    # extract isn't loaded.
+    board: list[dict] = []
+    try:
+        from agents.enrichers.sunbiz_bulk import (
+            board_members_at_address, match_owner_to_board,
+        )
+        if master.address:
+            board = board_members_at_address(master.address, associations_only=True)
+    except Exception as e:
+        logger.warning(f"Sunbiz board lookup failed for entity {entity_id}: {e}")
+        match_owner_to_board = lambda *a, **kw: None  # noqa: E731
+
     def _sib(e: Entity) -> dict:
         c = e.characteristics or {}
+        board_hit = match_owner_to_board(e.name, board) if board else None
         return {
             "id": e.id,
             "address": e.address,
@@ -603,7 +622,21 @@ def get_siblings(
             "dor_market_value": c.get("dor_market_value"),
             "is_condo_unit_parcel": bool(c.get("is_condo_unit_parcel")),
             "is_condo_master": bool(c.get("is_condo_master")),
+            # board_match present → this unit owner sits on the
+            # association board. UI surfaces this as a star + title pill.
+            "board_match": (
+                {
+                    "title": board_hit.get("title"),
+                    "role": board_hit.get("role"),
+                    "corp_name": board_hit.get("corp_name"),
+                    "matched_name": board_hit.get("name"),
+                }
+                if board_hit else None
+            ),
         }
+
+    siblings_out = [_sib(e) for e in rows]
+    board_match_count = sum(1 for s in siblings_out if s.get("board_match"))
 
     return {
         "master_id": master.id,
@@ -612,8 +645,14 @@ def get_siblings(
             (master.characteristics or {}).get("is_aggregation_master")
         ),
         "sibling_count": len(rows),
+        # Board summary so the UI can show "4 of 84 unit owners on the
+        # board" without re-scanning the sibling list.
+        "board_member_count": board_match_count,
+        "board_associations": sorted({
+            m.get("corp_name") for m in board if m.get("corp_name")
+        }),
         # Returned sum is for the rendered slice; matches the limit cap.
-        "siblings": [_sib(e) for e in rows],
+        "siblings": siblings_out,
     }
 
 

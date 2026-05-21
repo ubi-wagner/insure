@@ -790,6 +790,13 @@ function fmtField(v: number | string | null | undefined, key: string): string {
   return String(v);
 }
 
+interface BoardMatch {
+  title: string | null;
+  role: string | null;
+  corp_name: string | null;
+  matched_name: string | null;
+}
+
 interface SiblingRow {
   id: number;
   address: string | null;
@@ -802,6 +809,7 @@ interface SiblingRow {
   dor_market_value: number | null;
   is_condo_unit_parcel: boolean;
   is_condo_master: boolean;
+  board_match: BoardMatch | null;
 }
 
 interface SiblingsResponse {
@@ -809,6 +817,8 @@ interface SiblingsResponse {
   master_name: string;
   is_aggregation_master: boolean;
   sibling_count: number;
+  board_member_count?: number;
+  board_associations?: string[];
   siblings: SiblingRow[];
 }
 
@@ -868,6 +878,17 @@ function SiblingsPanel({
         {data ? ` · sum ${fmtMoney(
           data.siblings.reduce((s, x) => s + (x.tiv_estimate ?? x.dor_market_value ?? 0), 0)
         )}` : ""}
+        {data && (data.board_member_count ?? 0) > 0 && (
+          <span
+            className="ml-2 px-1.5 py-0.5 rounded bg-amber-900/60 text-amber-200 font-mono"
+            title={
+              (data.board_associations ?? []).join(" · ") ||
+              "Unit owners on the association board"
+            }
+          >
+            ★ {data.board_member_count} on board
+          </span>
+        )}
       </summary>
       {open && (
         <div className="mt-1 max-h-64 overflow-auto rounded border border-gray-800 bg-gray-950">
@@ -889,7 +910,12 @@ function SiblingsPanel({
               </thead>
               <tbody>
                 {data.siblings.map((s) => (
-                  <tr key={s.id} className="border-t border-gray-900 hover:bg-gray-900">
+                  <tr
+                    key={s.id}
+                    className={`border-t border-gray-900 hover:bg-gray-900 ${
+                      s.board_match ? "bg-amber-950/30" : ""
+                    }`}
+                  >
                     <td className="px-2 py-0.5">
                       {onOpenEntity ? (
                         <button
@@ -910,7 +936,22 @@ function SiblingsPanel({
                         </Link>
                       )}
                     </td>
-                    <td className="px-2 py-0.5 text-gray-300 truncate max-w-[160px]" title={s.owner_name ?? ""}>
+                    <td
+                      className="px-2 py-0.5 text-gray-300 truncate max-w-[180px]"
+                      title={
+                        s.board_match
+                          ? `${s.owner_name ?? ""}\nBoard match: ${s.board_match.matched_name ?? ""}\n${s.board_match.corp_name ?? ""}`
+                          : (s.owner_name ?? "")
+                      }
+                    >
+                      {s.board_match && (
+                        <span
+                          className="text-amber-300 mr-1"
+                          title={`${s.board_match.title ?? "Officer"} of ${s.board_match.corp_name ?? "association"}`}
+                        >
+                          ★ {s.board_match.title}
+                        </span>
+                      )}
                       {s.owner_name ?? "—"}
                     </td>
                     <td className="px-2 py-0.5 text-right text-gray-400">

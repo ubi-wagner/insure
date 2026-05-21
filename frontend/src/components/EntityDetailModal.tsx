@@ -493,6 +493,13 @@ function SunbizByAddressPanel({ address }: { address: string }) {
 
 /* ----- Linked-parcels panel for VETTED masters ------------------- */
 
+interface BoardMatch {
+  title: string | null;
+  role: string | null;
+  corp_name: string | null;
+  matched_name: string | null;
+}
+
 interface SiblingRow {
   id: number;
   address: string | null;
@@ -505,6 +512,7 @@ interface SiblingRow {
   dor_market_value: number | null;
   is_condo_unit_parcel: boolean;
   is_condo_master: boolean;
+  board_match: BoardMatch | null;
 }
 
 interface SiblingsResponse {
@@ -512,6 +520,8 @@ interface SiblingsResponse {
   master_name: string;
   is_aggregation_master: boolean;
   sibling_count: number;
+  board_member_count?: number;
+  board_associations?: string[];
   siblings: SiblingRow[];
 }
 
@@ -573,7 +583,7 @@ function ModalSiblingsPanel({
       open={open}
       onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)}
     >
-      <summary className="cursor-pointer flex items-center gap-2 text-xs select-none">
+      <summary className="cursor-pointer flex items-center gap-2 text-xs select-none flex-wrap">
         <span className="text-teal-300 font-semibold">VETTED master</span>
         <span className="text-gray-400">
           {siblingCount} linked unit parcel{siblingCount === 1 ? "" : "s"}
@@ -581,6 +591,17 @@ function ModalSiblingsPanel({
         {tivSum != null && (
           <span className="text-teal-200 font-mono text-[10px]">
             sum {siblingsMoney(tivSum)}
+          </span>
+        )}
+        {data && (data.board_member_count ?? 0) > 0 && (
+          <span
+            className="text-[10px] px-1.5 py-0.5 rounded bg-amber-900/60 text-amber-200 font-mono"
+            title={
+              (data.board_associations ?? []).join(" · ") ||
+              "Unit owners matched to association officers / registered agent"
+            }
+          >
+            ★ {data.board_member_count} on board
           </span>
         )}
         <span className="text-gray-600 text-[10px] ml-auto">
@@ -606,7 +627,12 @@ function ModalSiblingsPanel({
             </thead>
             <tbody>
               {data.siblings.map((s) => (
-                <tr key={s.id} className="border-t border-teal-900/30 hover:bg-gray-900/60">
+                <tr
+                  key={s.id}
+                  className={`border-t border-teal-900/30 hover:bg-gray-900/60 ${
+                    s.board_match ? "bg-amber-950/30" : ""
+                  }`}
+                >
                   <td className="px-2 py-0.5">
                     {onOpenEntity ? (
                       <button
@@ -629,9 +655,21 @@ function ModalSiblingsPanel({
                     )}
                   </td>
                   <td
-                    className="px-2 py-0.5 text-gray-300 truncate max-w-[180px]"
-                    title={s.owner_name ?? ""}
+                    className="px-2 py-0.5 text-gray-300 truncate max-w-[200px]"
+                    title={
+                      s.board_match
+                        ? `${s.owner_name ?? ""}\nBoard match: ${s.board_match.matched_name ?? ""}\n${s.board_match.corp_name ?? ""}`
+                        : (s.owner_name ?? "")
+                    }
                   >
+                    {s.board_match && (
+                      <span
+                        className="text-amber-300 mr-1"
+                        title={`${s.board_match.title ?? "Officer"} of ${s.board_match.corp_name ?? "association"}`}
+                      >
+                        ★ {s.board_match.title}
+                      </span>
+                    )}
                     {s.owner_name ?? "—"}
                   </td>
                   <td className="px-2 py-0.5 text-right text-gray-400">
