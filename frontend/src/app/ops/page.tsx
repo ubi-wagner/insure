@@ -115,6 +115,54 @@ export default function OpsCenter() {
     error: string | null; dry_run?: boolean;
   } | null>(null);
 
+  // Ocean-distance backfill (populates miles-from-coast on every
+  // geocoded entity missing it so the distance filter actually works).
+  const [oceanRunning, setOceanRunning] = useState(false);
+  const [oceanStatus, setOceanStatus] = useState<{
+    running: boolean; scanned: number; updated: number; total: number;
+    started_at: string | null; finished_at: string | null;
+    error: string | null;
+  } | null>(null);
+
+  const fetchOceanStatus = useCallback(async () => {
+    try {
+      const res = await fetch("/api/proxy/admin/backfill-ocean-distance/status");
+      if (!res.ok) return;
+      const d = await res.json().catch(() => null);
+      if (d) {
+        setOceanStatus(d);
+        if (!d.running) setOceanRunning(false);
+      }
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    fetchOceanStatus();
+    const id = oceanRunning ? setInterval(fetchOceanStatus, 3000) : null;
+    return () => { if (id) clearInterval(id); };
+  }, [isAdmin, fetchOceanStatus, oceanRunning]);
+
+  async function backfillOceanDistance() {
+    setOceanRunning(true);
+    setActionMsg(null);
+    try {
+      const res = await fetch("/api/proxy/admin/backfill-ocean-distance", { method: "POST" });
+      const d = await res.json().catch(() => ({ error: res.statusText }));
+      if (d.error) {
+        setActionMsg(`Error: ${d.error}`);
+        setOceanRunning(false);
+      } else if (d.already_running) {
+        setActionMsg("Ocean distance backfill already running.");
+      } else {
+        setActionMsg("Ocean distance backfill started — populates miles-from-coast on every geocoded entity missing it.");
+      }
+    } catch (err) {
+      setActionMsg(`Error: ${err}`);
+      setOceanRunning(false);
+    }
+  }
+
   const fetchRelabelStatus = useCallback(async () => {
     try {
       const res = await fetch("/api/proxy/admin/relabel-masters-from-0001/status");
@@ -455,6 +503,24 @@ export default function OpsCenter() {
                     : relabelStatus?.finished_at
                       ? `Relabel ✓ (${relabelStatus.updated.toLocaleString()} fixed)`
                       : "Relabel 0001 names"}
+                </button>
+                {/* Ocean distance backfill — required for the
+                    miles-from-coast filter to actually narrow anything. */}
+                <button
+                  onClick={backfillOceanDistance}
+                  disabled={oceanRunning}
+                  title="Populate distance_to_ocean_miles on every geocoded entity that's missing it. Required for the miles-from-coast filter to work on legacy rows."
+                  className={`text-[11px] px-3 py-1 rounded border ${
+                    oceanRunning
+                      ? "bg-sky-900/40 text-sky-300 border-sky-800"
+                      : "bg-sky-900/40 hover:bg-sky-900 text-sky-300 border-sky-800"
+                  }`}
+                >
+                  {oceanRunning && oceanStatus
+                    ? `Ocean dist… ${oceanStatus.updated.toLocaleString()} / ${oceanStatus.total.toLocaleString()}`
+                    : oceanStatus?.finished_at
+                      ? `Ocean ✓ (${oceanStatus.updated.toLocaleString()} backfilled)`
+                      : "Backfill ocean dist"}
                 </button>
                 {!confirmReset ? (
                   <button onClick={() => setConfirmReset(true)}
