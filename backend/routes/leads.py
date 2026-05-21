@@ -603,6 +603,7 @@ def get_siblings(
         )
         from agents.enrichers.property_appraiser import (
             build_pa_owner_search_url, build_pa_parcel_url,
+            find_master_parcel_in_db,
         )
         if master.address:
             board = board_members_at_address(master.address, associations_only=True)
@@ -664,6 +665,16 @@ def get_siblings(
     siblings_out = [_sib(e) for e in rows]
     board_match_count = sum(1 for s in siblings_out if s.get("board_match"))
 
+    # Master parcel = the parcel ID ending in 0001 (PCPAO convention)
+    # somewhere in the master+siblings chain. Carries the actual
+    # association name + the canonical parcel ID even when the
+    # aggregator's "master" pick happened to be a unit parcel.
+    master_parcel = None
+    try:
+        master_parcel = find_master_parcel_in_db(db, entity_id)
+    except Exception as e:
+        logger.warning(f"Master parcel lookup failed for entity {entity_id}: {e}")
+
     return {
         "master_id": master.id,
         "master_name": master.name,
@@ -677,6 +688,7 @@ def get_siblings(
         "board_associations": sorted({
             m.get("corp_name") for m in board if m.get("corp_name")
         }),
+        "master_parcel": master_parcel,
         # Returned sum is for the rendered slice; matches the limit cap.
         "siblings": siblings_out,
     }

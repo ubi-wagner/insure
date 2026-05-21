@@ -209,13 +209,37 @@ def _to_int(v) -> int | None:
 
 
 def _select_master(group: list[Entity]) -> Entity:
-    """Master picked first by is_condo_master flag, otherwise lowest id."""
-    masters = [
+    """Master picked in priority order:
+
+    1. is_condo_master flag (set by seeder when owner name says
+       "CONDO ASSOC" or parcel ID ends in PCPAO's 0001 / older 9999
+       conventions).
+    2. Parcel ID ending in one of the master suffixes — catches rows
+       seeded before the flag was being written.
+    3. Lowest entity id (first ingested wins as a final tiebreaker).
+    """
+    from agents.seeder import MASTER_PARCEL_SUFFIXES
+
+    flagged = [
         e for e in group
         if (e.characteristics or {}).get("is_condo_master")
     ]
-    if masters:
-        return min(masters, key=lambda e: e.id)
+    if flagged:
+        return min(flagged, key=lambda e: e.id)
+
+    by_suffix = [
+        e for e in group
+        if (e.characteristics or {}).get("dor_parcel_id", "").endswith(MASTER_PARCEL_SUFFIXES)
+    ]
+    if by_suffix:
+        # Prefer 0001 over 0000 / 9999 — most modern FL county filings
+        # use 0001 for the active association common-elements parcel.
+        by_suffix.sort(key=lambda e: (
+            0 if (e.characteristics or {}).get("dor_parcel_id", "").endswith("0001") else 1,
+            e.id,
+        ))
+        return by_suffix[0]
+
     return min(group, key=lambda e: e.id)
 
 

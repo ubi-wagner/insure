@@ -519,6 +519,16 @@ interface SiblingRow {
   dor_parcel_id: string | null;
 }
 
+interface MasterParcel {
+  id: number;
+  name: string | null;
+  owner_name: string | null;
+  address: string | null;
+  parcel_id: string | null;
+  pa_parcel_url: string | null;
+  is_aggregation_master: boolean;
+}
+
 interface SiblingsResponse {
   master_id: number;
   master_name: string;
@@ -526,6 +536,7 @@ interface SiblingsResponse {
   sibling_count: number;
   board_member_count?: number;
   board_associations?: string[];
+  master_parcel?: MasterParcel | null;
   siblings: SiblingRow[];
 }
 
@@ -615,6 +626,30 @@ function ModalSiblingsPanel({
       <div className="mt-2 max-h-72 overflow-y-auto border-t border-teal-900/60 pt-2">
         {loading && <div className="text-[11px] text-gray-500">Loading…</div>}
         {error && <div className="text-[11px] text-red-400">{error}</div>}
+        {data?.master_parcel && (
+          <div className="mb-2 px-2 py-1 bg-teal-950/40 border border-teal-900 rounded text-[11px]">
+            <div className="text-teal-300 font-semibold text-[10px] uppercase tracking-wider">
+              Master parcel (0001)
+            </div>
+            <div className="flex items-center gap-2 flex-wrap mt-0.5">
+              <span className="text-gray-200">{data.master_parcel.name ?? "—"}</span>
+              <span className="text-gray-500 font-mono text-[10px]">
+                {data.master_parcel.parcel_id ?? ""}
+              </span>
+              {data.master_parcel.pa_parcel_url && (
+                <a
+                  href={data.master_parcel.pa_parcel_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-blue-400 hover:text-blue-300 text-[10px] ml-auto"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  open on county PA ↗
+                </a>
+              )}
+            </div>
+          </div>
+        )}
         {data && data.siblings.length === 0 && (
           <div className="text-[11px] text-gray-500">No linked parcels recorded.</div>
         )}
