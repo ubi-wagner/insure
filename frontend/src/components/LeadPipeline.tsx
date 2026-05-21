@@ -102,6 +102,92 @@ const USE_CODE_OPTIONS = [
   { value: "039", label: "039 - Hotel/Motel" },
 ];
 
+/* Multi-select county chip dropdown. Closed: "All Counties" or
+ * "Pinellas +3 more". Open: full chip grid with All / None toggles.
+ * Each chip is a click → toggle. Backend accepts comma-separated. */
+function CountyMultiSelect({
+  counties,
+  setCounties,
+}: {
+  counties: string[];
+  setCounties: (v: string[]) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const label = counties.length === 0
+    ? "All Counties"
+    : counties.length === 1
+      ? counties[0]
+      : `${counties[0]} +${counties.length - 1}`;
+  return (
+    <div className="flex-1 relative">
+      <button
+        type="button"
+        onClick={() => setOpen((x) => !x)}
+        className={`w-full text-left bg-gray-900 border rounded px-2 py-1.5 text-xs ${
+          counties.length > 0
+            ? "border-blue-700 text-blue-200"
+            : "border-gray-800 text-white"
+        }`}
+      >
+        {label} <span className="text-gray-600 float-right">{open ? "▲" : "▼"}</span>
+      </button>
+      {open && (
+        <div className="absolute z-30 mt-1 w-72 max-h-80 overflow-y-auto bg-gray-950 border border-gray-700 rounded shadow-xl p-2">
+          <div className="flex items-center gap-2 mb-1.5 pb-1.5 border-b border-gray-800">
+            <button
+              type="button"
+              onClick={() => setCounties([...TARGET_COUNTIES])}
+              className="text-[10px] px-1.5 py-0.5 rounded bg-gray-800 text-gray-300 hover:bg-gray-700"
+            >
+              All
+            </button>
+            <button
+              type="button"
+              onClick={() => setCounties([])}
+              className="text-[10px] px-1.5 py-0.5 rounded bg-gray-800 text-gray-300 hover:bg-gray-700"
+            >
+              None
+            </button>
+            <span className="text-[10px] text-gray-500 ml-auto">
+              {counties.length} of {TARGET_COUNTIES.length}
+            </span>
+          </div>
+          <div className="flex flex-wrap gap-1">
+            {TARGET_COUNTIES.map((c) => {
+              const on = counties.includes(c);
+              return (
+                <button
+                  type="button"
+                  key={c}
+                  onClick={() => setCounties(
+                    on ? counties.filter(x => x !== c) : [...counties, c]
+                  )}
+                  className={`text-[10px] px-1.5 py-0.5 rounded border ${
+                    on
+                      ? "bg-blue-900/60 text-blue-200 border-blue-600"
+                      : "bg-gray-900 text-gray-400 border-gray-800 hover:border-gray-600"
+                  }`}
+                >
+                  {c}
+                </button>
+              );
+            })}
+          </div>
+          <div className="flex justify-end mt-2 pt-1.5 border-t border-gray-800">
+            <button
+              type="button"
+              onClick={() => setOpen(false)}
+              className="text-[10px] px-2 py-0.5 rounded bg-gray-800 text-gray-300 hover:bg-gray-700"
+            >
+              Done
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 interface PipelineProps {
   refreshKey: number;
   onLeadsLoaded?: (leads: { id: number; name: string; latitude: number; longitude: number; heat_score: string; status: string; listIndex: number }[]) => void;
@@ -130,13 +216,18 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
   // whole table. VETTED is ~150K rows = sub-second with the indexes.
   const [activeStage, setActiveStage] = useState("VETTED");
   const [search, setSearch] = useState("");
-  const [county, setCounty] = useState(initialCounty ?? "");
+  // County + use-code now multi-select. Empty array means "all" — the
+  // backend treats no filter and "everything checked" the same. Comma-
+  // joined into the legacy query param when the request goes out.
+  const [counties, setCounties] = useState<string[]>(
+    initialCounty ? [initialCounty] : []
+  );
+  const [useCodes, setUseCodes] = useState<string[]>([]);
   const [sortKey, setSortKey] = useState("value-desc");
   const [minValue, setMinValue] = useState("");
   const [maxValue, setMaxValue] = useState("");
   const [minUnits, setMinUnits] = useState("");
   const [minStories, setMinStories] = useState("");
-  const [useCode, setUseCode] = useState("");
   const [heatFilter, setHeatFilter] = useState("");
   const [citizensOnly, setCitizensOnly] = useState(false);
   const [creamTier, setCreamTier] = useState("");
@@ -150,13 +241,18 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
   // Each user has their own filters; is_shared=true filters are visible
   // to the whole team but only editable by the owner.
   interface SavedFilterData {
-    county: string;
+    // Multi-value as of this build; legacy single-string filters
+    // saved before this change still load (the getters below
+    // accept either shape).
+    counties?: string[];
+    county?: string;             // legacy single value, still loads
+    useCodes?: string[];
+    useCode?: string;            // legacy single value
     sortKey: string;
     minValue: string;
     maxValue: string;
     minUnits: string;
     minStories: string;
-    useCode: string;
     heatFilter: string;
     citizensOnly: boolean;
     creamTier: string;
@@ -197,8 +293,9 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
       `Cancel = Private (only visible to you)`
     );
     const snapshot: SavedFilterData = {
-      county, sortKey, minValue, maxValue, minUnits, minStories,
-      useCode, heatFilter, citizensOnly, creamTier,
+      counties, useCodes,
+      sortKey, minValue, maxValue, minUnits, minStories,
+      heatFilter, citizensOnly, creamTier,
       minYear, maxYear, maxDistance, construction,
     };
     try {
@@ -213,13 +310,14 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
 
   function loadSavedFilter(f: SavedFilterRow) {
     const d = f.filter_json || ({} as SavedFilterData);
-    setCounty(d.county ?? "");
+    // Multi-value with single-value legacy fallback.
+    setCounties(d.counties ?? (d.county ? [d.county] : []));
+    setUseCodes(d.useCodes ?? (d.useCode ? [d.useCode] : []));
     setSortKey(d.sortKey ?? "value-desc");
     setMinValue(d.minValue ?? "");
     setMaxValue(d.maxValue ?? "");
     setMinUnits(d.minUnits ?? "");
     setMinStories(d.minStories ?? "");
-    setUseCode(d.useCode ?? "");
     setHeatFilter(d.heatFilter ?? "");
     setCitizensOnly(!!d.citizensOnly);
     setCreamTier(d.creamTier ?? "");
@@ -292,12 +390,12 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
         offset: String(page * PAGE_SIZE),
       });
       if (search) params.set("search", search);
-      if (county) params.set("county", county);
+      if (counties.length > 0) params.set("county", counties.join(","));
       if (minValue) params.set("min_value", minValue);
       if (maxValue) params.set("max_value", maxValue);
       if (minUnits) params.set("min_units", minUnits);
       if (minStories) params.set("min_stories", minStories);
-      if (useCode) params.set("use_code", useCode);
+      if (useCodes.length > 0) params.set("use_code", useCodes.join(","));
       if (heatFilter) params.set("heat", heatFilter);
       if (citizensOnly) params.set("on_citizens", "true");
       if (creamTier) params.set("cream_tier", creamTier);
@@ -343,7 +441,7 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
       setFetchError("Unable to connect");
     }
     setLoading(false);
-  }, [activeStage, search, county, sortKey, page, minValue, maxValue, minUnits, minStories, useCode, heatFilter, citizensOnly, creamTier, minYear, maxYear, maxDistance, construction, onLeadsLoaded]);
+  }, [activeStage, search, counties, sortKey, page, minValue, maxValue, minUnits, minStories, useCodes, heatFilter, citizensOnly, creamTier, minYear, maxYear, maxDistance, construction, onLeadsLoaded]);
 
   // Fetch stage counts for the tab badges
   const fetchStageCounts = useCallback(async () => {
@@ -365,7 +463,7 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
   }, [fetchStageCounts, refreshKey]);
 
   // Reset page when filters change
-  useEffect(() => { setPage(0); }, [activeStage, search, county, sortKey, minValue, maxValue, minUnits, minStories, useCode, heatFilter, citizensOnly, creamTier, minYear, maxYear, maxDistance, construction]);
+  useEffect(() => { setPage(0); }, [activeStage, search, counties, sortKey, minValue, maxValue, minUnits, minStories, useCodes, heatFilter, citizensOnly, creamTier, minYear, maxYear, maxDistance, construction]);
 
   // Clear selection when stage changes
   useEffect(() => {
@@ -439,12 +537,12 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
     setBulkMsg(null);
     try {
       const body: Record<string, unknown> = { stage: targetStage, filter_stage: activeStage };
-      if (county) body.filter_county = county;
+      if (counties.length > 0) body.filter_county = counties.join(",");
       if (minValue) body.filter_min_value = parseFloat(minValue);
       if (maxValue) body.filter_max_value = parseFloat(maxValue);
       if (minUnits) body.filter_min_units = parseInt(minUnits, 10);
       if (minStories) body.filter_min_stories = parseInt(minStories, 10);
-      if (useCode) body.filter_use_code = useCode;
+      if (useCodes.length > 0) body.filter_use_code = useCodes.join(",");
       if (heatFilter) body.filter_heat = heatFilter;
       if (citizensOnly) body.filter_on_citizens = true;
 
@@ -498,12 +596,12 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
           offset: "0",
         });
         if (search) params.set("search", search);
-        if (county) params.set("county", county);
+        if (counties.length > 0) params.set("county", counties.join(","));
         if (minValue) params.set("min_value", minValue);
         if (maxValue) params.set("max_value", maxValue);
         if (minUnits) params.set("min_units", minUnits);
         if (minStories) params.set("min_stories", minStories);
-        if (useCode) params.set("use_code", useCode);
+        if (useCodes.length > 0) params.set("use_code", useCodes.join(","));
         if (heatFilter) params.set("heat", heatFilter);
         if (citizensOnly) params.set("on_citizens", "true");
         if (creamTier) params.set("cream_tier", creamTier);
@@ -574,17 +672,16 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
             className="flex-1 bg-gray-900 border border-gray-800 rounded px-2.5 py-1.5 text-sm text-white placeholder-gray-600 focus:border-blue-600 focus:outline-none"
           />
           <button onClick={() => setShowFilters(!showFilters)}
-            className={`px-2.5 py-1.5 rounded text-xs border ${showFilters || useCode || heatFilter || minStories || citizensOnly ? "border-blue-600 bg-blue-950 text-blue-300" : "border-gray-800 bg-gray-900 text-gray-500"}`}>
-            Filters{(useCode || heatFilter || minStories || citizensOnly || minValue || maxValue || minUnits) ? ` (${[useCode, heatFilter, minStories, citizensOnly && "Citizens", minValue && "min$", maxValue && "max$", minUnits && "units"].filter(Boolean).length})` : ""}
+            className={`px-2.5 py-1.5 rounded text-xs border ${showFilters || useCodes.length || heatFilter || minStories || citizensOnly ? "border-blue-600 bg-blue-950 text-blue-300" : "border-gray-800 bg-gray-900 text-gray-500"}`}>
+            Filters{(useCodes.length || heatFilter || minStories || citizensOnly || minValue || maxValue || minUnits) ? ` (${[useCodes.length > 0 && `${useCodes.length} use-code`, heatFilter, minStories, citizensOnly && "Citizens", minValue && "min$", maxValue && "max$", minUnits && "units"].filter(Boolean).length})` : ""}
           </button>
         </div>
 
-        <div className="flex gap-1.5">
-          <select value={county} onChange={(e) => setCounty(e.target.value)}
-            className="flex-1 bg-gray-900 border border-gray-800 rounded px-2 py-1.5 text-xs text-white">
-            <option value="">All Counties</option>
-            {TARGET_COUNTIES.map((c) => <option key={c} value={c}>{c}</option>)}
-          </select>
+        <div className="flex gap-1.5 items-start">
+          <CountyMultiSelect
+            counties={counties}
+            setCounties={setCounties}
+          />
           <select value={sortKey} onChange={(e) => setSortKey(e.target.value)}
             className="flex-1 bg-gray-900 border border-gray-800 rounded px-2 py-1.5 text-xs text-white">
             {SORT_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
@@ -636,11 +733,42 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
             </div>
             <div className="flex gap-2">
               <div className="flex-1">
-                <label className="text-[10px] text-gray-500 block mb-0.5">Use Code</label>
-                <select value={useCode} onChange={(e) => setUseCode(e.target.value)}
-                  className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-white">
-                  {USE_CODE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-                </select>
+                <label className="text-[10px] text-gray-500 block mb-0.5">
+                  Use Code
+                  <button
+                    type="button"
+                    onClick={() => setUseCodes(USE_CODE_OPTIONS.filter(o => o.value).map(o => o.value))}
+                    className="ml-2 text-[9px] text-gray-500 hover:text-gray-300"
+                  >all</button>
+                  <button
+                    type="button"
+                    onClick={() => setUseCodes([])}
+                    className="ml-1 text-[9px] text-gray-500 hover:text-gray-300"
+                  >none</button>
+                </label>
+                <div className="flex flex-wrap gap-1">
+                  {USE_CODE_OPTIONS.filter(o => o.value).map((o) => {
+                    const on = useCodes.includes(o.value);
+                    return (
+                      <button
+                        type="button"
+                        key={o.value}
+                        onClick={() => setUseCodes(prev =>
+                          prev.includes(o.value)
+                            ? prev.filter(v => v !== o.value)
+                            : [...prev, o.value]
+                        )}
+                        className={`text-[10px] px-1.5 py-0.5 rounded border ${
+                          on
+                            ? "bg-blue-900/60 text-blue-200 border-blue-600"
+                            : "bg-gray-800 text-gray-400 border-gray-700 hover:border-gray-600"
+                        }`}
+                      >
+                        {o.label}
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
               <div className="flex-1">
                 <label className="text-[10px] text-gray-500 block mb-0.5">Heat Score</label>
@@ -734,7 +862,7 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
             </div>
             <div className="flex gap-2 items-center">
               <div className="flex-1" />
-              <button onClick={() => { setMinValue(""); setMaxValue(""); setMinUnits(""); setMinStories(""); setUseCode(""); setHeatFilter(""); setCitizensOnly(false); setCreamTier(""); setMinYear(""); setMaxYear(""); setMaxDistance(""); setConstruction(""); }}
+              <button onClick={() => { setMinValue(""); setMaxValue(""); setMinUnits(""); setMinStories(""); setUseCodes([]); setCounties([]); setHeatFilter(""); setCitizensOnly(false); setCreamTier(""); setMinYear(""); setMaxYear(""); setMaxDistance(""); setConstruction(""); }}
                 className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-400 hover:text-white">
                 Clear All
               </button>
@@ -1037,7 +1165,7 @@ export default function LeadPipeline({ refreshKey, onLeadsLoaded, onLeadHover, s
 
         {leads.length === 0 && !loading && (
           <div className="text-gray-600 text-center py-8 text-sm">
-            {search || county || minValue || maxValue || minUnits
+            {search || counties.length || minValue || maxValue || minUnits
               ? "No results match your filters"
               : `No ${activeStage.toLowerCase()}s yet`}
           </div>
