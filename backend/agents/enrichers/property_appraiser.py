@@ -45,7 +45,7 @@ PA_OWNER_SEARCH_TEMPLATES: dict[str, str | None] = {
     "Pinellas":     "https://www.pcpao.gov/quick-search?search-type=name&search={owner}",
     "Hillsborough": "https://www.hcpafl.org/Property-Info/Property-Search#/search/name/{owner}",
     "Lee":          "https://www.leepa.org/Search/PropertySearch.aspx?type=owner&name={owner}",
-    "Miami-Dade":   "https://www.miamidade.gov/Apps/PA/PropertySearch/#/?folioFlag=true&Search={owner}",
+    "Miami-Dade":   "https://apps.miamidadepa.gov/PropertySearch/#/?owner={owner}",
     "Broward":      "https://bcpa.net/RecAddr.asp?URL_Search=Owner&Search={owner}",
     "Palm Beach":   "https://pbcpao.gov/Property/Search?ownerName={owner}",
     "Pasco":        "https://search.pascopa.com/#/owner/{owner}",
@@ -119,7 +119,7 @@ PA_PARCEL_URL_TEMPLATES: dict[str, str] = {
     "Pinellas":     "https://www.pcpao.gov/property-details?parcel={parcel}",
     "Hillsborough": "https://www.hcpafl.org/Property-Info/Property-Search#/folio/{parcel}",
     "Lee":          "https://www.leepa.org/Display/DisplayParcel.aspx?FolioID={parcel}",
-    "Miami-Dade":   "https://www.miamidade.gov/Apps/PA/PropertySearch/#/?folio={parcel}",
+    "Miami-Dade":   "https://apps.miamidadepa.gov/PropertySearch/#/?folio={parcel}",
     "Broward":      "https://bcpa.net/RecInfo.asp?URL_Folio={parcel}",
     "Palm Beach":   "https://pbcpao.gov/Property/Detail?parcelId={parcel}",
     "Pasco":        "https://search.pascopa.com/#/parcel/{parcel}",
@@ -254,7 +254,7 @@ COUNTY_GIS_ENDPOINTS: dict[str, dict] = {
     "Miami-Dade": {
         "name": "Miami-Dade County Property Appraiser",
         "url": "https://gisweb.miamidade.gov/arcgis/rest/services/MD_PropertySearch/MapServer/0/query",
-        "info_url": "https://www.miamidade.gov/pa/property-search.asp",
+        "info_url": "https://apps.miamidadepa.gov/PropertySearch/",
         "spatial_ref": 4326,
     },
     "Broward": {
